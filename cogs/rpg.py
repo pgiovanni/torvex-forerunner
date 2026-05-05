@@ -31,6 +31,15 @@ async def _api(method: str, path: str, **kwargs):
         return 0, {}
 
 
+async def _add_coins(discord_id: str, amount: int, reason: str):
+    """Award coins to a player's CoinBalance via the API."""
+    await _api("POST", "/api/bot/game/add-coins", json={
+        "discordId": discord_id,
+        "amount": amount,
+        "reason": reason
+    })
+
+
 def _embed(title: str, description: str = "", color: int = 0x5B8CDB) -> discord.Embed:
     return discord.Embed(title=title, description=description, color=color)
 
@@ -346,17 +355,51 @@ class RPG(commands.Cog):
     async def leaderboard(self, interaction: discord.Interaction):
         await self._game_command(interaction, "/leaderboard")
 
+    async def _gather_command(self, interaction: discord.Interaction, command: str):
+        """Run a gather command and award bonus coins based on skill level."""
+        await interaction.response.defer()
+
+        if not await self._ensure_linked(interaction.user):
+            await interaction.followup.send("❌ Could not connect to Torvex. Try again later.", ephemeral=True)
+            return
+
+        status, data = await _api("POST", "/api/bot/game/command", json={
+            "discordUserId": str(interaction.user.id),
+            "command": command
+        })
+        if status == 404:
+            await interaction.followup.send("❌ Could not connect to Torvex. Try again later.", ephemeral=True)
+            return
+        if status != 200:
+            await interaction.followup.send("❌ Something went wrong. Try again later.", ephemeral=True)
+            return
+
+        responses = data.get("responses") or []
+        skill_level = 1
+        gather_success = False
+        for resp in responses:
+            embed = _game_embed(resp)
+            if embed:
+                await interaction.followup.send(embed=embed)
+            if resp.get("type") == "gather":
+                gather_success = True
+                skill_level = resp.get("payload", {}).get("skillLevel", 1)
+
+        if gather_success:
+            coins = 1 + (skill_level // 5)
+            await _add_coins(str(interaction.user.id), coins, f"gathering:{command.lstrip('/')}")
+
     @rpg.command(name="mine", description="Mine for ore.")
     async def mine(self, interaction: discord.Interaction):
-        await self._game_command(interaction, "/mine")
+        await self._gather_command(interaction, "/mine")
 
     @rpg.command(name="fish", description="Go fishing.")
     async def fish(self, interaction: discord.Interaction):
-        await self._game_command(interaction, "/fish")
+        await self._gather_command(interaction, "/fish")
 
     @rpg.command(name="chop", description="Chop wood.")
     async def chop(self, interaction: discord.Interaction):
-        await self._game_command(interaction, "/chop")
+        await self._gather_command(interaction, "/chop")
 
     @rpg.command(name="recipes", description="View available crafting recipes.")
     async def recipes(self, interaction: discord.Interaction):
