@@ -31,6 +31,23 @@ async def _award_daily_coins(discord_id: str):
     except Exception as e:
         log.error(f"daily coin award error for {discord_id}: {e}")
 
+
+async def _api(method: str, path: str, **kwargs):
+    url = f"{TORVEX_API_URL}{path}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.request(method, url, headers=_API_HEADERS, **kwargs) as r:
+                try:
+                    data = await r.json()
+                except Exception:
+                    data = {}
+                if r.status >= 400:
+                    log.error(f"{method} {path} → {r.status} | {data}")
+                return r.status, data
+    except Exception as e:
+        log.error(f"{method} {path} → connection error: {e}")
+        return 0, {}
+
 DAILY_CAP = 200
 BUCKS_PER_MESSAGE = 1
 XP_PER_MESSAGE = 10
