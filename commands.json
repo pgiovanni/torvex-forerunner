@@ -71,6 +71,12 @@
       "description": "Gift coins to another player",
       "cog": "gifts",
       "cooldown_seconds": 0
+    },
+    {
+      "name": "trade",
+      "description": "Trade RPG items and coins with another player",
+      "cog": "trading",
+      "cooldown_seconds": 0
     }
   ]
 }
