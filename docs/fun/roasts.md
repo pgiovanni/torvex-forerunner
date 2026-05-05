@@ -1,0 +1,46 @@
+# Roast Cards
+
+## Guidelines
+- Savage but not 18+
+- No slurs, no body shaming, no anything that targets real protected characteristics
+- Punching at personality/behavior, not appearance or identity
+- Should get a laugh from both sides
+
+## Card Format
+Each roast is a string with `{target}` as the placeholder for the mentioned user.
+
+## Cards
+
+```json
+[
+  "{target} has the energy of a phone on 3% battery.",
+  "{target} is the human equivalent of a participation trophy.",
+  "{target} could start an argument in an empty room.",
+  "{target}'s Wi-Fi password is probably 'password123'.",
+  "{target} looks like they Google 'how to be cool'.",
+  "{target} is the reason terms and conditions exist.",
+  "{target} has never been the smartest person in the room. Even alone.",
+  "{target} types with two fingers and still makes typos.",
+  "{target} is peak NPC behavior.",
+  "{target} is what happens when you skip the tutorial.",
+  "{target} has a villain arc that no one asked for.",
+  "{target} is the loading screen of people.",
+  "{target} has the range of a Nokia brick.",
+  "{target} would lose a staring contest with a poster.",
+  "{target} is the main character in a story nobody's reading.",
+  "{target} has the charisma of a CAPTCHA.",
+  "{target} speedruns making bad decisions.",
+  "{target} is buffering.",
+  "{target} is built different. Unfortunately.",
+  "{target} has lore, but it's all filler arcs.",
+  "{target} is the tech support call that never gets resolved.",
+  "{target} gives off 'I talk during movies' energy.",
+  "{target} is a walking spoiler for a show nobody watches.",
+  "{target} has the attention span of a push notification.",
+  "{target} is the group project member who disappears until the last day."
+]
+```
+
+## Adding New Cards
+Just add a new string to `data/roasts.json`. Keep the `{target}` placeholder.
+No review process needed — just keep to the guidelines above.

@@ -1,0 +1,8 @@
+discord.py>=2.3.0
+python-dotenv
+requests
+Pillow
+aiohttp
+asyncpg
+python-chess
+cairosvg

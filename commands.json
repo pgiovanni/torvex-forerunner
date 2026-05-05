@@ -1,0 +1,70 @@
+{
+  "commands": [
+    {
+      "name": "backup_emojis",
+      "description": "Download all server emojis and save them to the emojis/ folder on the bot host.",
+      "cog": "emojis",
+      "required_permissions": ["manage_emojis"]
+    },
+    {
+      "name": "close",
+      "description": "Close the current ticket channel.",
+      "cog": "tickets",
+      "required_permissions": ["manage_channels"]
+    },
+    {
+      "name": "fun",
+      "description": "Fun commands — roast, 8ball, tictactoe, connect4",
+      "cog": "fun",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "games",
+      "description": "Bot vs player games — tictactoe_bot, connect4_bot",
+      "cog": "games",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "wordle",
+      "description": "Wordle game with animated board in a thread",
+      "cog": "wordle",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "rpg",
+      "description": "Torvex RPG — fight, level up, earn orbs",
+      "cog": "rpg",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "economy",
+      "description": "Peepo Bucks economy — balance, levels, leaderboard",
+      "cog": "economy",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "pvp",
+      "description": "PvP battles — challenge other players",
+      "cog": "pvp",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "gear",
+      "description": "Item/monster dictionary — weapons, armor, elements, monsters",
+      "cog": "gear",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "chess",
+      "description": "Play chess — vs bot or challenge another player",
+      "cog": "chess_cog",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "peepo",
+      "description": "Peepo collectibles — shop, trade, marketplace",
+      "cog": "peepo",
+      "cooldown_seconds": 0
+    }
+  ]
+}
