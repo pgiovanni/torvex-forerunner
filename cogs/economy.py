@@ -2,10 +2,51 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncpg
+import aiohttp
 import os
+import logging
 from datetime import date
 
+log = logging.getLogger("economy")
+
 DB_DSN = os.getenv("DISCORD_DB_DSN", "")
+TORVEX_API_URL = os.getenv("TORVEX_API_URL", "http://localhost:5000")
+TORVEX_BOT_KEY = os.getenv("TORVEX_BOT_KEY", "")
+_API_HEADERS = {"X-Bot-Key": TORVEX_BOT_KEY, "Content-Type": "application/json"}
+
+DAILY_COIN_BONUS = 5
+
+
+async def _award_daily_coins(discord_id: str):
+    """Award the daily coin bonus to a player's CoinBalance via the API."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{TORVEX_API_URL}/api/bot/game/add-coins",
+                json={"discordId": discord_id, "amount": DAILY_COIN_BONUS, "reason": "daily_bonus"},
+                headers=_API_HEADERS
+            ) as r:
+                if r.status >= 400:
+                    log.error(f"daily coin award failed for {discord_id}: {r.status}")
+    except Exception as e:
+        log.error(f"daily coin award error for {discord_id}: {e}")
+
+
+async def _api(method: str, path: str, **kwargs):
+    url = f"{TORVEX_API_URL}{path}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.request(method, url, headers=_API_HEADERS, **kwargs) as r:
+                try:
+                    data = await r.json()
+                except Exception:
+                    data = {}
+                if r.status >= 400:
+                    log.error(f"{method} {path} → {r.status} | {data}")
+                return r.status, data
+    except Exception as e:
+        log.error(f"{method} {path} → connection error: {e}")
+        return 0, {}
 
 DAILY_CAP = 200
 BUCKS_PER_MESSAGE = 1
@@ -78,10 +119,15 @@ class Economy(commands.Cog):
         today = date.today()
 
         # Reset daily counter if new day
-        if row["daily_bucks_date"] != today:
+        is_new_day = row["daily_bucks_date"] != today
+        if is_new_day:
             daily_count = 0
         else:
             daily_count = row["daily_bucks_count"]
+
+        # Award daily coin bonus on first message of the day
+        if is_new_day:
+            await _award_daily_coins(str(user.id))
 
         bucks_to_award = BUCKS_PER_MESSAGE if daily_count < DAILY_CAP else 0
 
@@ -113,6 +159,11 @@ class Economy(commands.Cog):
             await message.channel.send(
                 f"⬆️ {message.author.mention} leveled up to **Level {new_level}**!"
             )
+            # Sync the new chat level to the linked RPG character
+            await _api("POST", "/api/bot/game/sync-level", json={
+                "discordId": str(message.author.id),
+                "newLevel": new_level,
+            })
 
     # ── /balance ──────────────────────────────────────────────────────────────
     @app_commands.command(name="balance", description="Check your Peepo Bucks and level.")

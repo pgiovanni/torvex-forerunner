@@ -5,6 +5,9 @@ from discord.ext import commands
 import aiohttp
 import os
 import random
+import logging
+
+log = logging.getLogger("pvp")
 
 TORVEX_API_URL = os.getenv("TORVEX_API_URL", "http://localhost:5000")
 TORVEX_BOT_KEY = os.getenv("TORVEX_BOT_KEY", "")
@@ -68,6 +71,21 @@ async def _award_pvp(winner_id: str, loser_id: str) -> dict:
             if r.status == 200:
                 return await r.json()
     return {}
+
+
+async def _award_pvp_coins(winner_id: str):
+    """Award flat 10 coins to the PvP winner."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{TORVEX_API_URL}/api/bot/game/add-coins",
+                json={"discordId": winner_id, "amount": 10, "reason": "pvp_win"},
+                headers=HEADERS
+            ) as r:
+                if r.status >= 400:
+                    log.error(f"add-coins pvp_win → {r.status}")
+    except Exception as e:
+        log.error(f"add-coins pvp_win → connection error: {e}")
 
 
 def _calc_damage(attacker: dict, defender: dict, action: str) -> tuple[int, int]:
@@ -146,9 +164,10 @@ class PvPBattleView(discord.ui.View):
             embed = self.board_embed(f"🏃 {loser.display_name} fled!")
             await interaction.response.edit_message(embed=embed, view=self)
             reward = await _award_pvp(str(winner.id), str(loser.id))
+            await _award_pvp_coins(str(winner.id))
             xp = reward.get("winnerXpGained", 0)
             await interaction.followup.send(
-                f"🏆 {winner.mention} wins! +**{xp} XP**\n"
+                f"🏆 {winner.mention} wins! +**{xp} XP** +**10 🪙**\n"
                 f"😅 {loser.mention} gets some consolation XP too."
             )
             return
@@ -173,10 +192,11 @@ class PvPBattleView(discord.ui.View):
             embed = self.board_embed(f"💀 {loser.display_name} was defeated!")
             await interaction.response.edit_message(embed=embed, view=self)
             reward = await _award_pvp(str(winner.id), str(loser.id))
+            await _award_pvp_coins(str(winner.id))
             xp = reward.get("winnerXpGained", 0)
             loser_xp = reward.get("loserXpGained", 0)
             await interaction.followup.send(
-                f"🏆 {winner.mention} wins! +**{xp} XP**\n"
+                f"🏆 {winner.mention} wins! +**{xp} XP** +**10 🪙**\n"
                 f"💪 {loser.mention} gains **{loser_xp} XP** for fighting."
             )
             return
