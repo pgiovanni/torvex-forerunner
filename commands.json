@@ -65,6 +65,12 @@
       "description": "Peepo collectibles — shop, trade, marketplace",
       "cog": "peepo",
       "cooldown_seconds": 0
+    },
+    {
+      "name": "gift",
+      "description": "Gift coins to another player",
+      "cog": "gifts",
+      "cooldown_seconds": 0
     }
   ]
 }
