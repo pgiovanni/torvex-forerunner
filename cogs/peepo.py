@@ -18,12 +18,15 @@ RARITY_COLORS = {
     "Rare":      0x5599FF,
     "Epic":      0xAA44FF,
     "Legendary": 0xFFAA00,
+    "Limited":   0xFF6600,
 }
 
 RARITY_STARS = {
     "Common": "★", "Uncommon": "★★", "Rare": "★★★",
     "Epic": "★★★★", "Legendary": "★★★★★",
 }
+
+RARITY_ORDER = ["Common", "Uncommon", "Rare", "Epic", "Legendary"]
 
 ITEMS_PER_PAGE = 8
 
@@ -124,27 +127,56 @@ class TradeOfferView(discord.ui.View):
 
 
 def _shop_pages(peepos: list) -> list[discord.Embed]:
+    """Build shop pages grouped by rarity, showing coin and orb prices."""
+    # Group by rarity
+    by_rarity: dict[str, list] = {}
+    for p in peepos:
+        by_rarity.setdefault(p.get("rarity", "Common"), []).append(p)
+
+    # Build one embed per rarity that has purchasable items
     pages = []
-    total = len(peepos)
-    for i in range(0, total, ITEMS_PER_PAGE):
-        chunk = peepos[i:i + ITEMS_PER_PAGE]
-        page_num   = i // ITEMS_PER_PAGE + 1
-        total_pages = math.ceil(total / ITEMS_PER_PAGE)
-        embed = discord.Embed(
-            title=f"🛒 Peepo Shop  (page {page_num}/{total_pages})",
-            description="Buy peepo collectibles with your RPG Coins!",
-            color=0xFFAA00
-        )
-        for p in chunk:
-            rarity = p.get("rarity", "Common")
-            stars  = RARITY_STARS.get(rarity, "")
-            embed.add_field(
-                name=f"**{p['name']}**  {stars}",
-                value=f"🪙 **{p['buyPrice']:,}** coins  ·  Sell back: {p['sellPrice']:,}",
-                inline=False
+    for rarity in RARITY_ORDER:
+        items = by_rarity.get(rarity, [])
+        if not items:
+            continue
+        color  = RARITY_COLORS.get(rarity, 0xFFAA00)
+        stars  = RARITY_STARS.get(rarity, "")
+
+        # Chunk within each rarity so we don't exceed 25 fields
+        for i in range(0, len(items), ITEMS_PER_PAGE):
+            chunk       = items[i:i + ITEMS_PER_PAGE]
+            chunk_num   = i // ITEMS_PER_PAGE + 1
+            chunk_total = math.ceil(len(items) / ITEMS_PER_PAGE)
+            title_extra = f"  (page {chunk_num}/{chunk_total})" if chunk_total > 1 else ""
+            embed = discord.Embed(
+                title=f"🛒 Peepo Shop — {stars} {rarity}{title_extra}",
+                description="Buy peepo collectibles with your RPG Coins!",
+                color=color
             )
-        embed.set_footer(text="Use /peepo buy <name> to purchase")
-        pages.append(embed)
+            for p in chunk:
+                coin_price = p.get("coinPrice", 0)
+                orb_price  = p.get("orbPrice", 0)
+                sell_price = p.get("sellPrice", 0)
+                if coin_price > 0 and orb_price > 0:
+                    price_str = f"🪙 **{coin_price:,}** coins  ·  🔮 **{orb_price:,}** orbs"
+                elif coin_price > 0:
+                    price_str = f"🪙 **{coin_price:,}** coins"
+                else:
+                    price_str = f"🔮 **{orb_price:,}** orbs only"
+                embed.add_field(
+                    name=f"**{p['name']}**  {stars}",
+                    value=f"{price_str}\n↩ Sell: {sell_price:,} coins",
+                    inline=True
+                )
+            embed.set_footer(text="Use /peepo buy <name> to purchase with coins")
+            pages.append(embed)
+
+    if not pages:
+        pages.append(discord.Embed(
+            title="🛒 Peepo Shop",
+            description="No peepos available yet. Ask an admin to run `/peepo sync`!",
+            color=0xFFAA00
+        ))
     return pages
 
 
@@ -275,45 +307,84 @@ class Peepo(commands.Cog):
     peepo.add_command(PeepoMarketGroup())
 
     # ── /peepo shop ──────────────────────────────────────────────────────────
-    @peepo.command(name="shop", description="Browse the peepo shop — buy with RPG Coins.")
+    @peepo.command(name="shop", description="Browse the peepo shop — buy with RPG Coins, grouped by rarity.")
     async def shop(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        status, data = await _api("GET", "/api/bot/peepos")
+        status, data = await _api("GET", "/api/bot/peepos/shop")
         if status != 200 or not data:
             await interaction.followup.send("❌ Could not load shop.", ephemeral=True)
             return
-        pages = _shop_pages(data)
+        # Only show coin-purchasable peepos in the main shop view
+        buyable = [p for p in data if p.get("buyWithCoins", False)]
+        if not buyable:
+            await interaction.followup.send(
+                "No peepos are available for coins right now. Try `/peepo crate`!",
+                ephemeral=True
+            )
+            return
+        pages = _shop_pages(buyable)
         view  = PeepoPageView(pages)
         await interaction.followup.send(embed=pages[0], view=view)
 
     # ── /peepo buy <name> ────────────────────────────────────────────────────
-    @peepo.command(name="buy", description="Buy a peepo from the fixed-price shop.")
+    @peepo.command(name="buy", description="Buy a peepo from the fixed-price shop with coins.")
     @app_commands.describe(name="Peepo name (start typing for suggestions)")
     async def buy(self, interaction: discord.Interaction, name: str):
         await interaction.response.defer(ephemeral=True)
         if not await _ensure_linked(interaction.user):
             await interaction.followup.send("❌ Could not connect to Torvex.", ephemeral=True)
             return
-        status, data = await _api("POST", "/api/bot/peepos/buy", json={
-            "discordUserId": str(interaction.user.id),
-            "peepoName": name
-        })
-        if status == 200:
+
+        # Resolve name → itemDefinitionId from shop catalog
+        status, catalog = await _api("GET", "/api/bot/peepos/shop")
+        if status != 200 or not isinstance(catalog, list):
+            await interaction.followup.send("❌ Could not load shop catalog.", ephemeral=True)
+            return
+        match = next((p for p in catalog if p["name"].lower() == name.lower()), None)
+        if match is None:
+            await interaction.followup.send(f"❌ **{name}** not found in the shop.", ephemeral=True)
+            return
+        if not match.get("buyWithCoins", False):
+            orb_price = match.get("orbPrice", 0)
             await interaction.followup.send(
-                f"✅ Bought **{name}**!\nNew coin balance: 🪙 **{data.get('newCoinBalance', 0):,}**",
+                f"❌ **{name}** is Legendary and can only be purchased with orbs "
+                f"(🔮 {orb_price:,}). Try `/peepo crate premium`!",
                 ephemeral=True
             )
+            return
+
+        status, data = await _api("POST", "/api/bot/peepos/buy-coins", json={
+            "discordId": str(interaction.user.id),
+            "itemDefinitionId": str(match["id"])
+        })
+        if status == 200:
+            peepo_data  = data.get("peepo", {})
+            rarity      = peepo_data.get("rarity", "Common")
+            stars       = RARITY_STARS.get(rarity, "")
+            color       = RARITY_COLORS.get(rarity, 0xFFAA00)
+            coin_price  = match.get("coinPrice", 0)
+            new_balance = data.get("newCoinBalance", 0)
+            embed = discord.Embed(
+                title="✅ Peepo Purchased!",
+                description=f"You bought **{peepo_data.get('name', name)}** {stars}",
+                color=color
+            )
+            embed.add_field(name="Rarity",    value=f"{stars} {rarity}",         inline=True)
+            embed.add_field(name="Paid",       value=f"🪙 {coin_price:,} coins",  inline=True)
+            embed.add_field(name="Balance",    value=f"🪙 {new_balance:,} coins", inline=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         else:
             await interaction.followup.send(f"❌ {data.get('error', 'Purchase failed.')}", ephemeral=True)
 
     @buy.autocomplete("name")
     async def buy_autocomplete(self, interaction: discord.Interaction, current: str):
-        status, data = await _api("GET", "/api/bot/peepos")
+        status, data = await _api("GET", "/api/bot/peepos/shop")
         if status != 200 or not isinstance(data, list):
             return []
-        matches = [p for p in data if current.lower() in p["name"].lower()][:25]
+        buyable = [p for p in data if p.get("buyWithCoins", False)]
+        matches = [p for p in buyable if current.lower() in p["name"].lower()][:25]
         return [app_commands.Choice(
-            name=f"{p['name']} [{p['rarity']}] — {p['buyPrice']:,} coins",
+            name=f"{p['name']} [{p['rarity']}] — {p['coinPrice']:,} coins",
             value=p["name"]
         ) for p in matches]
 
@@ -424,33 +495,58 @@ class Peepo(commands.Cog):
                 for p in matches]
 
     # ── /peepo crate ─────────────────────────────────────────────────────────
-    @peepo.command(name="crate", description="Open a Peepo Crate for 5,000 coins — chance at legendary!")
-    async def crate(self, interaction: discord.Interaction):
+    @peepo.command(name="crate", description="Open a Basic (200 coins) or Premium (100 orbs) Peepo Crate!")
+    @app_commands.describe(crate_type="basic (200 coins) or premium (100 orbs)")
+    @app_commands.choices(crate_type=[
+        app_commands.Choice(name="Basic — 200 coins  (Common 70% / Uncommon 25% / Rare 5%)", value="basic"),
+        app_commands.Choice(name="Premium — 100 orbs  (Uncommon 40% / Rare 40% / Epic 15% / Legendary 5%)", value="premium"),
+    ])
+    async def crate(self, interaction: discord.Interaction, crate_type: str = "basic"):
         await interaction.response.defer()
         if not await _ensure_linked(interaction.user):
             await interaction.followup.send("❌ Could not connect to Torvex.", ephemeral=True)
             return
-        status, data = await _api("POST", "/api/bot/peepos/crate/open",
-                                  json={"discordUserId": str(interaction.user.id)})
+
+        status, data = await _api("POST", "/api/bot/peepos/crate", json={
+            "discordId":  str(interaction.user.id),
+            "crateType":  crate_type
+        })
         if status != 200:
             await interaction.followup.send(f"❌ {data.get('error', 'Failed to open crate.')}", ephemeral=True)
             return
 
-        rarity  = data["rarity"]
-        name    = data["name"]
-        is_new  = data.get("isNew", False)
-        balance = data.get("newCoinBalance", 0)
-        stars   = RARITY_STARS.get(rarity, "")
-        color   = RARITY_COLORS.get(rarity, 0xFFAA00)
+        peepo_data   = data.get("peepo", {})
+        rarity       = peepo_data.get("rarity", "Common")
+        peepo_name   = peepo_data.get("name", "Unknown Peepo")
+        peepo_icon   = peepo_data.get("icon", "")
+        already_owned = data.get("alreadyOwned", False)
+        refund       = data.get("refundAmount", 0)
+        new_coins    = data.get("newCoinBalance", 0)
+        new_orbs     = data.get("newOrbBalance", 0)
+        stars        = RARITY_STARS.get(rarity, "")
+        color        = RARITY_COLORS.get(rarity, 0xFFAA00)
 
-        embed = discord.Embed(
-            title="📦 Peepo Crate Opened!",
-            description=f"You got: **{name}** {stars}" + ("\n✨ *New addition to your collection!*" if is_new else ""),
-            color=color
-        )
-        embed.add_field(name="Rarity", value=f"{stars} {rarity}", inline=True)
-        embed.add_field(name="Coins Remaining", value=f"🪙 {balance:,}", inline=True)
-        embed.set_footer(text="Crate odds: Common 62% · Uncommon 25% · Rare 9% · Epic 3.5% · Legendary 0.5%")
+        crate_label = "Basic Peepo Crate 📦" if crate_type == "basic" else "Premium Peepo Crate ✨"
+        cost_label  = "200 coins" if crate_type == "basic" else "100 orbs"
+
+        if already_owned:
+            desc = (
+                f"You pulled: **{peepo_name}** {stars}\n"
+                f"*You already own this peepo!*\n"
+                f"💰 Refunded **{refund:,}** coins instead."
+            )
+        else:
+            desc = f"You pulled: **{peepo_name}** {stars}\n✨ *New addition to your collection!*"
+
+        embed = discord.Embed(title=f"🎴 {crate_label}", description=desc, color=color)
+        embed.add_field(name="Rarity",  value=f"{stars} {rarity}",   inline=True)
+        embed.add_field(name="Cost",    value=cost_label,             inline=True)
+        if crate_type == "basic":
+            embed.add_field(name="Coins",  value=f"🪙 {new_coins:,}", inline=True)
+            embed.set_footer(text="Odds: Common 70% · Uncommon 25% · Rare 5%")
+        else:
+            embed.add_field(name="Orbs",   value=f"🔮 {new_orbs:,}",  inline=True)
+            embed.set_footer(text="Odds: Uncommon 40% · Rare 40% · Epic 15% · Legendary 5%")
         await interaction.followup.send(embed=embed)
 
     # ── /peepo add (admin-only) ───────────────────────────────────────────────
