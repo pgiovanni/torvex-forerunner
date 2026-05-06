@@ -79,6 +79,15 @@ def _game_embed(response: dict) -> discord.Embed | None:
             f"🗡️ Kills: **{p.get('kills')}**  💀 Deaths: **{p.get('deaths')}**\n"
             f"🪙 Coins: **{p.get('coinBalance', 0):,}**"
         )
+        skills = p.get("skills") or []
+        skill_icons = {"Combat": "⚔️", "Mining": "⛏️", "Smithing": "🔨", "Woodcutting": "🪓",
+                       "Alchemy": "⚗️", "Fishing": "🎣", "Cooking": "🍳", "Enchanting": "✨"}
+        if skills:
+            skill_lines = "  ".join(
+                f"{skill_icons.get(s['skill'], '📊')} {s['skill']} **{s['level']}**"
+                for s in skills
+            )
+            desc += f"\n\n{skill_lines}"
         return _embed("🧙 Character Stats", desc)
 
     if rtype == "combat_start":
@@ -190,13 +199,75 @@ def _game_embed(response: dict) -> discord.Embed | None:
         ]
         return _embed("🏆 Leaderboard", "\n".join(lines) if lines else "No players yet.")
 
-    if rtype in ("gather", "craft", "equip", "unequip", "trade", "market"):
+    if rtype == "gather":
+        action_icons = {"mine": "⛏️", "fish": "🎣", "chop": "🪓"}
+        icon      = action_icons.get(p.get("action", ""), "⚒️")
+        item      = p.get("item", "something")
+        qty       = p.get("quantity", 1)
+        xp        = p.get("xpGained", 0)
+        slvl      = p.get("skillLevel", 1)
+        sxp       = p.get("skillXp", 0)
+        snext     = p.get("skillXpToNext", 100)
+        bonus_gem = p.get("bonusGem")
+        gem_line  = f"\n💎 Bonus drop: **{bonus_gem}**!" if bonus_gem else ""
+        desc = (
+            f"{icon} You gathered **{item}** x**{qty}**!{gem_line}\n\n"
+            f"✨ +**{xp} skill XP**\n"
+            f"📊 Skill Level **{slvl}** — `{_hp_bar(sxp, snext)}` {sxp}/{snext} XP"
+        )
+        return _embed(f"{icon} Gathering", desc, color=0x66BB6A)
+
+    if rtype == "craft":
+        success = p.get("success", False)
+        recipe  = p.get("recipe", "")
+        xp      = p.get("xpGained", 0)
+        slvl    = p.get("skillLevel", 1)
+        if success:
+            out  = p.get("outputItem", "item")
+            qty  = p.get("outputQty", 1)
+            desc = f"🔨 Crafted **{out}** x**{qty}**!\n✨ +**{xp} XP**  📊 Crafting Lv.**{slvl}**"
+            return _embed("🔨 Crafting — Success!", desc, color=0x66BB6A)
+        else:
+            desc = f"❌ Crafting **{recipe}** failed!\n✨ +**{xp} XP** (partial)  📊 Crafting Lv.**{slvl}**"
+            return _embed("🔨 Crafting — Failed", desc, color=0xFF9800)
+
+    if rtype == "recipes":
+        recipes = p.get("recipes") or []
+        if not recipes:
+            return _embed("🔨 Recipes", "No recipes available yet.")
+        lines = []
+        for r in recipes:
+            ings = ", ".join(f"{i['qty']}x {i['name']}" for i in r.get("ingredients", []))
+            orb  = f" + {r['orbCost']} orbs" if r.get("orbCost") else ""
+            lines.append(
+                f"**{r['name']}** → {r['output']}\n"
+                f"  `{r['skill']}` Lv.{r['skillLevel']} required  |  {ings}{orb}"
+            )
+        return _embed("🔨 Crafting Recipes", "\n\n".join(lines))
+
+    if rtype == "equip":
+        item  = p.get("item", "item")
+        slot  = p.get("slot", "")
+        prev  = p.get("unequipped")
+        desc  = f"✅ Equipped **{item}** in `{slot}`"
+        if prev:
+            desc += f"\n*(replaced **{prev}**)*"
+        return _embed("⚔️ Equipped", desc, color=0x66BB6A)
+
+    if rtype == "unequip":
+        item = p.get("item", "item")
+        slot = p.get("slot", "")
+        return _embed("⚔️ Unequipped", f"Removed **{item}** from `{slot}`.", color=0xFFAA00)
+
+    if rtype in ("trade", "market"):
         msg = p.get("message") or str(p)
         return _embed("✅ Action", msg)
 
-    # Fallback
-    msg = p.get("message") or str(p)
-    return _embed("📜 RPG", msg)
+    # Fallback — show message if present, otherwise raw JSON in a code block
+    msg = p.get("message")
+    if msg:
+        return _embed("📜 RPG", msg)
+    return _embed("📜 RPG", f"```json\n{str(p)[:1800]}\n```")
 
 
 class RPG(commands.Cog):
@@ -389,15 +460,15 @@ class RPG(commands.Cog):
             coins = 1 + (skill_level // 5)
             await _add_coins(str(interaction.user.id), coins, f"gathering:{command.lstrip('/')}")
 
-    @rpg.command(name="mine", description="Mine for ore.")
+    @rpg.command(name="mine", description="Mine for ore. Higher Mining level unlocks better ores. 30s cooldown.")
     async def mine(self, interaction: discord.Interaction):
         await self._gather_command(interaction, "/mine")
 
-    @rpg.command(name="fish", description="Go fishing.")
+    @rpg.command(name="fish", description="Go fishing. Higher Fishing level unlocks better fish. 30s cooldown.")
     async def fish(self, interaction: discord.Interaction):
         await self._gather_command(interaction, "/fish")
 
-    @rpg.command(name="chop", description="Chop wood.")
+    @rpg.command(name="chop", description="Chop wood. Higher Woodcutting level unlocks better logs. 30s cooldown.")
     async def chop(self, interaction: discord.Interaction):
         await self._gather_command(interaction, "/chop")
 
@@ -435,10 +506,10 @@ class RPG(commands.Cog):
         ), inline=False)
 
         embed.add_field(name="⛏️ Gathering", value=(
-            "**`/rpg mine`** — Mine for ore\n"
-            "**`/rpg fish`** — Go fishing\n"
-            "**`/rpg chop`** — Chop wood\n"
-            "All gathering has a **60 second cooldown**."
+            "**`/rpg mine`** — Mine for ore (higher Mining level = better ores)\n"
+            "**`/rpg fish`** — Go fishing (higher Fishing level = better fish)\n"
+            "**`/rpg chop`** — Chop wood (higher Woodcutting level = better logs)\n"
+            "All gathering has a **30 second cooldown**."
         ), inline=False)
 
         embed.add_field(name="🔨 Crafting", value=(
