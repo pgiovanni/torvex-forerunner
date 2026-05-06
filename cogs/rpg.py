@@ -217,6 +217,32 @@ def _game_embed(response: dict) -> discord.Embed | None:
         )
         return _embed(f"{icon} Gathering", desc, color=0x66BB6A)
 
+    if rtype == "cook":
+        raw_fish  = p.get("rawFish", "fish")
+        result    = p.get("result", "food")
+        burnt     = p.get("burnt", False)
+        xp        = p.get("xpGained", 0)
+        coin      = p.get("coinBonus", 0)
+        slvl      = p.get("skillLevel", 1)
+        sxp       = p.get("skillXp", 0)
+        snext     = p.get("skillXpToNext", 100)
+        burn_pct  = p.get("burnChance", 0)
+        if burnt:
+            desc = (
+                f"🖤 You burnt the **{raw_fish}** — received **Burnt Fish**.\n\n"
+                f"✨ +**{xp} XP**  🪙 +**{coin}** coin\n"
+                f"📊 Cooking Lv.**{slvl}** — `{_hp_bar(sxp, snext)}` {sxp}/{snext} XP\n"
+                f"*Burn chance: {burn_pct}% — level up Cooking to reduce it!*"
+            )
+            return _embed("🍳 Cooking — Burnt!", desc, color=0xFF9800)
+        else:
+            desc = (
+                f"🍳 Cooked **{raw_fish}** → **{result}**!\n\n"
+                f"✨ +**{xp} XP**  🪙 +**{coin}** coin(s)\n"
+                f"📊 Cooking Lv.**{slvl}** — `{_hp_bar(sxp, snext)}` {sxp}/{snext} XP"
+            )
+            return _embed("🍳 Cooking — Success!", desc, color=0x66BB6A)
+
     if rtype == "craft":
         success = p.get("success", False)
         recipe  = p.get("recipe", "")
@@ -404,6 +430,11 @@ class RPG(commands.Cog):
         cmd = "/magic" if not spell else f"/magic {spell}"
         await self._game_command(interaction, cmd)
 
+    @rpg.command(name="item", description="Use a consumable item in combat (potions, food, etc.).")
+    @app_commands.describe(item="Item name (e.g. Health Potion, Cooked Shark)")
+    async def item(self, interaction: discord.Interaction, item: str):
+        await self._game_command(interaction, f"/item {item}")
+
     @rpg.command(name="flee", description="Attempt to flee from combat.")
     async def flee(self, interaction: discord.Interaction):
         await self._game_command(interaction, "/flee")
@@ -472,6 +503,39 @@ class RPG(commands.Cog):
     async def chop(self, interaction: discord.Interaction):
         await self._gather_command(interaction, "/chop")
 
+    # ── /rpg cook ─────────────────────────────────────────────────────────────
+
+    _RAW_FISH = [
+        "Raw Shrimp", "Raw Trout", "Raw Salmon", "Raw Tuna",
+        "Raw Lobster", "Raw Swordfish", "Raw Shark", "Raw Abyssal Eel",
+    ]
+
+    @rpg.command(name="cook", description="Cook a raw fish. Higher Cooking level reduces burn chance.")
+    @app_commands.describe(fish="Raw fish to cook — start typing to see options")
+    async def cook(self, interaction: discord.Interaction, fish: str):
+        await self._game_command(interaction, f"/cook {fish}")
+
+    @cook.autocomplete("fish")
+    async def cook_fish_autocomplete(self, interaction: discord.Interaction, current: str):
+        """Suggest raw fish the player has in their inventory (filtered from known fish list)."""
+        status, data = await _api("POST", "/api/bot/game/command", json={
+            "discordUserId": str(interaction.user.id),
+            "command": "/inventory"
+        })
+        inventory_names: set[str] = set()
+        if status == 200:
+            responses = data.get("responses") or []
+            for resp in responses:
+                if resp.get("type") == "inventory":
+                    for item in (resp.get("payload", {}).get("items") or []):
+                        inventory_names.add(item.get("name", ""))
+
+        matches = [
+            f for f in self._RAW_FISH
+            if (not inventory_names or f in inventory_names) and current.lower() in f.lower()
+        ][:25]
+        return [app_commands.Choice(name=f, value=f) for f in matches]
+
     @rpg.command(name="recipes", description="View available crafting recipes.")
     async def recipes(self, interaction: discord.Interaction):
         await self._game_command(interaction, "/recipes")
@@ -510,6 +574,13 @@ class RPG(commands.Cog):
             "**`/rpg fish`** — Go fishing (higher Fishing level = better fish)\n"
             "**`/rpg chop`** — Chop wood (higher Woodcutting level = better logs)\n"
             "All gathering has a **30 second cooldown**."
+        ), inline=False)
+
+        embed.add_field(name="🍳 Cooking", value=(
+            "**`/rpg cook <raw fish>`** — Cook a raw fish into food\n"
+            "Cooked food restores HP **in combat** via `/rpg item <name>`.\n"
+            "Higher Cooking level reduces burn chance (starts at 40%, -0.5%/level).\n"
+            "Fish: Shrimp · Trout · Salmon · Tuna · Lobster · Swordfish · Shark · Abyssal Eel"
         ), inline=False)
 
         embed.add_field(name="🔨 Crafting", value=(
