@@ -148,22 +148,22 @@ class Economy(commands.Cog):
             WHERE discord_id = $6
         """, bucks_to_award, new_xp, new_level, today, user.display_name, str(user.id))
 
-        return new_level if new_level > old_level else None
+        return (new_level, new_level > old_level)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-        new_level = await self.record_message(message.author)
-        if new_level is not None:
+        new_level, leveled_up = await self.record_message(message.author)
+        if leveled_up:
             await message.channel.send(
                 f"⬆️ {message.author.mention} leveled up to **Level {new_level}**!"
             )
-            # Sync the new chat level to the linked RPG character
-            await _api("POST", "/api/bot/game/sync-level", json={
-                "discordId": str(message.author.id),
-                "newLevel": new_level,
-            })
+        # Always sync current chat level so RPG XP multiplier stays up to date
+        await _api("POST", "/api/bot/game/sync-level", json={
+            "discordId": str(message.author.id),
+            "newLevel": new_level,
+        })
 
     # ── /balance ──────────────────────────────────────────────────────────────
     @app_commands.command(name="balance", description="Check your Peepo Bucks and level.")
@@ -173,9 +173,10 @@ class Economy(commands.Cog):
         row = await self.get_or_create(target)
         xp = row["xp"]
         level = row["level"]
-        next_xp = xp_for_level(level + 1)
-        spent_on_level = sum(xp_for_level(i) for i in range(1, level))
-        progress = xp - spent_on_level
+        current_threshold = xp_for_level(level)
+        next_threshold = xp_for_level(level + 1)
+        progress = xp - current_threshold
+        next_xp = next_threshold - current_threshold
 
         today = date.today()
         daily_used = row["daily_bucks_count"] if row["daily_bucks_date"] == today else 0
@@ -274,6 +275,31 @@ class Economy(commands.Cog):
         ]
         embed = discord.Embed(title="⭐ Level Leaderboard", description="\n".join(lines) or "No data yet.", color=0x7289DA)
         await interaction.response.send_message(embed=embed)
+
+
+    # ── /backfill-chat-levels ─────────────────────────────────────────────────
+    @app_commands.command(name="backfill-chat-levels", description="[Admin] Sync all chat levels to RPG XP multipliers.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def backfill_chat_levels(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        rows = await self.pool.fetch("SELECT discord_id, level FROM discord_users WHERE level > 0")
+        if not rows:
+            await interaction.followup.send("No users found.", ephemeral=True)
+            return
+        payload = [{"discordId": r["discord_id"], "newLevel": r["level"]} for r in rows]
+        status, data = await _api("POST", "/api/bot/game/sync-level-bulk", json=payload)
+        if status == 200:
+            await interaction.followup.send(
+                f"✅ Backfilled **{data.get('synced', 0)}** / {len(rows)} users.",
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send("❌ Backfill failed.", ephemeral=True)
+
+    @backfill_chat_levels.error
+    async def backfill_error(self, interaction: discord.Interaction, error):
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
 
 
 async def setup(bot):
