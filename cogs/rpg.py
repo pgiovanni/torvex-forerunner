@@ -1003,10 +1003,29 @@ class RPG(commands.Cog):
     async def recipes(self, interaction: discord.Interaction):
         await self._game_command(interaction, "/recipes")
 
+    _recipe_cache: list = []
+
     @rpg.command(name="craft", description="Craft an item.")
-    @app_commands.describe(recipe="Recipe name")
-    async def craft(self, interaction: discord.Interaction, recipe: str):
-        await self._game_command(interaction, f"/craft {recipe}")
+    @app_commands.describe(item="Item to craft")
+    async def craft(self, interaction: discord.Interaction, item: str):
+        await self._game_command(interaction, f"/craft {item}")
+
+    @craft.autocomplete("item")
+    async def craft_autocomplete(self, interaction: discord.Interaction, current: str):
+        if not self.__class__._recipe_cache:
+            status, data = await _api("GET", "/api/bot/recipes")
+            if status == 200 and isinstance(data, list):
+                self.__class__._recipe_cache = data
+        recipes = self.__class__._recipe_cache
+        if current:
+            recipes = [r for r in recipes if current.lower() in r["name"].lower()]
+        return [
+            app_commands.Choice(
+                name=f"{r['name']}  [{r['skill']} Lv.{r['skillLevel']}]",
+                value=r["name"]
+            )
+            for r in recipes[:25]
+        ]
 
     @rpg.command(name="help", description="How to play the Torvex RPG.")
     async def help(self, interaction: discord.Interaction):
