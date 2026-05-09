@@ -4,6 +4,7 @@ from discord.ext import commands
 import aiohttp
 import os
 import math
+import json
 
 TORVEX_API_URL = os.getenv("TORVEX_API_URL", "http://localhost:5000")
 TORVEX_BOT_KEY = os.getenv("TORVEX_BOT_KEY", "")
@@ -15,6 +16,24 @@ RARITY_COLORS = {
     "Rare":      0x5599FF,
     "Epic":      0xAA44FF,
     "Legendary": 0xFFAA00,
+}
+
+STATUS_ICONS = {
+    "Poison":      "☠️",
+    "Burn":        "🔥",
+    "Bleed":       "🩸",
+    "Freeze":      "🧊",
+    "Stone":       "🪨",
+    "Silence":     "🔇",
+    "Confusion":   "💫",
+    "DefenseDown": "🛡️↓",
+    "AttackDown":  "⚔️↓",
+    "Blind":       "👁️",
+    "Slow":        "⏳",
+    "Curse":       "🌑",
+    "MpDrain":     "💧",
+    "PhysResist":  "🪖",
+    "MagicResist": "✨",
 }
 
 ELEMENT_INFO = {
@@ -238,9 +257,24 @@ class Gear(commands.Cog):
             for m in chunk:
                 el = m.get("element", "None")
                 el_icon = ELEMENT_INFO.get(el, ("⚪", ""))[0]
+                abilities_raw = m.get("abilityJson")
+                if abilities_raw:
+                    try:
+                        abilities = json.loads(abilities_raw)
+                        ability_str = "  ".join(
+                            f"{STATUS_ICONS.get(a['type'], '❓')} {a['type']} {int(a['chance']*100)}%"
+                            for a in abilities
+                        )
+                    except Exception:
+                        ability_str = ""
+                else:
+                    ability_str = "*no abilities*"
                 embed.add_field(
                     name=f"{m['icon']} {m['name']}  Lv.{m['level']}",
-                    value=f"Zone: {m['zone']}  {el_icon} {el}  |  ❤️ {m['maxHp']} HP  |  ✨ {m['xp']} XP",
+                    value=(
+                        f"Zone: {m['zone']}  {el_icon} {el}  |  ❤️ {m['maxHp']} HP  |  ✨ {m['xp']} XP\n"
+                        f"{ability_str}"
+                    ),
                     inline=False
                 )
             embed.set_footer(text="Use /rpg fight <name> to fight a specific monster")

@@ -495,74 +495,65 @@ class Peepo(commands.Cog):
                 for p in matches]
 
     # ── /peepo crate ─────────────────────────────────────────────────────────
-    @peepo.command(name="crate", description="Open a Basic (200 coins) or Premium (100 orbs) Peepo Crate!")
-    @app_commands.describe(crate_type="basic (200 coins) or premium (100 orbs)")
-    @app_commands.choices(crate_type=[
-        app_commands.Choice(name="Basic — 200 coins  (Common 70% / Uncommon 25% / Rare 5%)", value="basic"),
-        app_commands.Choice(name="Premium — 100 orbs  (Uncommon 40% / Rare 40% / Epic 15% / Legendary 5%)", value="premium"),
-    ])
-    async def crate(self, interaction: discord.Interaction, crate_type: str = "basic"):
+    @peepo.command(name="crate", description="Open a Peepo Crate for 5,000 coins — chance at any rarity including Legendary!")
+    async def crate(self, interaction: discord.Interaction):
         await interaction.response.defer()
         if not await _ensure_linked(interaction.user):
             await interaction.followup.send("❌ Could not connect to Torvex.", ephemeral=True)
             return
 
         status, data = await _api("POST", "/api/bot/peepos/crate", json={
-            "discordId":  str(interaction.user.id),
-            "crateType":  crate_type
+            "discordId": str(interaction.user.id)
         })
         if status != 200:
             await interaction.followup.send(f"❌ {data.get('error', 'Failed to open crate.')}", ephemeral=True)
             return
 
-        peepo_data   = data.get("peepo", {})
-        rarity       = peepo_data.get("rarity", "Common")
-        peepo_name   = peepo_data.get("name", "Unknown Peepo")
-        peepo_icon   = peepo_data.get("icon", "")
+        peepo_data    = data.get("peepo", {})
+        rarity        = peepo_data.get("rarity", "Common")
+        peepo_name    = peepo_data.get("name", "Unknown Peepo")
         already_owned = data.get("alreadyOwned", False)
-        refund       = data.get("refundAmount", 0)
-        new_coins    = data.get("newCoinBalance", 0)
-        new_orbs     = data.get("newOrbBalance", 0)
-        stars        = RARITY_STARS.get(rarity, "")
-        color        = RARITY_COLORS.get(rarity, 0xFFAA00)
-
-        crate_label = "Basic Peepo Crate 📦" if crate_type == "basic" else "Premium Peepo Crate ✨"
-        cost_label  = "200 coins" if crate_type == "basic" else "100 orbs"
+        refund        = data.get("refundAmount", 0)
+        new_coins     = data.get("newCoinBalance", 0)
+        stars         = RARITY_STARS.get(rarity, "")
+        color         = RARITY_COLORS.get(rarity, 0xFFAA00)
 
         if already_owned:
             desc = (
                 f"You pulled: **{peepo_name}** {stars}\n"
                 f"*You already own this peepo!*\n"
-                f"💰 Refunded **{refund:,}** coins instead."
+                f"💰 Refunded **{refund:,}** coins (sell value)."
             )
         else:
             desc = f"You pulled: **{peepo_name}** {stars}\n✨ *New addition to your collection!*"
 
-        embed = discord.Embed(title=f"🎴 {crate_label}", description=desc, color=color)
-        embed.add_field(name="Rarity",  value=f"{stars} {rarity}",   inline=True)
-        embed.add_field(name="Cost",    value=cost_label,             inline=True)
-        if crate_type == "basic":
-            embed.add_field(name="Coins",  value=f"🪙 {new_coins:,}", inline=True)
-            embed.set_footer(text="Odds: Common 70% · Uncommon 25% · Rare 5%")
-        else:
-            embed.add_field(name="Orbs",   value=f"🔮 {new_orbs:,}",  inline=True)
-            embed.set_footer(text="Odds: Uncommon 40% · Rare 40% · Epic 15% · Legendary 5%")
+        embed = discord.Embed(title="📦 Peepo Crate Opened!", description=desc, color=color)
+        embed.add_field(name="Rarity",  value=f"{stars} {rarity}",  inline=True)
+        embed.add_field(name="Cost",    value="🪙 5,000 coins",      inline=True)
+        embed.add_field(name="Balance", value=f"🪙 {new_coins:,}",   inline=True)
+        embed.set_footer(text="Odds: Common 62% · Uncommon 25% · Rare 9% · Epic 3.5% · Legendary 0.5%")
         await interaction.followup.send(embed=embed)
 
     # ── /peepo add (admin-only) ───────────────────────────────────────────────
     @peepo.command(name="add", description="[Admin] Add a peepo by name and image URL.")
-    @app_commands.describe(name="Peepo name (no spaces)", url="Direct image URL")
+    @app_commands.describe(name="Peepo name (no spaces)", url="Direct image URL", rarity="Rarity tier (default: Common)")
+    @app_commands.choices(rarity=[
+        app_commands.Choice(name="Common",    value="Common"),
+        app_commands.Choice(name="Uncommon",  value="Uncommon"),
+        app_commands.Choice(name="Rare",      value="Rare"),
+        app_commands.Choice(name="Epic",      value="Epic"),
+        app_commands.Choice(name="Legendary", value="Legendary"),
+    ])
     @app_commands.checks.has_permissions(administrator=True)
-    async def add_peepo(self, interaction: discord.Interaction, name: str, url: str):
+    async def add_peepo(self, interaction: discord.Interaction, name: str, url: str, rarity: str = "Common"):
         await interaction.response.defer(ephemeral=True)
-        status, data = await _api("POST", "/api/bot/peepos/add", json={"name": name, "url": url})
+        status, data = await _api("POST", "/api/bot/peepos/add", json={"name": name, "url": url, "rarity": rarity})
         if status == 200:
-            created = data.get("created", False)
-            rarity  = data.get("rarity", "")
-            msg = f"✅ **{name}** {'added' if created else 'updated'}"
-            if created:
-                msg += f" ({rarity})"
-            await interaction.followup.send(msg, ephemeral=True)
+            created      = data.get("created", False)
+            final_rarity = data.get("rarity", rarity)
+            stars        = RARITY_STARS.get(final_rarity, "")
+            action       = "added" if created else "updated"
+            await interaction.followup.send(f"✅ **{name}** {action} — {stars} {final_rarity}", ephemeral=True)
         else:
             await interaction.followup.send(f"❌ {data.get('error', 'Failed.')}", ephemeral=True)
 

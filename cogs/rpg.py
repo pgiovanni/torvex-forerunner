@@ -8,6 +8,56 @@ from cogs.pvp import ChallengeView
 
 log = logging.getLogger("rpg")
 
+# ── Spell list — (name, min_level, mp_cost, emoji) ───────────────────────────
+# Tier 1=7mp lv1 | Tier 2=25mp lv10 | Tier 3=55mp lv25 | Tier 4=90mp lv50
+# Utility (out-of-combat only): heal/barrier/revitalize/regen/ward/cleanse/resurrection
+SPELLS = [
+    # ── Fire ────────────────────────────────
+    ("fire",       1,   7,  "🔥"), ("fira",       10, 25, "🔥"),
+    ("firaga",     25, 55,  "🔥"), ("firaja",     50, 90, "🔥"),
+    # ── Ice ─────────────────────────────────
+    ("blizzard",   1,   7,  "🧊"), ("blizzara",   10, 25, "🧊"),
+    ("blizzaga",   25, 55,  "🧊"), ("blizzaja",   50, 90, "🧊"),
+    # ── Lightning ───────────────────────────
+    ("thunder",    1,   7,  "⚡"), ("thundera",   10, 25, "⚡"),
+    ("thunderga",  25, 55,  "⚡"), ("thunderja",  50, 90, "⚡"),
+    # ── Earth ───────────────────────────────
+    ("quake",      1,   7,  "🌍"), ("quakera",    10, 25, "🌍"),
+    ("quakega",    25, 55,  "🌍"), ("quakeja",    50, 90, "🌍"),
+    # ── Water ───────────────────────────────
+    ("water",      1,   7,  "💧"), ("watera",     10, 25, "💧"),
+    ("waterga",    25, 55,  "💧"), ("waterja",    50, 90, "💧"),
+    # ── Wind ────────────────────────────────
+    ("aero",       1,   7,  "🌪️"), ("aerora",     10, 25, "🌪️"),
+    ("aeroga",     25, 55,  "🌪️"), ("aeroja",     50, 90, "🌪️"),
+    # ── Dark ────────────────────────────────
+    ("dark",       1,   7,  "🌑"), ("darkra",     10, 25, "🌑"),
+    ("darkga",     25, 55,  "🌑"), ("darkja",     50, 90, "🌑"),
+    # ── Holy ────────────────────────────────
+    ("holy",       1,   7,  "✨"), ("holra",      10, 25, "✨"),
+    ("holga",      25, 55,  "✨"), ("holja",      50, 90, "✨"),
+    # ── Light ───────────────────────────────
+    ("flash",      1,   7,  "🌟"), ("flashra",    10, 25, "🌟"),
+    ("flashga",    25, 55,  "🌟"), ("flashja",    50, 90, "🌟"),
+    # ── Shadow ──────────────────────────────
+    ("shadow",     1,   7,  "👤"), ("shadowra",   10, 25, "👤"),
+    ("shadowga",   25, 55,  "👤"), ("shadowja",   50, 90, "👤"),
+    # ── Poison ──────────────────────────────
+    ("bio",        1,   7,  "☠️"), ("biora",      10, 25, "☠️"),
+    ("bioga",      25, 55,  "☠️"), ("bioja",      50, 90, "☠️"),
+    # ── Void ────────────────────────────────
+    ("void",       1,   7,  "🌀"), ("voidra",     10, 25, "🌀"),
+    ("voidga",     25, 55,  "🌀"), ("voidja",     50, 90, "🌀"),
+    # ── Healing (in-combat heals player) ────
+    ("cure",       1,   8,  "💚"), ("cura",       12, 22, "💚"),
+    ("curaga",     28, 50,  "💚"), ("curaja",     55, 85, "💚"),
+    # ── Utility (out-of-combat only) ────────
+    ("heal",       1,  15,  "💚"), ("barrier",     5, 20, "🛡️"),
+    ("revitalize", 15, 30,  "💚"), ("regen",      20, 35, "💚"),
+    ("ward",       25, 25,  "🛡️"), ("cleanse",    30, 20, "✨"),
+    ("resurrection", 50, 100, "💚"),
+]
+
 TORVEX_API_URL = os.getenv("TORVEX_API_URL", "http://localhost:5000")
 TORVEX_BOT_KEY = os.getenv("TORVEX_BOT_KEY", "")
 
@@ -69,16 +119,52 @@ def _game_embed(response: dict) -> discord.Embed | None:
         return _embed("📖 RPG Commands", "\n".join(lines) if lines else str(p))
 
     if rtype == "stats":
+        char_hp  = p.get("hp", 0)
+        max_hp   = p.get("maxHp", 1)
+        char_mp  = p.get("mp", 0)
+        max_mp   = p.get("maxMp", 1)
+        def _stat(key):
+            base  = p.get(key, 0) or 0
+            bonus = p.get("bonus" + key[0].upper() + key[1:], 0) or 0
+            return f"**{base + bonus}**" if bonus == 0 else f"**{base + bonus}** *(+{bonus})*"
         desc = (
-            f"**{p.get('characterName')}** — {p.get('class')} Lv.**{p.get('level')}**\n"
-            f"XP: {p.get('xp'):,}/{p.get('xpToNext'):,}\n\n"
-            f"❤️ HP `{_hp_bar(p.get('currentHp',0), p.get('maxHp',1))}` {p.get('currentHp')}/{p.get('maxHp')}\n"
-            f"💧 MP `{_hp_bar(p.get('currentMp',0), p.get('maxMp',1))}` {p.get('currentMp')}/{p.get('maxMp')}\n\n"
-            f"⚔️ STR **{p.get('str')}**  🛡️ DEF **{p.get('def')}**  🔮 INT **{p.get('int')}**\n"
-            f"💨 DEX **{p.get('dex')}**  💚 VIT **{p.get('vit')}**  🍀 LUK **{p.get('luk')}**\n\n"
-            f"🗡️ Kills: **{p.get('kills')}**  💀 Deaths: **{p.get('deaths')}**\n"
+            f"**{p.get('name')}** — Lv.**{p.get('level')}** {p.get('className','')}\n"
+            f"XP: {p.get('xp', 0):,}/{p.get('xpToNext', 0):,}\n\n"
+            f"❤️ HP `{_hp_bar(char_hp, max_hp)}` {char_hp}/{max_hp}\n"
+            f"💧 MP `{_hp_bar(char_mp, max_mp)}` {char_mp}/{max_mp}\n\n"
+            f"⚔️ STR {_stat('str')}  🛡️ DEF {_stat('def')}  🔮 INT {_stat('int')}\n"
+            f"💨 DEX {_stat('dex')}  💚 VIT {_stat('vit')}  🍀 LUK {_stat('luk')}\n\n"
+            f"🗡️ Kills: **{p.get('kills', 0)}**  💀 Deaths: **{p.get('deaths', 0)}**\n"
             f"🪙 Coins: **{p.get('coinBalance', 0):,}**"
         )
+
+        # ── Gear slots ──────────────────────────────────────────────────────
+        SLOT_ICONS  = {"MainHand": "⚔️", "OffHand": "🛡️", "Head": "⛑️",
+                       "Chest": "🥼", "Legs": "👖", "Feet": "👟",
+                       "Ring": "💍", "Amulet": "📿"}
+        SLOT_ORDER  = ["MainHand", "OffHand", "Head", "Chest", "Legs",  "Feet", "Ring", "Amulet"]
+        STAT_LABELS = [("bonusStr","STR"),("bonusDef","DEF"),("bonusInt","INT"),
+                       ("bonusDex","DEX"),("bonusVit","VIT"),("bonusLuk","LUK")]
+        gear_map    = {g["slot"]: g for g in (p.get("gear") or [])}
+        gear_lines  = []
+        for slot in SLOT_ORDER:
+            sicon = SLOT_ICONS.get(slot, "📦")
+            if slot in gear_map:
+                g = gear_map[slot]
+                bonuses = [f"+{g[k]} {lbl}" for k, lbl in STAT_LABELS if g.get(k, 0) > 0]
+                bonus_str = f" *({', '.join(bonuses)})*" if bonuses else ""
+                gear_lines.append(f"{sicon} {g['icon']} **{g['name']}**{bonus_str}")
+            else:
+                gear_lines.append(f"{sicon} *empty*")
+        desc += "\n\n**Gear**\n" + "\n".join(gear_lines)
+
+        # ── Active status effects ────────────────────────────────────────────
+        status_fx = p.get("statusEffects") or []
+        if status_fx:
+            fx_parts = [f"{e['icon']} **{e['type']}**({e['turnsLeft']}t)" for e in status_fx]
+            desc += "\n\n⚠️ **Active Effects:** " + "  ".join(fx_parts)
+
+        # ── Skills ──────────────────────────────────────────────────────────
         skills = p.get("skills") or []
         skill_icons = {"Combat": "⚔️", "Mining": "⛏️", "Smithing": "🔨", "Woodcutting": "🪓",
                        "Alchemy": "⚗️", "Fishing": "🎣", "Cooking": "🍳", "Enchanting": "✨"}
@@ -129,6 +215,9 @@ def _game_embed(response: dict) -> discord.Embed | None:
 
         log_text = "\n".join(f"▸ {line}" for line in log) if log else "…"
 
+        low_hp = p_max > 0 and (p_hp / p_max) < 0.30
+        low_hp_warn = "\n⚠️ **HP is low!** Use `/rpg item` or `/rpg shop Potions` before your next fight." if low_hp else ""
+
         if state == "Victory":
             xp        = result.get("xpGained", 0)
             coins     = result.get("coinsGained", 0)
@@ -142,18 +231,23 @@ def _game_embed(response: dict) -> discord.Embed | None:
             desc = (
                 f"{log_text}\n\n"
                 f"✅ **Victory!**\n"
+                f"❤️ {p_hp}/{p_max} HP  💧 {p_mp}/{p_mp_max} MP\n"
                 f"✨ +**{xp:,} XP**  🪙 +**{coins:,} Coins**"
-                f"{loot_str}{lvl_str}"
+                f"{loot_str}{lvl_str}{low_hp_warn}"
             )
             return _embed("⚔️ Combat — Victory!", desc, color=0x00FF88)
 
         if state == "Defeat":
-            lost = result.get("coinsLost", 0)
+            lost    = result.get("coinsLost", 0)
+            xp_lost = result.get("xpLost", 0)
+            penalty = []
+            if lost:    penalty.append(f"**{lost:,} Coins**")
+            if xp_lost: penalty.append(f"**{xp_lost:,} XP**")
+            penalty_str = "  Lost " + " and ".join(penalty) + "." if penalty else ""
             desc = (
                 f"{log_text}\n\n"
-                f"💀 **Defeated!**"
-                + (f"  You lost **{lost:,} Coins**." if lost else "")
-                + "\n*Respawned at 25% HP — get back out there!*"
+                f"💀 **Defeated!**{penalty_str}\n"
+                f"*Respawned at 10% HP — buy potions with `/rpg shop Potions` before jumping back in!*"
             )
             return _embed("⚔️ Combat — Defeated", desc, color=0xFF4444)
 
@@ -176,42 +270,87 @@ def _game_embed(response: dict) -> discord.Embed | None:
     if rtype == "inventory":
         items = p.get("items") or []
         if not items:
-            desc = "Your inventory is empty."
-        else:
-            lines = []
-            for item in items:
-                equipped = " *(equipped)*" if item.get("isEquipped") else ""
-                lines.append(
-                    f"{'✅' if item.get('isEquipped') else '•'} "
-                    f"**{item['name']}** x{item.get('quantity', 1)} "
-                    f"`{item.get('rarity')}`{equipped}"
-                )
-            desc = "\n".join(lines)
+            return _embed("🎒 Inventory", "Your inventory is empty.")
+
+        SLOT_ICONS = {"MainHand":"⚔️","OffHand":"🛡️","Head":"⛑️","Chest":"🥼",
+                      "Legs":"👖","Feet":"👟","Ring":"💍","Amulet":"📿"}
+        STAT_KEYS  = [("bonusStr","STR"),("bonusDef","DEF"),("bonusInt","INT"),
+                      ("bonusDex","DEX"),("bonusVit","VIT"),("bonusLuk","LUK")]
+
+        equipped_items = [i for i in items if i.get("equipped")]
+        other_items    = [i for i in items if not i.get("equipped")]
+
+        def _item_line(item, show_slot=False):
+            icon  = item.get("icon", "📦")
+            name  = item["name"]
+            qty   = item.get("quantity", 1)
+            rar   = item.get("rarity", "")
+            sell  = item.get("sellValue", 0)
+            # stat bonuses
+            stats = [f"+{item[k]} {lbl}" for k, lbl in STAT_KEYS if item.get(k, 0) > 0]
+            # damage for weapons
+            if item.get("minDmg", 0) > 0:
+                stats.insert(0, f"{item['minDmg']}-{item['maxDmg']} dmg")
+            # heal amount for food/potions
+            if item.get("healAmount", 0) > 0:
+                is_potion = item.get("subType") in ("HealthPotion","ManaPotion")
+                stats.insert(0, f"+{item['healAmount']}{'% HP' if is_potion else ' HP'}")
+            enchants = item.get("enchants") or []
+            ench_str = "  ".join(f"{e['icon']}{e['name']}" for e in enchants) if enchants else ""
+            stat_str = f" *({', '.join(stats)})*" if stats else ""
+            ench_part = f"  {ench_str}" if ench_str else ""
+            qty_str   = f" x{qty}" if qty > 1 else ""
+            sell_str  = f"  🪙{sell:,}" if sell > 0 else ""
+            slot_icon = SLOT_ICONS.get(item.get("slot",""), "") if show_slot else ""
+            slot_str  = f"{slot_icon} " if slot_icon else ""
+            return f"{slot_str}{icon} **{name}**{qty_str} `{rar}`{stat_str}{ench_part}{sell_str}"
+
+        lines = []
+        if equipped_items:
+            lines.append("**— Equipped —**")
+            lines += [_item_line(i, show_slot=True) for i in equipped_items]
+        if other_items:
+            if equipped_items:
+                lines.append("")
+            lines.append("**— Inventory —**")
+            lines += [_item_line(i) for i in other_items]
+
+        desc = "\n".join(lines)
         return _embed("🎒 Inventory", desc)
 
     if rtype == "leaderboard":
-        entries = p.get("entries") or []
         medals = ["🥇", "🥈", "🥉"]
-        lines = [
-            f"{medals[i] if i < 3 else f'{i+1}.'} **{e['characterName']}** — "
-            f"Lv.{e['level']} | {e['totalMonstersKilled']} kills"
-            for i, e in enumerate(entries)
+        by_level = p.get("byLevel") or []
+        by_kills = p.get("byKills") or []
+        level_lines = [
+            f"{medals[i] if i < 3 else f'{i+1}.'} **{e['name']}** — Lv.{e['level']} ({e['xp']:,} XP)"
+            for i, e in enumerate(by_level)
         ]
-        return _embed("🏆 Leaderboard", "\n".join(lines) if lines else "No players yet.")
+        kill_lines = [
+            f"{medals[i] if i < 3 else f'{i+1}.'} **{e['name']}** — {e['kills']:,} kills"
+            for i, e in enumerate(by_kills)
+        ]
+        embed = discord.Embed(title="🏆 Leaderboard", color=0xF4C430)
+        embed.add_field(name="⭐ Top Level", value="\n".join(level_lines) or "No data yet.", inline=False)
+        embed.add_field(name="⚔️ Top Kills", value="\n".join(kill_lines) or "No data yet.", inline=False)
+        return embed
 
     if rtype == "gather":
         action_icons = {"mine": "⛏️", "fish": "🎣", "chop": "🪓"}
-        icon      = action_icons.get(p.get("action", ""), "⚒️")
-        item      = p.get("item", "something")
-        qty       = p.get("quantity", 1)
-        xp        = p.get("xpGained", 0)
-        slvl      = p.get("skillLevel", 1)
-        sxp       = p.get("skillXp", 0)
-        snext     = p.get("skillXpToNext", 100)
-        bonus_gem = p.get("bonusGem")
-        gem_line  = f"\n💎 Bonus drop: **{bonus_gem}**!" if bonus_gem else ""
+        icon       = action_icons.get(p.get("action", ""), "⚒️")
+        item       = p.get("item", "something")
+        qty        = p.get("quantity", 1)
+        xp         = p.get("xpGained", 0)
+        slvl       = p.get("skillLevel", 1)
+        sxp        = p.get("skillXp", 0)
+        snext      = p.get("skillXpToNext", 100)
+        bonus_gem  = p.get("bonusGem")
+        tool_name  = p.get("toolName")
+        tool_bonus = p.get("toolBonus", 0)
+        gem_line   = f"\n💎 Bonus drop: **{bonus_gem}**!" if bonus_gem else ""
+        tool_line  = f"\n🔧 **{tool_name}** (+{tool_bonus} qty)" if tool_name and tool_bonus else ""
         desc = (
-            f"{icon} You gathered **{item}** x**{qty}**!{gem_line}\n\n"
+            f"{icon} You gathered **{item}** x**{qty}**!{gem_line}{tool_line}\n\n"
             f"✨ +**{xp} skill XP**\n"
             f"📊 Skill Level **{slvl}** — `{_hp_bar(sxp, snext)}` {sxp}/{snext} XP"
         )
@@ -271,6 +410,46 @@ def _game_embed(response: dict) -> discord.Embed | None:
             )
         return _embed("🔨 Crafting Recipes", "\n\n".join(lines))
 
+    if rtype == "boss_list":
+        bosses = p.get("bosses", "No bosses found.")
+        embed = discord.Embed(title="💀 Boss Encounters", description=bosses, color=0xFF4444)
+        embed.set_footer(text="Use /rpg boss <name> to challenge a boss")
+        return embed
+
+    if rtype == "shop":
+        coins    = p.get("coins", 0)
+        items    = p.get("items", [])
+        category = p.get("category", "All")
+        if not items:
+            return _embed("🛒 Shop", "Nothing in this category.", color=0xFFAA00)
+        lines = []
+        for i in items:
+            parts = [f"{i['icon']} **{i['name']}**"]
+            if i.get("levelReq", 0) > 1:
+                parts.append(f"*(Lv{i['levelReq']}+)*")
+            parts.append(f"— 🪙 {i['buyPrice']:,}")
+            if i.get("effect"):
+                parts.append(f"*{i['effect']}*")
+            if i.get("bonuses"):
+                parts.append(f"`{i['bonuses']}`")
+            lines.append(" ".join(parts))
+        # Split into pages of 15 to avoid embed limit
+        page = "\n".join(lines[:20])
+        if len(lines) > 20:
+            page += f"\n*...and {len(lines)-20} more. Use a category filter to narrow down.*"
+        embed = discord.Embed(title=f"🛒 Shop — {category.title()}", description=page, color=0x5865F2)
+        embed.set_footer(text=f"Your coins: 🪙 {coins:,}  •  /rpg buy <item> [qty]")
+        return embed
+
+    if rtype == "buy":
+        name  = p.get("item", "item")
+        icon  = p.get("icon", "🛒")
+        qty   = p.get("qty", 1)
+        total = p.get("total", 0)
+        bal   = p.get("newCoinBalance", 0)
+        qty_str = f"x{qty} " if qty > 1 else ""
+        return _embed("🛒 Purchased", f"{icon} {qty_str}**{name}** — spent 🪙 {total:,}\nBalance: 🪙 {bal:,}", color=0x66BB6A)
+
     if rtype == "equip":
         item  = p.get("item", "item")
         slot  = p.get("slot", "")
@@ -285,9 +464,96 @@ def _game_embed(response: dict) -> discord.Embed | None:
         slot = p.get("slot", "")
         return _embed("⚔️ Unequipped", f"Removed **{item}** from `{slot}`.", color=0xFFAA00)
 
-    if rtype in ("trade", "market"):
+    if rtype == "cast_spell":
+        msg        = p.get("message", "Spell cast.")
+        hp         = p.get("hp", 0)
+        max_hp     = p.get("maxHp", 1)
+        caster_mp  = p.get("casterMp", 0)
+        caster_max = p.get("casterMaxMp", 1)
+        is_self    = p.get("isSelf", True)
+        target     = p.get("targetName", "you")
+        desc = f"{msg}\n\n"
+        if is_self:
+            desc += (
+                f"❤️ HP `{_hp_bar(hp, max_hp)}` {hp}/{max_hp}\n"
+                f"💧 MP `{_hp_bar(caster_mp, caster_max)}` {caster_mp}/{caster_max}"
+            )
+        else:
+            desc += (
+                f"❤️ **{target}** HP `{_hp_bar(hp, max_hp)}` {hp}/{max_hp}\n"
+                f"💧 Your MP `{_hp_bar(caster_mp, caster_max)}` {caster_mp}/{caster_max}"
+            )
+        return _embed("✨ Spell Cast", desc, color=0x9B59B6)
+
+    if rtype == "use_item":
+        msg   = p.get("message", "Item used.")
+        hp    = p.get("hp", 0)
+        max_hp = p.get("maxHp", 1)
+        mp    = p.get("mp", 0)
+        max_mp = p.get("maxMp", 1)
+        desc  = (
+            f"{msg}\n\n"
+            f"❤️ HP `{_hp_bar(hp, max_hp)}` {hp}/{max_hp}\n"
+            f"💧 MP `{_hp_bar(mp, max_mp)}` {mp}/{max_mp}"
+        )
+        return _embed("🍖 Item Used", desc, color=0x66BB6A)
+
+    if rtype == "market_search":
+        items = p.get("items") or []
+        q     = p.get("query", "")
+        title = f"🏪 Market — Search: {q}" if q else "🏪 Market — All Listings"
+        if not items:
+            return _embed(title, "No active listings found.", color=0xFFAA00)
+        lines = [
+            f"{i['icon']} **{i['name']}**  — 🪙 **{i['cheapest']:,}** each  ·  {i['totalQty']} avail  ·  {i['sellers']} seller(s)"
+            for i in items
+        ]
+        desc = "\n".join(lines[:20])
+        if len(items) > 20:
+            desc += f"\n*…and {len(items)-20} more. Use `/market search <name>` to narrow down.*"
+        return _embed(title, desc, color=0x5865F2)
+
+    if rtype == "market_browse":
+        item     = p.get("item", "?")
+        listings = p.get("listings") or []
+        if not listings:
+            return _embed(f"🏪 Market — {item}", "No listings found.", color=0xFFAA00)
+        lines = [
+            f"`#{i+1}` **{l['seller']}**  — 🪙 **{l['pricePerUnit']:,}** × {l['quantity']}  = 🪙 **{l['totalPrice']:,}**"
+            for i, l in enumerate(listings)
+        ]
+        return _embed(f"🏪 Market — {item}", "\n".join(lines[:15]), color=0x5865F2)
+
+    if rtype == "market_listed":
+        return _embed("🏪 Market", f"✅ Listed **{p['item']}** ×{p['quantity']} at 🪙 **{p['price']:,}** each.\n*5% tax applies on sale.*", color=0x00FF88)
+
+    if rtype == "market_bought":
+        return _embed("🏪 Market", f"✅ Bought **{p['item']}** ×{p['quantity']} for 🪙 **{p['cost']:,}** (incl. 🪙 {p['tax']:,} tax).", color=0x00FF88)
+
+    if rtype == "market_listings":
+        listings = p.get("listings") or []
+        if not listings:
+            return _embed("🏪 My Listings", "You have no active listings.", color=0xFFAA00)
+        lines = [
+            f"`{str(l['id'])[:8]}…`  **{l['item']}** ×{l['quantity']}  @ 🪙 **{l['pricePerUnit']:,}** each"
+            for l in listings
+        ]
+        return _embed("🏪 My Listings", "\n".join(lines) + "\n\n*Use `/market cancel <id>` to remove a listing.*", color=0x5865F2)
+
+    if rtype == "market_cancelled":
+        return _embed("🏪 Market", f"✅ Listing cancelled. **{p['item']}** returned to your inventory.", color=0xFFAA00)
+
+    if rtype == "sell":
+        return _embed(
+            "🪙 Sold",
+            f"{p.get('icon','')} **{p['item']}** ×{p['qty']} → 🪙 **+{p['total']:,}** (🪙 {p['priceEach']:,} each)\n"
+            f"Balance: 🪙 **{p['newCoinBalance']:,}**",
+            color=0xFFD700
+        )
+
+    if rtype == "trade":
         msg = p.get("message") or str(p)
-        return _embed("✅ Action", msg)
+        return _embed("✅ Trade", msg)
 
     # Fallback — show message if present, otherwise raw JSON in a code block
     msg = p.get("message")
@@ -344,17 +610,17 @@ class RPG(commands.Cog):
         })
         return status == 200
 
-    async def _game_command(self, interaction: discord.Interaction, command: str):
+    async def _game_command(self, interaction: discord.Interaction, command: str, target_discord_id: str | None = None):
         await interaction.response.defer()
 
         if not await self._ensure_linked(interaction.user):
             await interaction.followup.send("❌ Could not connect to Torvex. Try again later.", ephemeral=True)
             return
 
-        status, data = await _api("POST", "/api/bot/game/command", json={
-            "discordUserId": str(interaction.user.id),
-            "command": command
-        })
+        body = {"discordUserId": str(interaction.user.id), "command": command}
+        if target_discord_id:
+            body["targetDiscordUserId"] = target_discord_id
+        status, data = await _api("POST", "/api/bot/game/command", json=body)
         if status == 404:
             await interaction.followup.send("❌ Could not connect to Torvex. Try again later.", ephemeral=True)
             return
@@ -369,9 +635,27 @@ class RPG(commands.Cog):
             if embed:
                 await interaction.followup.send(embed=embed)
 
-    @rpg.command(name="stats", description="View your character stats.")
-    async def stats(self, interaction: discord.Interaction):
-        await self._game_command(interaction, "/stats")
+    @rpg.command(name="stats", description="View your (or another player's) character stats.")
+    @app_commands.describe(user="Another member to view (optional)")
+    async def stats(self, interaction: discord.Interaction, user: discord.Member = None):
+        if user is None or user.id == interaction.user.id:
+            await self._game_command(interaction, "/stats")
+            return
+
+        await interaction.response.defer()
+        status, data = await _api("GET", f"/api/bot/game/stats/{user.id}")
+        if status == 404:
+            msg = data.get("error", f"{user.display_name} hasn't started their adventure yet.")
+            await interaction.followup.send(f"❌ {msg}", ephemeral=True)
+            return
+        if status != 200:
+            await interaction.followup.send("❌ Something went wrong. Try again later.", ephemeral=True)
+            return
+
+        embed = _game_embed(data)
+        if embed:
+            embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+            await interaction.followup.send(embed=embed)
 
     @rpg.command(name="fight", description="Start a fight with a monster, or challenge a player to PvP.")
     @app_commands.describe(
@@ -404,16 +688,59 @@ class RPG(commands.Cog):
 
     @fight.autocomplete("monster")
     async def fight_monster_autocomplete(self, interaction: discord.Interaction, current: str):
+        import asyncio
+        (monster_status, monster_data), (stat_status, stat_data) = await asyncio.gather(
+            _api("GET", "/api/bot/monsters"),
+            _api("GET", f"/api/bot/game/stats/{interaction.user.id}"),
+        )
+        if monster_status != 200 or not isinstance(monster_data, list):
+            return []
+
+        player_level = 1
+        if stat_status == 200:
+            player_level = (stat_data.get("payload") or {}).get("level", 1)
+
+        def _diff(lvl):
+            d = lvl - player_level
+            if lvl > player_level * 200:  return "💀 BOSS"
+            if d >=  9: return "🔴 Very Hard"
+            if d >=  4: return "🟡 Hard"
+            if d >= -3: return "⚔️ Normal"
+            return "🟢 Easy"
+
+        name_filter = current.lower()
+        matches = [m for m in monster_data if name_filter in m["name"].lower()]
+        results = sorted(matches, key=lambda m: abs(m["level"] - player_level))
+
+        return [
+            app_commands.Choice(
+                name=f"{m['icon']} {m['name']}  Lv.{m['level']}  {_diff(m['level'])}  [{m['zone']}]",
+                value=m["name"],
+            )
+            for m in results[:25]
+        ]
+
+    @rpg.command(name="boss", description="Challenge a boss encounter. Massive HP, massive rewards.")
+    @app_commands.describe(name="Boss name (leave blank to see all bosses)")
+    async def boss(self, interaction: discord.Interaction, name: str = ""):
+        cmd = "/boss" if not name else f"/boss {name}"
+        await self._game_command(interaction, cmd)
+
+    @boss.autocomplete("name")
+    async def boss_autocomplete(self, interaction: discord.Interaction, current: str):
         status, data = await _api("GET", "/api/bot/monsters")
         if status != 200 or not isinstance(data, list):
             return []
-        matches = [m for m in data if current.lower() in m["name"].lower()][:25]
+        # Bosses have much higher HP than their level — threshold: hp > level * 200
+        bosses = [m for m in data if m.get("maxHp", 0) > m.get("level", 1) * 200]
+        if current:
+            bosses = [m for m in bosses if current.lower() in m["name"].lower()]
         return [
             app_commands.Choice(
-                name=f"{m['icon']} {m['name']} Lv.{m['level']} · {m['zone']}",
+                name=f"{m['icon']} {m['name']} Lv.{m['level']} — ❤️ {m['maxHp']:,} HP",
                 value=m["name"],
             )
-            for m in matches
+            for m in bosses[:25]
         ]
 
     @rpg.command(name="attack", description="Attack during combat.")
@@ -424,16 +751,133 @@ class RPG(commands.Cog):
     async def defend(self, interaction: discord.Interaction):
         await self._game_command(interaction, "/defend")
 
-    @rpg.command(name="magic", description="Cast a spell during combat.")
-    @app_commands.describe(spell="Spell name")
-    async def magic(self, interaction: discord.Interaction, spell: str = ""):
+    @rpg.command(name="magic", description="Cast a spell. Support spells can target another player.")
+    @app_commands.describe(spell="Spell to cast (type to filter by name)", target="Player to heal/buff (optional, defaults to yourself)")
+    async def magic(self, interaction: discord.Interaction, spell: str = "", target: discord.Member = None):
         cmd = "/magic" if not spell else f"/magic {spell}"
-        await self._game_command(interaction, cmd)
+        target_id = str(target.id) if target and target.id != interaction.user.id else None
+        await self._game_command(interaction, cmd, target_discord_id=target_id)
+
+    @magic.autocomplete("spell")
+    async def magic_autocomplete(self, interaction: discord.Interaction, current: str):
+        status, data = await _api("GET", f"/api/bot/game/stats/{interaction.user.id}")
+        if status != 200:
+            return []
+        p = data.get("payload", {})
+        level = p.get("level", 1)
+        available = [s for s in SPELLS if level >= s[1]]
+        if current:
+            available = [s for s in available if current.lower() in s[0].lower()]
+        return [
+            app_commands.Choice(
+                name=f"{s[3]} {s[0].title()}  —  MP: {s[2]}  (Lv {s[1]}+)" if s[1] > 1 else f"{s[3]} {s[0].title()}  —  MP: {s[2]}",
+                value=s[0]
+            )
+            for s in available[:25]
+        ]
 
     @rpg.command(name="item", description="Use a consumable item in combat (potions, food, etc.).")
-    @app_commands.describe(item="Item name (e.g. Health Potion, Cooked Shark)")
+    @app_commands.describe(item="Item to use (food restores HP, potions restore HP/MP)")
     async def item(self, interaction: discord.Interaction, item: str):
         await self._game_command(interaction, f"/item {item}")
+
+    @item.autocomplete("item")
+    async def item_autocomplete(self, interaction: discord.Interaction, current: str):
+        status, data = await _api("GET", f"/api/bot/game/inventory/{interaction.user.id}")
+        if status != 200:
+            return []
+        consumables = [
+            i for i in (data if isinstance(data, list) else [])
+            if i.get("type") == "Consumable" and i.get("quantity", 0) > 0
+        ]
+        if current:
+            consumables = [i for i in consumables if current.lower() in i["name"].lower()]
+        return [
+            app_commands.Choice(
+                name=f"{i['name']} x{i['quantity']}  [{i['rarity']}]",
+                value=i["name"]
+            )
+            for i in consumables[:25]
+        ]
+
+    _SHOP_SUBCATEGORIES = {
+        "potions": ["Health", "Mana", "Elixirs"],
+        "weapons": ["Swords", "Axes", "Bows", "Staves", "Daggers"],
+        "armor":   ["Helmets", "Chest", "Legs", "Boots", "Shields", "Rings", "Amulets"],
+    }
+
+    @rpg.command(name="shop", description="Browse the item shop.")
+    @app_commands.describe(category="Main category", subcategory="Subcategory (optional)")
+    @app_commands.choices(category=[
+        app_commands.Choice(name="All",     value="all"),
+        app_commands.Choice(name="Potions", value="potions"),
+        app_commands.Choice(name="Food",    value="food"),
+        app_commands.Choice(name="Weapons", value="weapons"),
+        app_commands.Choice(name="Armor",   value="armor"),
+    ])
+    async def shop(self, interaction: discord.Interaction, category: str = "all", subcategory: str = ""):
+        if subcategory:
+            cmd = f"/shop {category} {subcategory}"
+        elif category and category != "all":
+            cmd = f"/shop {category}"
+        else:
+            cmd = "/shop"
+        await self._game_command(interaction, cmd)
+
+    @shop.autocomplete("subcategory")
+    async def shop_subcategory_autocomplete(self, interaction: discord.Interaction, current: str):
+        cat     = (getattr(interaction.namespace, "category", "") or "").lower()
+        options = self._SHOP_SUBCATEGORIES.get(cat, [])
+        if not options:
+            return []
+        matches = [o for o in options if current.lower() in o.lower()] or options
+        return [app_commands.Choice(name=o, value=o.lower()) for o in matches]
+
+    @rpg.command(name="buy", description="Buy an item from the shop.")
+    @app_commands.describe(item="Item name", quantity="How many to buy (default 1)")
+    async def buy(self, interaction: discord.Interaction, item: str, quantity: int = 1):
+        qty_str = f" {quantity}" if quantity > 1 else ""
+        await self._game_command(interaction, f"/buy {item}{qty_str}")
+
+    @buy.autocomplete("item")
+    async def buy_autocomplete(self, interaction: discord.Interaction, current: str):
+        status, data = await _api("POST", "/api/bot/game/command", json={
+            "discordUserId": str(interaction.user.id),
+            "command": "/shop"
+        })
+        if status != 200:
+            return []
+        items = []
+        for resp in (data.get("responses") or []):
+            if resp.get("type") == "shop":
+                items = resp.get("payload", {}).get("items", [])
+                break
+        if current:
+            items = [i for i in items if current.lower() in i["name"].lower()]
+        return [
+            app_commands.Choice(
+                name=f"{i['icon']} {i['name']}  🪙 {i['buyPrice']:,}  {i.get('effect', '')}".strip(),
+                value=i["name"]
+            )
+            for i in items[:25]
+        ]
+
+    @rpg.command(name="sell", description="Sell an item back to the shop for 45% of its value.")
+    @app_commands.describe(item="Item to sell", quantity="How many to sell (default 1)")
+    async def sell(self, interaction: discord.Interaction, item: str, quantity: int = 1):
+        qty_str = f" {quantity}" if quantity > 1 else ""
+        await self._game_command(interaction, f"/sell {item}{qty_str}")
+
+    @sell.autocomplete("item")
+    async def sell_autocomplete(self, interaction: discord.Interaction, current: str):
+        status, data = await _api("GET", f"/api/bot/game/inventory/{interaction.user.id}")
+        if status != 200 or not isinstance(data, list):
+            return []
+        items = [i for i in data if not i.get("isEquipped") and (not current or current.lower() in i["name"].lower())]
+        return [
+            app_commands.Choice(name=f"{i['name']} (×{i['quantity']})", value=i["name"])
+            for i in items[:25]
+        ]
 
     @rpg.command(name="flee", description="Attempt to flee from combat.")
     async def flee(self, interaction: discord.Interaction):
@@ -447,6 +891,25 @@ class RPG(commands.Cog):
     @app_commands.describe(item="Item name")
     async def equip(self, interaction: discord.Interaction, item: str):
         await self._game_command(interaction, f"/equip {item}")
+
+    @equip.autocomplete("item")
+    async def equip_autocomplete(self, interaction: discord.Interaction, current: str):
+        status, data = await _api("GET", f"/api/bot/game/inventory/{interaction.user.id}")
+        if status != 200:
+            return []
+        equipable = [
+            i for i in (data if isinstance(data, list) else [])
+            if i.get("type") in ("Weapon", "Armor") and not i.get("equipped")
+        ]
+        if current:
+            equipable = [i for i in equipable if current.lower() in i["name"].lower()]
+        return [
+            app_commands.Choice(
+                name=f"{i.get('icon', '')} {i['name']}  [{i['rarity']}]",
+                value=i["name"]
+            )
+            for i in equipable[:25]
+        ]
 
     @rpg.command(name="unequip", description="Unequip an item slot.")
     @app_commands.describe(slot="Slot name (e.g. MainHand, Head, Chest)")
@@ -606,5 +1069,117 @@ class RPG(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
 
+class Market(commands.Cog):
+    """Grand Exchange — player-driven marketplace."""
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    async def _game(self, interaction: discord.Interaction, cmd: str):
+        await interaction.response.defer()
+        status, data = await _api("POST", "/api/bot/game/command", json={
+            "discordUserId": str(interaction.user.id),
+            "channelId":     str(interaction.channel_id),
+            "command":       cmd,
+        })
+        if status != 200:
+            await interaction.followup.send("❌ Could not reach the game server.", ephemeral=True)
+            return
+        for resp in (data.get("responses") or []):
+            embed = _game_embed(resp)
+            if embed:
+                await interaction.followup.send(embed=embed)
+                return
+        await interaction.followup.send("❌ No response.", ephemeral=True)
+
+    market = app_commands.Group(name="market", description="Grand Exchange — buy and sell items with other players.")
+
+    # ── /market search ────────────────────────────────────────────────────────
+    @market.command(name="search", description="Browse all items currently listed on the market.")
+    @app_commands.describe(item="Filter by item name (optional)")
+    async def market_search(self, interaction: discord.Interaction, item: str = ""):
+        await self._game(interaction, f"/market search {item}".strip())
+
+    @market_search.autocomplete("item")
+    async def _search_ac(self, interaction: discord.Interaction, current: str):
+        return await _market_item_ac(current)
+
+    # ── /market browse ────────────────────────────────────────────────────────
+    @market.command(name="browse", description="See all listings for a specific item, sorted by price.")
+    @app_commands.describe(item="Item to look up")
+    async def market_browse(self, interaction: discord.Interaction, item: str):
+        await self._game(interaction, f"/market browse {item}")
+
+    @market_browse.autocomplete("item")
+    async def _browse_ac(self, interaction: discord.Interaction, current: str):
+        return await _market_item_ac(current)
+
+    # ── /market buy ───────────────────────────────────────────────────────────
+    @market.command(name="buy", description="Buy the cheapest listing for an item.")
+    @app_commands.describe(item="Item to buy")
+    async def market_buy(self, interaction: discord.Interaction, item: str):
+        await self._game(interaction, f"/market buy {item}")
+
+    @market_buy.autocomplete("item")
+    async def _buy_ac(self, interaction: discord.Interaction, current: str):
+        return await _market_item_ac(current)
+
+    # ── /market list ──────────────────────────────────────────────────────────
+    @market.command(name="list", description="List one of your items for sale.")
+    @app_commands.describe(item="Item to sell", price="Price per unit (coins)", quantity="How many to list (default 1)")
+    async def market_list(self, interaction: discord.Interaction, item: str, price: int, quantity: int = 1):
+        await self._game(interaction, f"/market list {item} {price} {quantity}")
+
+    @market_list.autocomplete("item")
+    async def _list_ac(self, interaction: discord.Interaction, current: str):
+        status, data = await _api("GET", f"/api/bot/game/inventory/{interaction.user.id}")
+        if status != 200 or not isinstance(data, list):
+            return []
+        items = [i for i in data if not i.get("isEquipped") and current.lower() in i["name"].lower()]
+        return [
+            app_commands.Choice(name=f"{i['name']} (×{i['quantity']})", value=i["name"])
+            for i in items[:25]
+        ]
+
+    # ── /market listings ──────────────────────────────────────────────────────
+    @market.command(name="listings", description="View your active market listings.")
+    async def market_listings(self, interaction: discord.Interaction):
+        await self._game(interaction, "/market listings")
+
+    # ── /market cancel ────────────────────────────────────────────────────────
+    @market.command(name="cancel", description="Cancel one of your active listings and get the item back.")
+    @app_commands.describe(listing_id="Your listing (pick from list)")
+    async def market_cancel(self, interaction: discord.Interaction, listing_id: str):
+        await self._game(interaction, f"/market cancel {listing_id}")
+
+    @market_cancel.autocomplete("listing_id")
+    async def _cancel_ac(self, interaction: discord.Interaction, current: str):
+        status, data = await _api("GET", f"/api/bot/market/search?discordUserId={interaction.user.id}")
+        if status != 200 or not isinstance(data, list):
+            return []
+        return [
+            app_commands.Choice(
+                name=f"{i['name']} — 🪙 {i['cheapest']:,} (×{i['totalQty']})",
+                value=str(i["listingId"])
+            )
+            for i in data[:25] if i.get("listingId")
+        ]
+
+
+async def _market_item_ac(current: str) -> list[app_commands.Choice]:
+    q = f"?q={current}" if current else ""
+    status, data = await _api("GET", f"/api/bot/market/search{q}")
+    if status != 200 or not isinstance(data, list):
+        return []
+    return [
+        app_commands.Choice(
+            name=f"{i['icon']} {i['name']}  — 🪙 {i['cheapest']:,}  ({i['totalQty']} avail)",
+            value=i["name"]
+        )
+        for i in data[:25]
+    ]
+
+
 async def setup(bot):
     await bot.add_cog(RPG(bot))
+    await bot.add_cog(Market(bot))
