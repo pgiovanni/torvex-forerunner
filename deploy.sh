@@ -9,8 +9,7 @@ REMOTE_DIR="/opt/peepos-reclaimer"
 SERVICE="peepos-reclaimer"
 
 echo "📦 Syncing files..."
-rsync -av --exclude='.git' --exclude='.env' --exclude='__pycache__' --exclude='*.pyc' --exclude='venv' \
-  ./ "$VPS:$REMOTE_DIR/"
+scp -r bot.py commands.json requirements.txt cogs utils data "$VPS:$REMOTE_DIR/"
 
 echo "📥 Installing dependencies..."
 ssh "$VPS" "cd $REMOTE_DIR && venv/bin/pip install -r requirements.txt -q"
