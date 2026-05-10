@@ -758,6 +758,8 @@ class RPG(commands.Cog):
         target_id = str(target.id) if target and target.id != interaction.user.id else None
         await self._game_command(interaction, cmd, target_discord_id=target_id)
 
+    _UTILITY_SPELLS = {"heal", "barrier", "revitalize", "regen", "ward", "cleanse", "resurrection"}
+
     @magic.autocomplete("spell")
     async def magic_autocomplete(self, interaction: discord.Interaction, current: str):
         status, data = await _api("GET", f"/api/bot/game/stats/{interaction.user.id}")
@@ -765,7 +767,12 @@ class RPG(commands.Cog):
             return []
         p = data.get("payload", {})
         level = p.get("level", 1)
+        in_combat = p.get("inCombat", False)
         available = [s for s in SPELLS if level >= s[1]]
+        if in_combat:
+            available = [s for s in available if s[0] not in self._UTILITY_SPELLS]
+        else:
+            available = [s for s in available if s[0] in self._UTILITY_SPELLS]
         if current:
             available = [s for s in available if current.lower() in s[0].lower()]
         return [
