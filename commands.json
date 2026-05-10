@@ -89,6 +89,12 @@
       "description": "Configure the bot for this server (Admin only)",
       "cog": "setup",
       "required_permissions": ["administrator"]
+    },
+    {
+      "name": "help",
+      "description": "Show all available commands.",
+      "cog": "help",
+      "cooldown_seconds": 0
     }
   ]
 }
