@@ -77,6 +77,18 @@
       "description": "Trade RPG items and coins with another player",
       "cog": "trading",
       "cooldown_seconds": 0
+    },
+    {
+      "name": "suggest",
+      "description": "Submit a suggestion for the server",
+      "cog": "suggestions",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "setup",
+      "description": "Configure the bot for this server (Admin only)",
+      "cog": "setup",
+      "required_permissions": ["administrator"]
     }
   ]
 }
