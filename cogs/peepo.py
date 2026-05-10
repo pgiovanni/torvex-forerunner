@@ -12,6 +12,8 @@ TORVEX_API_URL = os.getenv("TORVEX_API_URL", "http://localhost:5000")
 TORVEX_BOT_KEY = os.getenv("TORVEX_BOT_KEY", "")
 HEADERS = {"X-Bot-Key": TORVEX_BOT_KEY, "Content-Type": "application/json"}
 
+HOME_GUILD_ID = 1215140346800119868
+
 RARITY_COLORS = {
     "Common":    0xAAAAAA,
     "Uncommon":  0x55FF55,
@@ -546,6 +548,9 @@ class Peepo(commands.Cog):
     ])
     @app_commands.checks.has_permissions(administrator=True)
     async def add_peepo(self, interaction: discord.Interaction, name: str, url: str, rarity: str = "Common"):
+        if interaction.guild_id != HOME_GUILD_ID:
+            await interaction.response.send_message("❌ Peepo uploads are managed by Torvex staff. Use `/suggest` to submit an emoji suggestion!\n💬 Join Peepo's Redemption: https://discord.gg/scpwTFGVkz", ephemeral=True)
+            return
         await interaction.response.defer(ephemeral=True)
         status, data = await _api("POST", "/api/bot/peepos/add", json={"name": name, "url": url, "rarity": rarity})
         if status == 200:
@@ -566,6 +571,9 @@ class Peepo(commands.Cog):
     @peepo.command(name="sync", description="[Admin] Sync server emojis to the peepo catalog.")
     @app_commands.checks.has_permissions(administrator=True)
     async def sync_cmd(self, interaction: discord.Interaction):
+        if interaction.guild_id != HOME_GUILD_ID:
+            await interaction.response.send_message("❌ Emoji sync is restricted to Torvex staff. Use `/suggest` to submit an emoji suggestion!\n💬 Join Peepo's Redemption: https://discord.gg/scpwTFGVkz", ephemeral=True)
+            return
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         emoji_payload = [{"name": e.name, "url": str(e.url)} for e in guild.emojis] if guild else []
