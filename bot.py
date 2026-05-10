@@ -48,10 +48,14 @@ async def on_ready():
         except Exception as e:
             print(f"[WARN] Could not load cog '{cog}': {e}")
 
-    guild = discord.Object(id=1215140346800119868)
-    bot.tree.copy_global_to(guild=guild)
-    await bot.tree.sync(guild=guild)
-    print("Slash commands synced to guild.")
+    # Sync globally so the bot works on any server (takes up to 1 hour to propagate)
+    await bot.tree.sync()
+    print("Slash commands synced globally.")
+    # Also sync to home guild immediately so Torvex gets commands right away
+    home_guild = discord.Object(id=1215140346800119868)
+    bot.tree.copy_global_to(guild=home_guild)
+    await bot.tree.sync(guild=home_guild)
+    print("Slash commands synced to home guild.")
 
     # Auto-sync Discord guild emojis → peepo catalog on startup
     if TORVEX_BOT_KEY:
@@ -76,6 +80,33 @@ async def on_ready():
                         print(f"Peepo sync: created={d.get('created',0)}, updated={d.get('updated',0)}, total={d.get('total',0)}")
         except Exception as e:
             print(f"[WARN] Peepo auto-sync failed: {e}")
+
+    await _post_status("✅ Peepo's Reclaimer is back online and ready!")
+
+async def _post_status(msg: str):
+    """Post a status message to every guild's configured status channel."""
+    for guild in bot.guilds:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{TORVEX_API_URL}/api/bot/guild-config/{guild.id}",
+                    headers={"X-Bot-Key": TORVEX_BOT_KEY}
+                ) as r:
+                    if r.status != 200:
+                        continue
+                    data = await r.json()
+            channel_id = data.get("statusChannelId")
+            if not channel_id:
+                continue
+            channel = guild.get_channel(int(channel_id))
+            if channel:
+                await channel.send(msg)
+        except Exception:
+            pass
+
+@bot.event
+async def on_disconnect():
+    await _post_status("🔴 Bot is going offline for a restart. Back in a moment!")
 
 import sys
 sys.stdout.reconfigure(line_buffering=True)
