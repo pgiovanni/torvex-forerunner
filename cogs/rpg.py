@@ -357,30 +357,31 @@ def _game_embed(response: dict) -> discord.Embed | None:
         return _embed(f"{icon} Gathering", desc, color=0x66BB6A)
 
     if rtype == "cook":
-        raw_fish  = p.get("rawFish", "fish")
-        result    = p.get("result", "food")
-        burnt     = p.get("burnt", False)
-        xp        = p.get("xpGained", 0)
-        coin      = p.get("coinBonus", 0)
-        slvl      = p.get("skillLevel", 1)
-        sxp       = p.get("skillXp", 0)
-        snext     = p.get("skillXpToNext", 100)
-        burn_pct  = p.get("burnChance", 0)
-        if burnt:
-            desc = (
-                f"🖤 You burnt the **{raw_fish}** — received **Burnt Fish**.\n\n"
-                f"✨ +**{xp} XP**  🪙 +**{coin}** coin\n"
-                f"📊 Cooking Lv.**{slvl}** — `{_hp_bar(sxp, snext)}` {sxp}/{snext} XP\n"
-                f"*Burn chance: {burn_pct}% — level up Cooking to reduce it!*"
-            )
-            return _embed("🍳 Cooking — Burnt!", desc, color=0xFF9800)
-        else:
-            desc = (
-                f"🍳 Cooked **{raw_fish}** → **{result}**!\n\n"
-                f"✨ +**{xp} XP**  🪙 +**{coin}** coin(s)\n"
-                f"📊 Cooking Lv.**{slvl}** — `{_hp_bar(sxp, snext)}` {sxp}/{snext} XP"
-            )
-            return _embed("🍳 Cooking — Success!", desc, color=0x66BB6A)
+        raw_fish     = p.get("rawFish", "fish")
+        cooked       = p.get("cooked", "food")
+        cooked_count = p.get("cookedCount", 0)
+        burnt_count  = p.get("burntCount", 0)
+        batch        = p.get("batchSize", 1)
+        xp           = p.get("xpGained", 0)
+        coin         = p.get("coinBonus", 0)
+        slvl         = p.get("skillLevel", 1)
+        sxp          = p.get("skillXp", 0)
+        snext        = p.get("skillXpToNext", 100)
+        burn_pct     = p.get("burnChance", 0)
+
+        lines = [f"🍳 Cooked **{batch}x {raw_fish}**\n"]
+        if cooked_count:
+            lines.append(f"✅ **{cooked_count}x {cooked}**")
+        if burnt_count:
+            lines.append(f"🖤 **{burnt_count}x Burnt Fish**")
+        lines.append(f"\n✨ +**{xp} XP**  🪙 +**{coin}** coins")
+        lines.append(f"📊 Cooking Lv.**{slvl}** — `{_hp_bar(sxp, snext)}` {sxp}/{snext} XP")
+        if burn_pct > 0:
+            lines.append(f"*Burn chance: {burn_pct}% — level up to reduce it!*")
+
+        color = 0xFF9800 if burnt_count == batch else (0x66BB6A if burnt_count == 0 else 0xFFC107)
+        title = "🍳 Cooking — " + ("All Burnt!" if burnt_count == batch else "Done!")
+        return _embed(title, "\n".join(lines), color=color)
 
     if rtype == "craft":
         success = p.get("success", False)

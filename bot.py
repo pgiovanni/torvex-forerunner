@@ -51,11 +51,11 @@ async def on_ready():
     # Sync globally so the bot works on any server (takes up to 1 hour to propagate)
     await bot.tree.sync()
     print("Slash commands synced globally.")
-    # Also sync to home guild immediately so Torvex gets commands right away
+    # Clear any stale guild-specific commands (removes duplicates caused by old copy_global_to)
     home_guild = discord.Object(id=1215140346800119868)
-    bot.tree.copy_global_to(guild=home_guild)
+    bot.tree.clear_commands(guild=home_guild)
     await bot.tree.sync(guild=home_guild)
-    print("Slash commands synced to home guild.")
+    print("Cleared stale guild-specific commands.")
 
     # Auto-sync Discord guild emojis → peepo catalog on startup
     if TORVEX_BOT_KEY:
