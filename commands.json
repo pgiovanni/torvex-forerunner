@@ -1,12 +1,6 @@
 {
   "commands": [
-    {
-      "name": "backup_emojis",
-      "description": "Download all server emojis and save them to the emojis/ folder on the bot host.",
-      "cog": "emojis",
-      "required_permissions": ["manage_emojis"]
-    },
-    {
+{
       "name": "close",
       "description": "Close the current ticket channel.",
       "cog": "tickets",
