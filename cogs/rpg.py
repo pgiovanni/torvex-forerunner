@@ -10,7 +10,7 @@ log = logging.getLogger("rpg")
 
 # ── Spell list — (name, min_level, mp_cost, emoji) ───────────────────────────
 # Tier 1=7mp lv1 | Tier 2=25mp lv10 | Tier 3=55mp lv25 | Tier 4=90mp lv50
-# Utility (out-of-combat only): heal/barrier/revitalize/regen/ward/cleanse/resurrection
+# Utility (out-of-combat only): barrier/revitalize/regen/ward/cleanse/resurrection
 SPELLS = [
     # ── Fire ────────────────────────────────
     ("fire",       1,   7,  "🔥"), ("fira",       10, 25, "🔥"),
@@ -52,7 +52,7 @@ SPELLS = [
     ("cure",       1,   8,  "💚"), ("cura",       12, 22, "💚"),
     ("curaga",     28, 50,  "💚"), ("curaja",     55, 85, "💚"),
     # ── Utility (out-of-combat only) ────────
-    ("heal",       1,  15,  "💚"), ("barrier",     5, 20, "🛡️"),
+    ("barrier",     5, 20, "🛡️"),
     ("revitalize", 15, 30,  "💚"), ("regen",      20, 35, "💚"),
     ("ward",       25, 25,  "🛡️"), ("cleanse",    30, 20, "✨"),
     ("resurrection", 50, 100, "💚"),
@@ -322,12 +322,15 @@ def _game_embed(response: dict) -> discord.Embed | None:
         medals = ["🥇", "🥈", "🥉"]
         by_level = p.get("byLevel") or []
         by_kills = p.get("byKills") or []
+        def label(e):
+            did = e.get("discordId")
+            return f"<@{did}>" if did else f"**{e['name']}**"
         level_lines = [
-            f"{medals[i] if i < 3 else f'{i+1}.'} **{e['name']}** — Lv.{e['level']} ({e['xp']:,} XP)"
+            f"{medals[i] if i < 3 else f'{i+1}.'} {label(e)} — Lv.{e['level']} ({e['xp']:,} XP)"
             for i, e in enumerate(by_level)
         ]
         kill_lines = [
-            f"{medals[i] if i < 3 else f'{i+1}.'} **{e['name']}** — {e['kills']:,} kills"
+            f"{medals[i] if i < 3 else f'{i+1}.'} {label(e)} — {e['kills']:,} kills"
             for i, e in enumerate(by_kills)
         ]
         embed = discord.Embed(title="🏆 Leaderboard", color=0xF4C430)
@@ -759,7 +762,7 @@ class RPG(commands.Cog):
         target_id = str(target.id) if target and target.id != interaction.user.id else None
         await self._game_command(interaction, cmd, target_discord_id=target_id)
 
-    _UTILITY_SPELLS = {"heal", "barrier", "revitalize", "regen", "ward", "cleanse", "resurrection"}
+    _UTILITY_SPELLS = {"barrier", "revitalize", "regen", "ward", "cleanse", "resurrection"}
 
     @magic.autocomplete("spell")
     async def magic_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -924,10 +927,6 @@ class RPG(commands.Cog):
     async def unequip(self, interaction: discord.Interaction, slot: str):
         await self._game_command(interaction, f"/unequip {slot}")
 
-    @rpg.command(name="leaderboard", description="View the top players.")
-    async def leaderboard(self, interaction: discord.Interaction):
-        await self._game_command(interaction, "/leaderboard")
-
     async def _gather_command(self, interaction: discord.Interaction, command: str):
         """Run a gather command and award bonus coins based on skill level."""
         await interaction.response.defer()
@@ -1070,6 +1069,7 @@ class RPG(commands.Cog):
             "**`/rpg cook <raw fish>`** — Cook a raw fish into food\n"
             "Cooked food restores HP **in combat** via `/rpg item <name>`.\n"
             "Higher Cooking level reduces burn chance (starts at 40%, -0.5%/level).\n"
+            "Batch size scales with level: Lv1 = 1 · Lv5 = 2 · Lv10 = 5 · Lv15 = 20\n"
             "Fish: Shrimp · Trout · Salmon · Tuna · Lobster · Swordfish · Shark · Abyssal Eel"
         ), inline=False)
 
@@ -1080,7 +1080,6 @@ class RPG(commands.Cog):
 
         embed.add_field(name="📊 Progress", value=(
             "**`/rpg stats`** — View your level, HP/MP, and all stats\n"
-            "**`/rpg leaderboard`** — Top 10 players by level and kills\n"
             "Classes: **Warrior · Mage · Ranger · Cleric · Rogue**\n"
             "Stats: STR · DEF · INT · DEX · VIT · LUK"
         ), inline=False)
