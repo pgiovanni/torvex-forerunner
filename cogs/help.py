@@ -3,6 +3,9 @@ from discord import app_commands
 from discord.ext import commands
 
 
+INVITE_URL = "https://discord.com/api/oauth2/authorize?client_id=1372003518667558952&permissions=310580210768&scope=bot%20applications.commands"
+
+
 class Help(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -58,6 +61,16 @@ class Help(commands.Cog):
 
         embed.set_footer(text="💬 Questions? Join Peepo's Redemption: discord.gg/scpwTFGVkz")
 
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="invite", description="Add Peepo's Reclaimer to your server.")
+    async def invite(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🐸 Add Peepo's Reclaimer",
+            description=f"[Click here to invite the bot to your server]({INVITE_URL})\n\nBrings the full Torvex RPG, Peepo collectibles, economy, games, and more.",
+            color=0x5865F2
+        )
+        embed.set_footer(text="torvex.app — discord.gg/scpwTFGVkz")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

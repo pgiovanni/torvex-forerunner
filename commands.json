@@ -89,6 +89,36 @@
       "description": "Show all available commands.",
       "cog": "help",
       "cooldown_seconds": 0
+    },
+    {
+      "name": "invite",
+      "description": "Add Peepo's Reclaimer to your server.",
+      "cog": "help",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "notifications",
+      "description": "Toggle level-up notifications on or off.",
+      "cog": "economy",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "server-notifications",
+      "description": "Toggle level-up notifications for this server (Admin only).",
+      "cog": "economy",
+      "required_permissions": ["administrator"]
+    },
+    {
+      "name": "check-perms",
+      "description": "Show channels the bot can't read in this server (Admin only).",
+      "cog": "economy",
+      "required_permissions": ["administrator"]
+    },
+    {
+      "name": "security",
+      "description": "Server security tools — role & channel permission audit (Admin only).",
+      "cog": "security",
+      "required_permissions": ["administrator"]
     }
   ]
 }

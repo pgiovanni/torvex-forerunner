@@ -67,6 +67,7 @@ All-in-one Discord bot for the Torvex community. Moderation, security, events, g
 | `cogs/emojis.py` | `/backup_emojis` | ✅ Built |
 | `cogs/gear.py` | Item/monster dictionary | ✅ Built |
 | `cogs/chess_cog.py` | `/chess` — vs Stockfish or PvP | ✅ Built (deploy status unknown) |
+| `cogs/security.py` | `/security audit` — role + channel-overwrite dangerous-perm scan | ✅ Built (needs deploy) |
 
 ### Features (Planned — Not Yet Started)
 See `docs/` for full specs on each.
