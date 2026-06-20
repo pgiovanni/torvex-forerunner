@@ -61,11 +61,20 @@ async def _get_discord_stats(bot: commands.Bot, discord_id: str) -> dict:
     return _stats_from_discord_level(level)
 
 
-async def _award_pvp(winner_id: str, loser_id: str) -> dict:
+async def _award_pvp(winner_id: str, loser_id: str,
+                     winner_dmg: int, loser_dmg: int,
+                     guild_id: str = "", channel_id: str = "") -> dict:
     async with aiohttp.ClientSession() as session:
         async with session.post(
             f"{TORVEX_API_URL}/api/bot/pvp/reward",
-            json={"winnerDiscordId": winner_id, "loserDiscordId": loser_id},
+            json={
+                "winnerDiscordId":    winner_id,
+                "loserDiscordId":     loser_id,
+                "winnerDamageDealt":  winner_dmg,
+                "loserDamageDealt":   loser_dmg,
+                "guildId":            guild_id,
+                "channelId":          channel_id,
+            },
             headers=HEADERS
         ) as r:
             if r.status == 200:
@@ -104,7 +113,8 @@ def _calc_damage(attacker: dict, defender: dict, action: str) -> tuple[int, int]
 
 class PvPBattleView(discord.ui.View):
     def __init__(self, challenger: discord.Member, opponent: discord.Member,
-                 ch_stats: dict, op_stats: dict):
+                 ch_stats: dict, op_stats: dict,
+                 guild_id: str = "", channel_id: str = ""):
         super().__init__(timeout=120)
         self.challenger = challenger
         self.opponent = opponent
@@ -113,6 +123,10 @@ class PvPBattleView(discord.ui.View):
         self.turn = challenger  # challenger goes first
         self.log = []
         self.over = False
+        self.guild_id = guild_id
+        self.channel_id = channel_id
+        self.ch_damage_dealt = 0
+        self.op_damage_dealt = 0
 
     def current_enemy(self) -> dict:
         return self.op_stats if self.turn == self.challenger else self.ch_stats
@@ -161,9 +175,13 @@ class PvPBattleView(discord.ui.View):
                 item.disabled = True
             winner = defender_member
             loser = attacker_member
+            winner_dmg = self.ch_damage_dealt if winner == self.challenger else self.op_damage_dealt
+            loser_dmg  = self.op_damage_dealt if winner == self.challenger else self.ch_damage_dealt
             embed = self.board_embed(f"🏃 {loser.display_name} fled!")
             await interaction.response.edit_message(embed=embed, view=self)
-            reward = await _award_pvp(str(winner.id), str(loser.id))
+            reward = await _award_pvp(str(winner.id), str(loser.id),
+                                      winner_dmg, loser_dmg,
+                                      self.guild_id, self.channel_id)
             await _award_pvp_coins(str(winner.id))
             xp = reward.get("winnerXpGained", 0)
             await interaction.followup.send(
@@ -181,6 +199,10 @@ class PvPBattleView(discord.ui.View):
         else:
             defender["currentHp"] = new_hp
             self.log.append(f"{emoji} {attacker_member.display_name} hits for **{dmg}** dmg!")
+            if attacker_member == self.challenger:
+                self.ch_damage_dealt += dmg
+            else:
+                self.op_damage_dealt += dmg
 
         # Check win
         if defender["currentHp"] <= 0:
@@ -189,9 +211,13 @@ class PvPBattleView(discord.ui.View):
                 item.disabled = True
             winner = attacker_member
             loser = defender_member
+            winner_dmg = self.ch_damage_dealt if winner == self.challenger else self.op_damage_dealt
+            loser_dmg  = self.op_damage_dealt if winner == self.challenger else self.ch_damage_dealt
             embed = self.board_embed(f"💀 {loser.display_name} was defeated!")
             await interaction.response.edit_message(embed=embed, view=self)
-            reward = await _award_pvp(str(winner.id), str(loser.id))
+            reward = await _award_pvp(str(winner.id), str(loser.id),
+                                      winner_dmg, loser_dmg,
+                                      self.guild_id, self.channel_id)
             await _award_pvp_coins(str(winner.id))
             xp = reward.get("winnerXpGained", 0)
             loser_xp = reward.get("loserXpGained", 0)
@@ -253,7 +279,9 @@ class ChallengeView(discord.ui.View):
         ch_stats["currentHp"] = ch_stats["maxHp"]
         op_stats["currentHp"] = op_stats["maxHp"]
 
-        view = PvPBattleView(self.challenger, self.opponent, ch_stats, op_stats)
+        guild_id   = str(interaction.guild_id or "")
+        channel_id = str(interaction.channel_id or "")
+        view = PvPBattleView(self.challenger, self.opponent, ch_stats, op_stats, guild_id, channel_id)
         embed = view.board_embed("⚔️ PvP Battle — Fight!")
         await interaction.followup.send(embed=embed, view=view)
         self.stop()
@@ -290,7 +318,7 @@ class PvP(commands.Cog):
             title="⚔️ PvP Challenge!",
             description=(
                 f"{interaction.user.mention} challenges {opponent.mention} to a battle!\n\n"
-                f"**No Peepo Bucks at stake** — winner earns XP based on opponent's level.\n"
+                f"**No Peepo Bucks at stake** — XP earned is based on damage dealt.\n"
                 f"{opponent.mention}, do you accept?"
             ),
             color=0xFF6600
