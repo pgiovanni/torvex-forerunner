@@ -281,6 +281,14 @@
       "required_permissions": [
         "administrator"
       ]
+    },
+    {
+      "name": "stats-status",
+      "description": "Activity-tracking status — totals, top channels (admin)",
+      "cog": "stats",
+      "required_permissions": [
+        "administrator"
+      ]
     }
   ]
 }

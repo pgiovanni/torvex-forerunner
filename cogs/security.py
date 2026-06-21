@@ -1,6 +1,12 @@
+import os
+import sys
+
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils.security_config import get_config, set_config
 
 SEV_CRITICAL, SEV_HIGH, SEV_MEDIUM = 0, 1, 2
 SEV_EMOJI = {SEV_CRITICAL: "🟥", SEV_HIGH: "🟧", SEV_MEDIUM: "🟨"}
@@ -238,6 +244,116 @@ class Security(commands.Cog):
         await interaction.edit_original_response(embed=embeds[0], allowed_mentions=no_pings)
         for embed in embeds[1:]:
             await interaction.followup.send(embed=embed, ephemeral=True, allowed_mentions=no_pings)
+
+    # ---------------------------------------------------------- protection opt-in
+    # Per-guild enable/config for the multi-guild security suite (anti-nuke +
+    # quarantine-lock). A temporary command surface until the web dashboard ships.
+    @security.command(name="status", description="Show this server's protection settings.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def status(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        cfg = get_config(interaction.guild.id)
+        g = interaction.guild
+
+        def _role(rid):
+            r = g.get_role(int(rid)) if rid else None
+            return r.mention if r else "*not set*"
+
+        def _chan(cid):
+            c = g.get_channel(int(cid)) if cid else None
+            return c.mention if c else "*not set*"
+
+        an = "🔴 enforce" if cfg.get("antinuke_enforce") else "🟡 shadow"
+        embed = discord.Embed(title="🛡️ Protection settings", color=0x5B8CFF)
+        embed.add_field(name="Anti-Nuke",
+                        value=(f"✅ on · {an}" if cfg.get("antinuke_enabled") else "⚪ off"), inline=True)
+        embed.add_field(name="Quarantine-Lock",
+                        value=("✅ on" if cfg.get("qlock_enabled") else "⚪ off"), inline=True)
+        embed.add_field(name="​", value="​", inline=True)
+        embed.add_field(name="Quarantine role", value=_role(cfg.get("quarantine_role_id")), inline=True)
+        embed.add_field(name="Mod-log channel", value=_chan(cfg.get("modlog_channel_id")), inline=True)
+        embed.add_field(name="Whitelist", value=f"{len(cfg.get('whitelist') or [])} id(s)", inline=True)
+        embed.set_footer(text="/security setup to enable · /security enforce to act · AltGuard gate ships with the dashboard")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @security.command(name="setup", description="Enable anti-nuke + quarantine-lock for this server.")
+    @app_commands.describe(modlog="Channel for security alerts",
+                           quarantine_role="Existing lockout role (leave blank to auto-create one)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setup_cmd(self, interaction: discord.Interaction, modlog: discord.TextChannel,
+                        quarantine_role: discord.Role = None):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = interaction.guild
+
+        role = quarantine_role
+        created = False
+        if role is None:
+            try:
+                role = await guild.create_role(
+                    name="Quarantined", permissions=discord.Permissions.none(),
+                    reason="AltGuard: quarantine role for security suite")
+                created = True
+            except discord.Forbidden:
+                await interaction.followup.send(
+                    "❌ I need **Manage Roles** to create a quarantine role — grant it, or pass an "
+                    "existing role with `quarantine_role:`.", ephemeral=True)
+                return
+        # hierarchy sanity: the bot must sit above the quarantine role to manage it
+        if guild.me.top_role <= role and not guild.me.guild_permissions.administrator:
+            await interaction.followup.send(
+                f"⚠️ My top role is below {role.mention} — move my role **above** it or I can't apply it.",
+                ephemeral=True)
+
+        set_config(guild.id, antinuke_enabled=1, qlock_enabled=1,
+                   quarantine_role_id=role.id, modlog_channel_id=str(modlog.id))
+
+        # lock the quarantine role out of every channel right now
+        swept = ""
+        qlock = self.bot.get_cog("QuarantineLock")
+        if qlock is not None:
+            fixed, total = await qlock.sweep(guild)
+            swept = f"\n🔒 Locked the role out of **{fixed}/{total}** channels."
+
+        await interaction.followup.send(
+            f"✅ **Protection enabled** for **{guild.name}**.\n"
+            f"• Quarantine role: {role.mention}{' *(created)*' if created else ''}\n"
+            f"• Mod-log: {modlog.mention}\n"
+            f"• Anti-nuke is in **🟡 shadow mode** (alerts only) — watch {modlog.mention} for a bit, then "
+            f"run `/security enforce on:True` to let it act.{swept}",
+            ephemeral=True)
+
+    @security.command(name="enforce", description="Toggle whether anti-nuke actually acts (vs alert-only).")
+    @app_commands.describe(on="True = act (strip/timeout/ban) · False = shadow (alert only)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def enforce_cmd(self, interaction: discord.Interaction, on: bool):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        cfg = get_config(interaction.guild.id)
+        if not cfg.get("antinuke_enabled"):
+            await interaction.response.send_message(
+                "⚠️ Anti-nuke isn't enabled here yet — run `/security setup` first.", ephemeral=True)
+            return
+        set_config(interaction.guild.id, antinuke_enforce=1 if on else 0)
+        msg = ("🔴 **Enforce ON** — anti-nuke will now strip/timeout/ban on a trip."
+               if on else "🟡 **Shadow ON** — anti-nuke will only alert, not act.")
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @security.command(name="disable", description="Turn off anti-nuke + quarantine-lock for this server.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def disable_cmd(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        set_config(interaction.guild.id, antinuke_enabled=0, qlock_enabled=0, antinuke_enforce=0)
+        await interaction.response.send_message(
+            "⚪ Protection **disabled** for this server. The quarantine role and channel locks are left "
+            "in place (harmless) — delete the role manually if you want them gone.", ephemeral=True)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):

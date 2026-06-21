@@ -48,6 +48,16 @@ async def on_ready():
         except Exception as e:
             print(f"[WARN] Could not load cog '{cog}': {e}")
 
+    # Seed the home guild's per-guild security config from the legacy ALTGUARD_*/
+    # ANTINUKE_* env vars on first run, so it keeps its exact current protection
+    # through the multi-guild refactor (no protection gap). No-op once seeded.
+    try:
+        from utils.security_config import seed_from_env
+        if seed_from_env(1215140346800119868):
+            print("Security config: seeded home guild from env.")
+    except Exception as e:
+        print(f"[WARN] security seed failed: {e}")
+
     # Sync globally so the bot works on any server (takes up to 1 hour to propagate)
     await bot.tree.sync()
     print("Slash commands synced globally.")
