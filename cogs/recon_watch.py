@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import logging
 import os
+import sqlite3
 import time
 from collections import defaultdict, deque
 from datetime import timedelta
@@ -69,12 +70,68 @@ GATE_THRESHOLDS = {
 ALERT_KINDS = {"api_unauth", "bad_token"}
 ALERT_COOLDOWN = _env_int("RECON_ALERT_COOLDOWN", 1800)
 WHITELIST = {x for x in os.environ.get("RECON_WHITELIST", "").replace(",", " ").split() if x.strip()}
+RECON_PING_ROLE = _env_int("RECON_PING_ROLE")  # role @-pinged on an auto-block (0 = no ping)
+
+# durable evidence — every command denial is written here (survives restarts),
+# below the alert threshold too, so slow/low probing leaves a trail.
+_RDB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "recon.db")
 
 _KIND_LABEL = {
     "api_unauth": "unauthorized bot-API hits",
     "bad_token": "invalid-token fuzzing",
     "path_scan": "scanner path probes",
 }
+
+
+def _db():
+    c = sqlite3.connect(_RDB, timeout=10)
+    c.row_factory = sqlite3.Row
+    return c
+
+
+def _init_db():
+    with _db() as c:
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS command_denials (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, guild_id TEXT,
+                   user_id TEXT, username TEXT, command TEXT, channel_id TEXT, error_type TEXT)"""
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_cd_user ON command_denials(user_id, ts)")
+
+
+def _persist_denial(guild_id, user_id, username, command, channel_id, error_type):
+    try:
+        with _db() as c:
+            c.execute(
+                "INSERT INTO command_denials(ts, guild_id, user_id, username, command, channel_id, error_type) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (time.time(), str(guild_id), str(user_id), username, command,
+                 str(channel_id), error_type),
+            )
+    except Exception:
+        log.exception("recon: persist denial failed")
+
+
+def _load_recent_denials(window):
+    try:
+        with _db() as c:
+            return c.execute(
+                "SELECT user_id, command, ts FROM command_denials WHERE ts>? ORDER BY ts ASC",
+                (time.time() - window,),
+            ).fetchall()
+    except Exception:
+        return []
+
+
+def _count_denials(user_id, window):
+    try:
+        with _db() as c:
+            return c.execute(
+                "SELECT COUNT(*) FROM command_denials WHERE user_id=? AND ts>?",
+                (str(user_id), time.time() - window),
+            ).fetchone()[0]
+    except Exception:
+        return 0
 
 
 class ReconWatch(commands.Cog):
@@ -90,6 +147,14 @@ class ReconWatch(commands.Cog):
         self.alerted = {}
 
     async def cog_load(self):
+        _init_db()
+        # rebuild the in-memory denial window from disk so detection survives a
+        # restart (a sprayer mid-window isn't handed a clean slate by bouncing us)
+        for row in _load_recent_denials(CMD_WINDOW):
+            try:
+                self.denials[int(row["user_id"])].append((row["command"], row["ts"]))
+            except (TypeError, ValueError):
+                pass
         self.session = aiohttp.ClientSession()
         # chain in front of whatever tree error handler is already set
         self._orig_on_error = self.bot.tree.on_error
@@ -152,9 +217,13 @@ class ReconWatch(commands.Cog):
         if not interaction.guild or interaction.guild.id != GUILD_ID:
             return
         user = interaction.user
+        cmd = interaction.command.qualified_name if interaction.command else "?"
+        # persist EVERY denial as durable evidence (even exempt users) — full
+        # audit trail below the alert line
+        _persist_denial(interaction.guild.id, user.id, str(user), cmd,
+                        interaction.channel_id, type(error).__name__)
         if self._exempt(user):
             return
-        cmd = interaction.command.qualified_name if interaction.command else "?"
         now = time.time()
         dq = self.denials[user.id]
         dq.append((cmd, now))
@@ -210,6 +279,7 @@ class ReconWatch(commands.Cog):
         if not events:
             return
 
+        now = time.time()
         ids = []
         for ev in events:
             if ev.get("id") is not None:
@@ -218,8 +288,14 @@ class ReconWatch(commands.Cog):
             kind = ev.get("kind") or "?"
             if ip in WHITELIST:
                 continue
+            # the gate already auto-blocked this IP for flooding — page now,
+            # urgently, don't wait to aggregate
+            if kind == "ip_blocked":
+                if not self._cooling(("blocked", ip), now):
+                    await self._alert_blocked(ip, ev)
+                continue
             dq = self.gate_events[(ip, kind)]
-            dq.append({"ts": ev.get("ts") or time.time(), "route": ev.get("route") or "",
+            dq.append({"ts": ev.get("ts") or now, "route": ev.get("route") or "",
                        "ja4": ev.get("ja4") or "", "ua": ev.get("ua") or ""})
 
         # ack everything we pulled so it isn't re-served
@@ -230,7 +306,6 @@ class ReconWatch(commands.Cog):
             except Exception as e:
                 log.warning("recon: gate ack failed: %s", e)
 
-        now = time.time()
         for key, dq in list(self.gate_events.items()):
             while dq and now - dq[0]["ts"] > GATE_WINDOW:
                 dq.popleft()
@@ -268,9 +343,67 @@ class ReconWatch(commands.Cog):
             e.add_field(name="JA4", value=f"`{last['ja4']}`", inline=True)
         if last.get("ua"):
             e.add_field(name="User-Agent", value=last["ua"][:200], inline=False)
-        e.set_footer(text="gate side is alert-only — block at fail2ban/nginx if needed")
+        await self._add_unmask(e, ip, last.get("ja4"))
+        e.set_footer(text="auto-blocks if they flood; /recon-unblock <ip> to lift")
         try:
             await ch.send(embed=e)
+        except discord.HTTPException:
+            pass
+
+    # ----------------------------------------------- (3) cross-surface unmasking
+    async def _unmask(self, ip, ja4):
+        """Ask the gate which OAuth-verified / link-opening accounts share this
+        IP or JA4 — putting a name (or names) to a pseudonymous gate probe."""
+        if not (ip and self.session and GATE_URL):
+            return {}
+        try:
+            params = {"ip": ip}
+            if ja4:
+                params["ja4"] = ja4
+            async with self.session.get(f"{GATE_URL}/api/unmask", params=params,
+                                        headers=self._hmac(), timeout=8) as r:
+                if r.status == 200:
+                    return await r.json()
+        except Exception as e:
+            log.warning("recon: unmask failed: %s", e)
+        return {}
+
+    async def _add_unmask(self, embed, ip, ja4):
+        ident = await self._unmask(ip, ja4)
+        confirmed = [u for u in ident.get("confirmed", []) if str(u) not in WHITELIST]
+        opening = [u for u in ident.get("seen_opening", []) if str(u) not in WHITELIST]
+        if confirmed:
+            embed.add_field(
+                name="🎭 Unmasked — same IP/JA4 as a verified account",
+                value=", ".join(f"<@{u}>" for u in confirmed[:5]), inline=False)
+        elif opening:
+            embed.add_field(
+                name="👁 Seen opening verify links for",
+                value=", ".join(f"<@{u}>" for u in opening[:5]), inline=False)
+
+    # ---------------------------------------------------- gate auto-block alert
+    async def _alert_blocked(self, ip, ev):
+        ch = self._modlog()
+        if not ch:
+            return
+        e = discord.Embed(
+            title="🚫 Gate auto-blocked an IP (flood)",
+            description=(f"`{ip}` flooded the verification gate and is now **blocked** "
+                         f"(403 on everything) — someone was hammering the surface."),
+            color=0xE03131,
+        )
+        if ev.get("route"):
+            e.add_field(name="Last route", value=f"`{ev['route'][:200]}`", inline=False)
+        if ev.get("ja4"):
+            e.add_field(name="JA4", value=f"`{ev['ja4']}`", inline=True)
+        if ev.get("ua"):
+            e.add_field(name="User-Agent", value=ev["ua"][:200], inline=False)
+        await self._add_unmask(e, ip, ev.get("ja4"))
+        e.set_footer(text="auto-expires; /recon-unblock <ip> to lift early")
+        content = f"<@&{RECON_PING_ROLE}>" if RECON_PING_ROLE else None
+        try:
+            await ch.send(content=content, embed=e,
+                          allowed_mentions=discord.AllowedMentions(roles=True))
         except discord.HTTPException:
             pass
 
@@ -292,6 +425,17 @@ class ReconWatch(commands.Cog):
             n = sum(1 for ev in dq if now - ev["ts"] <= GATE_WINDOW)
             if n:
                 gate_lines.append(f"`{ip}` — {n}× {kind}")
+        # currently blocked IPs (ask the gate)
+        block_lines = []
+        try:
+            async with self.session.get(f"{GATE_URL}/api/blocks",
+                                        headers=self._hmac(), timeout=8) as r:
+                if r.status == 200:
+                    for b in (await r.json()).get("blocks", []):
+                        mins = max(0, int((b.get("expires", now) - now) / 60))
+                        block_lines.append(f"`{b['ip']}` — {b.get('reason', '?')} ({mins}m left)")
+        except Exception:
+            pass
 
         e = discord.Embed(title="🛰️ Recon watch", color=0x5B8CFF)
         e.add_field(
@@ -303,21 +447,46 @@ class ReconWatch(commands.Cog):
             name="Thresholds",
             value=(f"cmd: {CMD_DISTINCT} distinct / {CMD_WINDOW // 60}m\n"
                    f"gate api: {GATE_THRESHOLDS['api_unauth']} · token: "
-                   f"{GATE_THRESHOLDS['bad_token']} · scan: {GATE_THRESHOLDS['path_scan']} "
-                   f"/ {GATE_WINDOW // 60}m"),
+                   f"{GATE_THRESHOLDS['bad_token']} / {GATE_WINDOW // 60}m\n"
+                   f"path_scan: log-only (not paged)"),
             inline=True,
         )
         e.add_field(name="Command probers (live)",
                     value=("\n".join(cmd_lines[:10]) or "none"), inline=False)
         e.add_field(name="Gate probers (live)",
                     value=("\n".join(gate_lines[:10]) or "none"), inline=False)
+        e.add_field(name="🚫 Blocked IPs",
+                    value=("\n".join(block_lines[:10]) or "none"), inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True)
+
+    @app_commands.command(name="recon-unblock",
+                          description="Lift a gate IP block early.")
+    @app_commands.describe(ip="The IP address to unblock")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def recon_unblock(self, interaction: discord.Interaction, ip: str):
+        ok = False
+        if self.session and GATE_URL:
+            try:
+                async with self.session.post(f"{GATE_URL}/api/unblock", headers=self._hmac(),
+                                             json={"ip": ip.strip()}, timeout=8) as r:
+                    ok = r.status == 200
+            except Exception as e:
+                log.warning("recon: unblock failed: %s", e)
+        await interaction.response.send_message(
+            f"{'✅ Unblocked' if ok else '⚠️ Could not reach the gate to unblock'} `{ip}`.",
+            ephemeral=True)
 
     @recon_status.error
     async def _status_err(self, interaction: discord.Interaction, error):
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message(
                 "You need **Manage Server** to view recon status.", ephemeral=True)
+
+    @recon_unblock.error
+    async def _unblock_err(self, interaction: discord.Interaction, error):
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You need **Manage Server** to unblock IPs.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
