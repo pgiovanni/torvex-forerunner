@@ -1,20 +1,22 @@
 {
   "commands": [
-{
+    {
       "name": "close",
       "description": "Close the current ticket channel.",
       "cog": "tickets",
-      "required_permissions": ["manage_channels"]
+      "required_permissions": [
+        "manage_channels"
+      ]
     },
     {
       "name": "fun",
-      "description": "Fun commands — roast, 8ball, tictactoe, connect4",
+      "description": "Fun commands \u2014 roast, 8ball, tictactoe, connect4",
       "cog": "fun",
       "cooldown_seconds": 0
     },
     {
       "name": "games",
-      "description": "Bot vs player games — tictactoe_bot, connect4_bot",
+      "description": "Bot vs player games \u2014 tictactoe_bot, connect4_bot",
       "cog": "games",
       "cooldown_seconds": 0
     },
@@ -26,37 +28,37 @@
     },
     {
       "name": "rpg",
-      "description": "Torvex RPG — fight, level up, earn orbs",
+      "description": "Torvex RPG \u2014 fight, level up, earn orbs",
       "cog": "rpg",
       "cooldown_seconds": 0
     },
     {
       "name": "economy",
-      "description": "Peepo Bucks economy — balance, levels, leaderboard",
+      "description": "Peepo Bucks economy \u2014 balance, levels, leaderboard",
       "cog": "economy",
       "cooldown_seconds": 0
     },
     {
       "name": "pvp",
-      "description": "PvP battles — challenge other players",
+      "description": "PvP battles \u2014 challenge other players",
       "cog": "pvp",
       "cooldown_seconds": 0
     },
     {
       "name": "gear",
-      "description": "Item/monster dictionary — weapons, armor, elements, monsters",
+      "description": "Item/monster dictionary \u2014 weapons, armor, elements, monsters",
       "cog": "gear",
       "cooldown_seconds": 0
     },
     {
       "name": "chess",
-      "description": "Play chess — vs bot or challenge another player",
+      "description": "Play chess \u2014 vs bot or challenge another player",
       "cog": "chess_cog",
       "cooldown_seconds": 0
     },
     {
       "name": "peepo",
-      "description": "Peepo collectibles — shop, trade, marketplace",
+      "description": "Peepo collectibles \u2014 shop, trade, marketplace",
       "cog": "peepo",
       "cooldown_seconds": 0
     },
@@ -82,7 +84,9 @@
       "name": "setup",
       "description": "Configure the bot for this server (Admin only)",
       "cog": "setup",
-      "required_permissions": ["administrator"]
+      "required_permissions": [
+        "administrator"
+      ]
     },
     {
       "name": "help",
@@ -106,19 +110,177 @@
       "name": "server-notifications",
       "description": "Toggle level-up notifications for this server (Admin only).",
       "cog": "economy",
-      "required_permissions": ["administrator"]
+      "required_permissions": [
+        "administrator"
+      ]
     },
     {
       "name": "check-perms",
       "description": "Show channels the bot can't read in this server (Admin only).",
       "cog": "economy",
-      "required_permissions": ["administrator"]
+      "required_permissions": [
+        "administrator"
+      ]
     },
     {
       "name": "security",
-      "description": "Server security tools — role & channel permission audit (Admin only).",
+      "description": "Server security tools \u2014 role & channel permission audit (Admin only).",
       "cog": "security",
-      "required_permissions": ["administrator"]
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "verify",
+      "description": "Get your AltGuard verification link",
+      "cog": "altguard",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "altguard-sweep",
+      "description": "DM members a verification link (admin)",
+      "cog": "altguard",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "altguard-release",
+      "description": "Clear a member's quarantine (mod)",
+      "cog": "altguard",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "altguard-check",
+      "description": "Send a suspicious member a verification link (mod)",
+      "cog": "altguard",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "altguard-lookup",
+      "description": "Inspect a user's fingerprint history (mod)",
+      "cog": "altguard",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "altguard-watch",
+      "description": "Watchlist a banned account (mod)",
+      "cog": "altguard",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "altguard-unwatch",
+      "description": "Remove from watchlist (mod)",
+      "cog": "altguard",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "altguard-gate",
+      "description": "Toggle forced quarantine-on-join (admin)",
+      "cog": "altguard",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "ban",
+      "description": "Ban a member or pre-ban a user by ID (mod)",
+      "cog": "moderation",
+      "required_permissions": [
+        "ban_members"
+      ]
+    },
+    {
+      "name": "unban",
+      "description": "Unban a user by ID (mod)",
+      "cog": "moderation",
+      "required_permissions": [
+        "ban_members"
+      ]
+    },
+    {
+      "name": "antinuke",
+      "description": "Anti-nuke status (admin)",
+      "cog": "antinuke",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "quarantine-lock",
+      "description": "Lock quarantine role out of all channels (admin)",
+      "cog": "quarantine_lock",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "altguard-verify-panel",
+      "description": "Post click-to-verify button (admin)",
+      "cog": "altguard",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "roster-snapshot",
+      "description": "Snapshot the member roster (admin)",
+      "cog": "server_backup",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "roster-missing",
+      "description": "List members not in server = re-invite list (admin)",
+      "cog": "server_backup",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "structure-status",
+      "description": "Show channel/role backup + deletions (admin)",
+      "cog": "server_backup",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "structure-restore",
+      "description": "Recreate deleted channels/roles from backup (admin)",
+      "cog": "server_backup",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "recent-leaves",
+      "description": "Recent leaves/kicks/bans (admin)",
+      "cog": "server_backup",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "member-activity",
+      "description": "Full join/leave/kick/ban log (admin)",
+      "cog": "server_backup",
+      "required_permissions": [
+        "administrator"
+      ]
     }
   ]
 }
