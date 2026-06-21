@@ -1,4 +1,4 @@
-"""Native anti-nuke + anti-raid for peepos-reclaimer — replacing Wick.
+"""Native anti-nuke + anti-raid for peepos-reclaimer — multi-guild, opt-in.
 
 Two detectors, both attribute to an executor and trip on RATE (not single
 actions — that's the Wick over-strictness we're fixing):
@@ -12,13 +12,13 @@ Deliberately GENEROUS so normal use passes: ONE announcement (@everyone) is
 fine, tagging 5-10 people in a message is fine, normal chatting is fine. Only
 sustained/extreme behavior trips.
 
-Modes (env ANTINUKE_ENFORCE): 0/unset = SHADOW (alert-only, safe alongside Wick);
-1 = ENFORCE (strip roles / timeout + alert).
-
-Never acts on: guild owner, the bot itself, bots/webhooks, or ANTINUKE_WHITELIST
-(space/comma IDs — add trusted admins + Wick's bot ID before enforce).
+Per-guild + opt-in: runs only where `antinuke` is enabled in security_config.
+Each guild has its own enforce/shadow mode, whitelist, quarantine role, modlog
+channel and timeout — read per event from security_config (no module globals).
+Never acts on: guild owner, the bot itself, bots/webhooks, or the guild whitelist.
 """
 import os
+import sys
 import time
 import datetime
 import logging
@@ -30,26 +30,13 @@ from discord.ext import commands
 
 import quarantine_store as qstore  # shared with AltGuard — stores stripped roles for /altguard-release
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils.security_config import get_config, is_enabled
+
 log = logging.getLogger("antinuke")
 
-
-def _env_int(name, default=0):
-    try:
-        return int(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        return default
-
-
-GUILD_ID = _env_int("ALTGUARD_GUILD_ID")
-MODLOG_CHANNEL_ID = _env_int("ALTGUARD_MODLOG_CHANNEL_ID")
-QUARANTINE_ROLE_ID = _env_int("ALTGUARD_QUARANTINE_ROLE_ID")
-ENFORCE = os.environ.get("ANTINUKE_ENFORCE", "0") != "0"
-WHITELIST = {int(x) for x in os.environ.get("ANTINUKE_WHITELIST", "").replace(",", " ").split() if x.strip().isdigit()}
-TIMEOUT_MIN = _env_int("ANTINUKE_TIMEOUT_MIN", 10)
-# on a mass-ban trip, auto-unban the victims the nuker just banned + post an invite
-RESTORE_BANS = os.environ.get("ANTINUKE_RESTORE_BANS", "1") != "0"
-
 # destructive actions: key -> (count, window_s). Response = strip roles.
+# Global defaults (same for every guild; per-guild tuning can come later).
 ACTION_LIMITS = {
     "channel_delete": (3, 12),
     "channel_create": (4, 12),
@@ -62,7 +49,6 @@ ACTION_LIMITS = {
 }
 
 # chat abuse: GENEROUS thresholds so announcements / normal pings pass clean.
-# Response = timeout.
 MENTION_BOMB = 15        # >= this many mentions in ONE message = instant flag
 MENTION_RATE = (25, 10)  # >= 25 mentions across messages in 10s
 EVERYONE_RATE = (4, 20)  # >= 4 @everyone/@here that actually pinged in 20s
@@ -92,36 +78,50 @@ _NUKE_PERMS = discord.Permissions(
 class AntiNuke(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.events = defaultdict(lambda: defaultdict(deque))   # destructive
-        self.msgs = defaultdict(deque)                          # author -> msg ts
-        self.mentions = defaultdict(deque)                      # author -> (ts, count)
-        self.everyone = defaultdict(deque)                      # author -> ts
-        self.cooldown = {}                                     # (id, key) -> last trip ts
-        self.ban_victims = defaultdict(deque)                  # executor_id -> (ts, victim_uid)
+        # all per-guild state is keyed by (guild_id, user_id) so nothing bleeds
+        # across the multiple servers the bot lives in.
+        self.events = defaultdict(lambda: defaultdict(deque))   # (gid, uid) -> action -> ts deque
+        self.msgs = defaultdict(deque)                          # (gid, uid) -> msg ts
+        self.mentions = defaultdict(deque)                      # (gid, uid) -> (ts, count)
+        self.everyone = defaultdict(deque)                      # (gid, uid) -> ts
+        self.cooldown = {}                                      # (gid, uid, key) -> last trip ts
+        self.ban_victims = defaultdict(deque)                  # (gid, executor) -> (ts, victim_uid)
 
-    def _exempt(self, guild, user):
+    # ------------------------------------------------------------- config helpers
+    @staticmethod
+    def _enforce(cfg):
+        return bool(cfg.get("antinuke_enforce"))
+
+    def _exempt(self, guild, user, cfg):
+        wl = set(cfg.get("whitelist") or [])
         return (user is None or user.id == self.bot.user.id
-                or user.id == guild.owner_id or user.id in WHITELIST)
+                or user.id == guild.owner_id or user.id in wl)
 
-    def _removable(self, guild, member):
+    def _modlog(self, guild, cfg):
+        mid = cfg.get("modlog_channel_id")
+        return guild.get_channel(int(mid)) if mid else None
+
+    def _removable(self, guild, member, cfg):
         """Roles we can actually strip: not @everyone, not managed, not the
         quarantine role, and below the bot's top role."""
         me = guild.me
+        qid = cfg.get("quarantine_role_id")
         out = []
         for r in member.roles:
-            if r.is_default() or r.managed or r.id == QUARANTINE_ROLE_ID:
+            if r.is_default() or r.managed or (qid and r.id == int(qid)):
                 continue
             if me and r >= me.top_role:
                 continue
             out.append(r)
         return out
 
-    async def _quarantine_offender(self, guild, member, reason):
+    async def _quarantine_offender(self, guild, member, reason, cfg):
         """Strip the offender's removable roles (saved for restore) AND apply the
         quarantine role so they're locked out of every channel. Reversible via
         /altguard-release. Returns True on success."""
-        qrole = guild.get_role(QUARANTINE_ROLE_ID)
-        removable = self._removable(guild, member)
+        qid = cfg.get("quarantine_role_id")
+        qrole = guild.get_role(int(qid)) if qid else None
+        removable = self._removable(guild, member, cfg)
         try:
             qstore.save(member.id, guild.id, [r.id for r in removable], f"anti-nuke: {reason}")
         except Exception:
@@ -136,11 +136,11 @@ class AntiNuke(commands.Cog):
         except discord.Forbidden:
             return False
 
-    def _debounced(self, uid, key, window):
+    def _debounced(self, gid, uid, key, window):
         now = time.time()
-        if now - self.cooldown.get((uid, key), 0) < window:
+        if now - self.cooldown.get((gid, uid, key), 0) < window:
             return True
-        self.cooldown[(uid, key)] = now
+        self.cooldown[(gid, uid, key)] = now
         return False
 
     # ----------------------------------------------------- destructive (audit)
@@ -158,50 +158,52 @@ class AntiNuke(commands.Cog):
         return None
 
     async def _record_action(self, guild, action, target_id=None):
-        if guild.id != GUILD_ID:
+        if not is_enabled(guild.id, "antinuke"):
             return
+        cfg = get_config(guild.id)
         user = await self._executor(guild, action, target_id)
-        if self._exempt(guild, user):
+        if self._exempt(guild, user, cfg):
             return
+        gid = guild.id
         count, window = ACTION_LIMITS[action]
         now = time.time()
         if action == "ban" and target_id:
-            bv = self.ban_victims[user.id]
+            bv = self.ban_victims[(gid, user.id)]
             bv.append((now, target_id))
             while bv and now - bv[0][0] > window + 30:
                 bv.popleft()
-        dq = self.events[user.id][action]
+        dq = self.events[(gid, user.id)][action]
         dq.append(now)
         while dq and now - dq[0] > window:
             dq.popleft()
-        if len(dq) >= count and not self._debounced(user.id, action, window):
+        if len(dq) >= count and not self._debounced(gid, user.id, action, window):
             if action == "ban":
-                await self._respond_ban_nuke(guild, user, len(dq), window)
+                await self._respond_ban_nuke(guild, user, len(dq), window, cfg)
             else:
-                await self._respond_strip(guild, user, f"{len(dq)}× {action} in {window}s")
+                await self._respond_strip(guild, user, f"{len(dq)}× {action} in {window}s", cfg)
 
-    async def _respond_strip(self, guild, user, why):
+    async def _respond_strip(self, guild, user, why, cfg):
         member = guild.get_member(user.id)
         acted, detail = False, ""
-        if ENFORCE and member is not None:
-            acted = await self._quarantine_offender(guild, member, why)
+        if self._enforce(cfg) and member is not None:
+            acted = await self._quarantine_offender(guild, member, why, cfg)
             if not acted:
                 detail = " (couldn't neutralize — check hierarchy/perms)"
         await self._alert(guild, user, "💥 NUKE pattern", why,
-                          "stripped + quarantined" if acted else None, detail, acted)
+                          "stripped + quarantined" if acted else None, detail, acted, cfg)
 
-    async def _respond_ban_nuke(self, guild, user, n, window):
+    async def _respond_ban_nuke(self, guild, user, n, window, cfg):
         # 1) neutralize the nuker (strip roles + quarantine)
         member = guild.get_member(user.id)
         acted = False
-        if ENFORCE and member is not None:
-            acted = await self._quarantine_offender(guild, member, f"mass-ban ({n} in {window}s)")
+        if self._enforce(cfg) and member is not None:
+            acted = await self._quarantine_offender(guild, member, f"mass-ban ({n} in {window}s)", cfg)
         # 2) unban the victims this nuker banned in the window
         restored = []
-        if ENFORCE and RESTORE_BANS:
+        if self._enforce(cfg) and cfg.get("antinuke_restore_bans"):
             now = time.time()
             seen = set()
-            for ts, vid in list(self.ban_victims.get(user.id, [])):
+            for ts, vid in list(self.ban_victims.get((guild.id, user.id), [])):
                 if now - ts <= window + 30 and vid not in seen:
                     seen.add(vid)
                     try:
@@ -212,7 +214,7 @@ class AntiNuke(commands.Cog):
                         pass
         # 3) recovery invite to share with the restored members
         invite = await self._recovery_invite(guild) if restored else None
-        await self._alert_ban_nuke(guild, user, n, window, acted, restored, invite)
+        await self._alert_ban_nuke(guild, user, n, window, acted, restored, invite, cfg)
 
     async def _recovery_invite(self, guild):
         ch = guild.system_channel
@@ -227,8 +229,8 @@ class AntiNuke(commands.Cog):
         except discord.HTTPException:
             return None
 
-    async def _alert_ban_nuke(self, guild, user, n, window, acted, restored, invite):
-        ch = guild.get_channel(MODLOG_CHANNEL_ID)
+    async def _alert_ban_nuke(self, guild, user, n, window, acted, restored, invite, cfg):
+        ch = self._modlog(guild, cfg)
         if not ch:
             return
         embed = discord.Embed(
@@ -242,91 +244,95 @@ class AntiNuke(commands.Cog):
             if invite:
                 embed.add_field(name="📨 Re-invite link (share with them)", value=invite, inline=False)
             embed.set_footer(text="Victims unbanned — they can rejoin via the invite. Re-ban any that were legit.")
-        elif ENFORCE and RESTORE_BANS:
+        elif self._enforce(cfg) and cfg.get("antinuke_restore_bans"):
             embed.add_field(name="Victims", value="none captured in the window.", inline=False)
         await ch.send(content="@here", embed=embed)
 
     # ----------------------------------------------------- chat abuse (messages)
     @commands.Cog.listener()
     async def on_message(self, message):
-        if (message.guild is None or message.guild.id != GUILD_ID
-                or message.author.bot or message.webhook_id):
+        if message.guild is None or message.author.bot or message.webhook_id:
             return
-        if self._exempt(message.guild, message.author):
+        if not is_enabled(message.guild.id, "antinuke"):
             return
+        cfg = get_config(message.guild.id)
+        if self._exempt(message.guild, message.author, cfg):
+            return
+        gid = message.guild.id
         uid = message.author.id
         now = time.time()
         nmention = len(message.mentions) + len(message.role_mentions)
 
         # 1) single-message mention bomb
         if nmention >= MENTION_BOMB:
-            if not self._debounced(uid, "bomb", 30):
+            if not self._debounced(gid, uid, "bomb", 30):
                 await self._respond_timeout(message.guild, message.author,
-                                            f"mention-bomb: {nmention} pings in one message")
+                                            f"mention-bomb: {nmention} pings in one message", cfg)
             return
 
         # 2) sustained mention rate
-        dq = self.mentions[uid]
+        dq = self.mentions[(gid, uid)]
         if nmention:
             dq.append((now, nmention))
         while dq and now - dq[0][0] > MENTION_RATE[1]:
             dq.popleft()
-        if sum(c for _, c in dq) >= MENTION_RATE[0] and not self._debounced(uid, "mrate", MENTION_RATE[1]):
+        if sum(c for _, c in dq) >= MENTION_RATE[0] and not self._debounced(gid, uid, "mrate", MENTION_RATE[1]):
             await self._respond_timeout(message.guild, message.author,
-                                        f"ping spam: {sum(c for _,c in dq)} mentions in {MENTION_RATE[1]}s")
+                                        f"ping spam: {sum(c for _,c in dq)} mentions in {MENTION_RATE[1]}s", cfg)
             return
 
         # 3) @everyone / @here spam (only counts pings that actually fired)
         if message.mention_everyone:
-            eq = self.everyone[uid]
+            eq = self.everyone[(gid, uid)]
             eq.append(now)
             while eq and now - eq[0] > EVERYONE_RATE[1]:
                 eq.popleft()
-            if len(eq) >= EVERYONE_RATE[0] and not self._debounced(uid, "everyone", EVERYONE_RATE[1]):
+            if len(eq) >= EVERYONE_RATE[0] and not self._debounced(gid, uid, "everyone", EVERYONE_RATE[1]):
                 await self._respond_timeout(message.guild, message.author,
-                                            f"@everyone spam: {len(eq)} in {EVERYONE_RATE[1]}s")
+                                            f"@everyone spam: {len(eq)} in {EVERYONE_RATE[1]}s", cfg)
                 return
 
         # 4) message flood
-        mq = self.msgs[uid]
+        mq = self.msgs[(gid, uid)]
         mq.append(now)
         while mq and now - mq[0] > FLOOD_RATE[1]:
             mq.popleft()
-        if len(mq) >= FLOOD_RATE[0] and not self._debounced(uid, "flood", FLOOD_RATE[1]):
+        if len(mq) >= FLOOD_RATE[0] and not self._debounced(gid, uid, "flood", FLOOD_RATE[1]):
             await self._respond_timeout(message.guild, message.author,
-                                        f"message flood: {len(mq)} msgs in {FLOOD_RATE[1]}s")
+                                        f"message flood: {len(mq)} msgs in {FLOOD_RATE[1]}s", cfg)
 
-    async def _respond_timeout(self, guild, user, why):
+    async def _respond_timeout(self, guild, user, why, cfg):
         member = guild.get_member(user.id)
         acted, detail = False, ""
-        if ENFORCE and member is not None:
+        if self._enforce(cfg) and member is not None:
             try:
-                await member.timeout(datetime.timedelta(minutes=TIMEOUT_MIN),
+                await member.timeout(datetime.timedelta(minutes=cfg.get("antinuke_timeout_min", 10)),
                                      reason=f"AntiNuke: {why}")
                 acted = True
             except discord.Forbidden:
                 detail = " (couldn't timeout — check hierarchy/perms)"
         await self._alert(guild, user, "📢 RAID/SPAM pattern", why,
-                          f"timed out {TIMEOUT_MIN}m" if acted else None, detail, acted)
+                          f"timed out {cfg.get('antinuke_timeout_min', 10)}m" if acted else None, detail, acted, cfg)
 
     # ----------------------------------------------------------------- alert
-    async def _alert(self, guild, user, kind, why, action_txt, detail, acted):
-        ch = guild.get_channel(MODLOG_CHANNEL_ID)
+    async def _alert(self, guild, user, kind, why, action_txt, detail, acted, cfg):
+        ch = self._modlog(guild, cfg)
         if not ch:
             return
+        enforce = self._enforce(cfg)
         if acted:
             head, color = f"🛡️ ANTI-NUKE — {kind} — neutralized", 0x2ECC71
-        elif ENFORCE:
+        elif enforce:
             head, color = f"🚨 ANTI-NUKE — {kind} — action FAILED", 0xE74C3C
         else:
             head, color = f"🚨 ANTI-NUKE would trip — {kind} (shadow)", 0xE0A23B
         embed = discord.Embed(title=head, color=color,
                               description=f"{user.mention} (`{user.id}`): {why}.{detail}")
-        embed.add_field(name="Mode", value="ENFORCE" if ENFORCE else "SHADOW (alert-only)", inline=True)
-        embed.add_field(name="Action", value=action_txt or ("none — SHADOW" if not ENFORCE else "FAILED"), inline=True)
-        if not ENFORCE:
-            embed.set_footer(text="Shadow: Wick still enforces. Flip ANTINUKE_ENFORCE=1 when tuned.")
-        await ch.send(content="@here" if (acted or ENFORCE) else None, embed=embed)
+        embed.add_field(name="Mode", value="ENFORCE" if enforce else "SHADOW (alert-only)", inline=True)
+        embed.add_field(name="Action", value=action_txt or ("none — SHADOW" if not enforce else "FAILED"), inline=True)
+        if not enforce:
+            embed.set_footer(text="Shadow mode — alert only. Enable enforce in /security to act.")
+        await ch.send(content="@here" if (acted or enforce) else None, embed=embed)
 
     # ----------------------------------------------------------- listeners
     @commands.Cog.listener()
@@ -367,41 +373,43 @@ class AntiNuke(commands.Cog):
         # someone edited a role's permissions — if it GAINED nuke-capable perms
         # (e.g. handing @everyone Administrator), revert it + neutralize the actor.
         # One occurrence is enough — there's no legit slow version of this.
-        if after.guild.id != GUILD_ID:
+        if not is_enabled(after.guild.id, "antinuke"):
             return
+        cfg = get_config(after.guild.id)
         gained = after.permissions.value & ~before.permissions.value
         if not (gained & _NUKE_PERMS):
             return
         user = await self._executor(after.guild, "role_update", after.id)
-        if self._exempt(after.guild, user):
+        if self._exempt(after.guild, user, cfg):
             return
         reverted = False
-        if ENFORCE:
+        if self._enforce(cfg):
             try:
                 await after.edit(permissions=before.permissions,
                                  reason="AntiNuke: dangerous role-perm grant reverted")
                 reverted = True
             except discord.Forbidden:
                 pass
-        tail = " — reverted" if reverted else (" (revert FAILED)" if ENFORCE else "")
-        await self._respond_strip(after.guild, user, f"granted nuke perms to @{after.name}{tail}")
+        tail = " — reverted" if reverted else (" (revert FAILED)" if self._enforce(cfg) else "")
+        await self._respond_strip(after.guild, user, f"granted nuke perms to @{after.name}{tail}", cfg)
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
         # bot added to the server = classic one-click nuke vector. Only trusted
         # users (owner/whitelist) may add bots; anyone else -> kick the bot.
-        if member.guild.id != GUILD_ID or not member.bot:
+        if not member.bot or not is_enabled(member.guild.id, "antinuke"):
             return
+        cfg = get_config(member.guild.id)
         adder = await self._executor(member.guild, "bot_add", member.id)
         had_admin = member.guild_permissions.administrator
         kicked = False
-        if ENFORCE and adder is not None and not self._exempt(member.guild, adder):
+        if self._enforce(cfg) and adder is not None and not self._exempt(member.guild, adder, cfg):
             try:
                 await member.kick(reason="AntiNuke: bot added by non-trusted user")
                 kicked = True
             except discord.Forbidden:
                 pass
-        ch = member.guild.get_channel(MODLOG_CHANNEL_ID)
+        ch = self._modlog(member.guild, cfg)
         if not ch:
             return
         who = adder.mention if adder else "unknown (audit log unavailable)"
@@ -410,7 +418,7 @@ class AntiNuke(commands.Cog):
             color=0xE74C3C if (kicked or had_admin) else 0xE0A23B,
             description=f"**{member}** (`{member.id}`) was added by {who}."
                         + ("\n⚠️ **arrived with Administrator.**" if had_admin else ""))
-        embed.add_field(name="Mode", value="ENFORCE" if ENFORCE else "SHADOW", inline=True)
+        embed.add_field(name="Mode", value="ENFORCE" if self._enforce(cfg) else "SHADOW", inline=True)
         embed.add_field(name="Action", value=("bot kicked" if kicked else "alert only"), inline=True)
         if not kicked and had_admin:
             embed.set_footer(text="Bot has admin — verify it's trusted or remove it.")
@@ -419,9 +427,16 @@ class AntiNuke(commands.Cog):
     # ----------------------------------------------------------- command
     @app_commands.command(name="antinuke", description="Anti-nuke status & thresholds (admin)")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
     async def antinuke(self, interaction: discord.Interaction):
-        mode = "🔴 ENFORCE" if ENFORCE else "🟡 SHADOW (alert-only, Wick still enforces)"
-        wl = ", ".join(f"`{w}`" for w in WHITELIST) or "(owner + bot only)"
+        cfg = get_config(interaction.guild.id)
+        on = bool(cfg.get("antinuke_enabled"))
+        enforce = self._enforce(cfg)
+        if not on:
+            mode = "⚪ DISABLED for this server — run `/security setup` to enable"
+        else:
+            mode = "🔴 ENFORCE" if enforce else "🟡 SHADOW (alert-only)"
+        wl = ", ".join(f"`{w}`" for w in (cfg.get("whitelist") or [])) or "(owner + bot only)"
         acts = "\n".join(f"• {k}: {c}× / {w}s → strip roles" for k, (c, w) in ACTION_LIMITS.items())
         chat = (f"• mention-bomb: {MENTION_BOMB}+ in one msg → timeout\n"
                 f"• ping spam: {MENTION_RATE[0]} mentions / {MENTION_RATE[1]}s → timeout\n"
@@ -434,11 +449,11 @@ class AntiNuke(commands.Cog):
             "• role edited to grant nuke perms (e.g. @everyone admin) → **revert + strip** (instant)\n"
             "• bot added by non-trusted user → **kick the bot** (instant)"), inline=False)
         embed.add_field(name="Mass-ban recovery", value=(
-            "✅ on — victims **auto-unbanned** + re-invite link posted" if RESTORE_BANS
+            "✅ on — victims **auto-unbanned** + re-invite link posted" if cfg.get("antinuke_restore_bans")
             else "off"), inline=False)
         embed.add_field(name="Chat abuse (messages)", value=chat, inline=False)
         embed.add_field(name="Whitelist (never acted on)", value=f"owner, this bot, bots, {wl}", inline=False)
-        embed.set_footer(text="ANTINUKE_ENFORCE=1 + ANTINUKE_WHITELIST=<ids> to go live, then retire Wick.")
+        embed.set_footer(text="Configure via /security (per server).")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

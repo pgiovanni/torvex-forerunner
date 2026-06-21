@@ -72,6 +72,7 @@ class Setup(commands.Cog):
         embed.add_field(name="⚔️ RPG Channel",         value=ch(config.get("rpgChannelId")),         inline=False)
         embed.add_field(name="💡 Suggestions Channel", value=ch(config.get("suggestionsChannelId")), inline=False)
         embed.add_field(name="👋 Welcome Channel",     value=ch(config.get("welcomeChannelId")),     inline=False)
+        embed.add_field(name="🫡 Leaves Channel",       value=ch(os.getenv("GOODBYE_CHANNEL_ID")),    inline=False)
         embed.add_field(name="🔨 Mod Log Channel",     value=ch(config.get("modLogChannelId")),      inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -110,6 +111,27 @@ class Setup(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def mod_log(self, interaction: discord.Interaction, channel: discord.TextChannel):
         await self._save(interaction, modLogChannelId=str(channel.id))
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        """Post a goodbye message to the leaves channel when a member leaves.
+        Channel is set via the GOODBYE_CHANNEL_ID env var — independent of the Torvex
+        guild-config API so it works even while that service is down."""
+        if member.bot:
+            return
+        ch_id = os.getenv("GOODBYE_CHANNEL_ID")
+        if not ch_id:
+            return
+        channel = member.guild.get_channel(int(ch_id))
+        if channel is None:
+            return
+        try:
+            await channel.send(
+                f"<@{member.id}> goodbye {member.name}",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            pass
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
