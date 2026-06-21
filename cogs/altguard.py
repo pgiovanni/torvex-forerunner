@@ -677,13 +677,13 @@ class AltGuard(commands.Cog):
         await ch.send(embed=embed)
 
     # ------------------------------------------------------------------ commands
-    @app_commands.command(name="verify", description="Get your verification link")
-    @app_commands.default_permissions(administrator=True)
+    @app_commands.command(name="verify", description="Get your own verification link")
     async def verify(self, interaction: discord.Interaction):
         url = _verify_link(interaction.user.id, interaction.guild_id)
         qstore.record_issue(interaction.user.id, interaction.guild_id, True)
         await interaction.response.send_message(
-            "Click below to verify. The page does a quick automated check — that's it.",
+            "👋 Tap below to verify yourself — it's a quick automated check, "
+            "nothing needed from you. You're unlocked the moment it passes.",
             view=VerifyView(url), ephemeral=True,
         )
 
