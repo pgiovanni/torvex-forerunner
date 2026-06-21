@@ -227,6 +227,14 @@
       ]
     },
     {
+      "name": "recon-status",
+      "description": "Recent reconnaissance signals — bot + gate probing (admin)",
+      "cog": "recon_watch",
+      "required_permissions": [
+        "manage_guild"
+      ]
+    },
+    {
       "name": "altguard-verify-panel",
       "description": "Post click-to-verify button (admin)",
       "cog": "altguard",
