@@ -271,6 +271,19 @@ class AltGuard(commands.Cog):
                 ),
                 color=0x5B8CFF,
             )
+        # Anti-phishing trust block: "verify to log in" DMs look exactly like scams,
+        # so newcomers hesitate to click. Name the fear and defuse it — explain it's
+        # the real bot, the login is on discord.com, and we can't act as them.
+        embed.add_field(
+            name="✅ Why this is safe",
+            value=(
+                "• You'll log in **on discord.com** — never on our site. Check the address bar.\n"
+                "• We only see your **username** — we **can't** post, DM, or do anything as you.\n"
+                "• We will **never** ask for your password or a QR-code scan."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text=f"Official {guild.name} verification • link goes to verify.torvex.app")
         try:
             await user.send(embed=embed, view=VerifyView(url))
             return True
@@ -350,6 +363,12 @@ class AltGuard(commands.Cog):
         doesn't matter who wins the join race or how late the autorole lands."""
         if after.bot or after.guild.id != GUILD_ID:
             return
+        # Onboarding finished (Discord 'pending' just cleared): a member held during
+        # onboarding couldn't SEE the verify channel and is easy to miss; now they
+        # can. Re-point them at it (and retry the DM if it never landed) so they
+        # don't finish onboarding into a dead end with no way to verify.
+        if before.pending and not after.pending:
+            await self._on_onboarding_complete(after)
         if not qstore.is_quarantined(after.id):
             return
         qrole = after.guild.get_role(QUARANTINE_ROLE_ID)
@@ -375,6 +394,40 @@ class AltGuard(commands.Cog):
                 f"🧹 AltGuard re-stripped {names} from {after.mention} (`{after.id}`) — "
                 f"added while quarantined (autorole race); stored for restore on pass."
             )
+
+    async def _on_onboarding_complete(self, member: discord.Member):
+        """A held member just finished Discord onboarding. Nudge them in the
+        now-visible verify channel and retry the DM if the first never landed.
+        No-op for anyone not held or already passed."""
+        if not qstore.is_quarantined(member.id):
+            return
+        v = qstore.verification(member.id)
+        if v and v.get("status") == "passed":
+            return
+        # verify channel is reachable now — point them at the panel button
+        if VERIFY_CHANNEL_ID:
+            vch = member.guild.get_channel(VERIFY_CHANNEL_ID)
+            if vch:
+                try:
+                    await vch.send(
+                        f"👋 {member.mention} — welcome! Your access is held for a quick "
+                        f"anti-raid check. Tap **🔒 Verify** above to unlock the server."
+                    )
+                except discord.Forbidden:
+                    pass
+        # if the join-time DM never delivered, try again now that they're settled
+        if not (v and v.get("dm_delivered")):
+            dmed = await self._dm_link(member, locked=True)
+            qstore.record_issue(member.id, member.guild.id, dmed)
+        ch = member.guild.get_channel(MODLOG_CHANNEL_ID)
+        if ch:
+            try:
+                await ch.send(
+                    f"🎬 AltGuard: {member.mention} (`{member.id}`) finished onboarding "
+                    f"while held — re-pointed to verify."
+                )
+            except discord.Forbidden:
+                pass
 
     # ------------------------------------------------------------------ poller
     @tasks.loop(seconds=10)
