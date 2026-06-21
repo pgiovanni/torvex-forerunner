@@ -332,7 +332,10 @@ class AltGuard(commands.Cog):
         dm_failed = "closed" in status
         # visible fallback: ping them in the verify channel so a closed/unseen DM
         # isn't a dead end — they just tap the panel button there.
-        if quarantined and VERIFY_CHANNEL_ID:
+        # skip while mid-onboarding: they can't see the verify channel yet, and
+        # _on_onboarding_complete will post the ping once they can — avoids a
+        # duplicate prompt for members who join through Discord onboarding.
+        if quarantined and VERIFY_CHANNEL_ID and not member.pending:
             vch = member.guild.get_channel(VERIFY_CHANNEL_ID)
             if vch:
                 try:
