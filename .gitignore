@@ -1,3 +1,10 @@
 .env
 __pycache__/
 *.pyc
+
+# Databases (runtime state — may contain user data)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
