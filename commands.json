@@ -305,6 +305,22 @@
       "required_permissions": [
         "administrator"
       ]
+    },
+    {
+      "name": "prune-status",
+      "description": "Verify-prune config + who's overdue (admin)",
+      "cog": "verify_prune",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "prune-run",
+      "description": "Run the verify-prune sweep now (admin)",
+      "cog": "verify_prune",
+      "required_permissions": [
+        "administrator"
+      ]
     }
   ]
 }
