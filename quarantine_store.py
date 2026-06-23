@@ -52,6 +52,17 @@ def init():
                    value TEXT
                )"""
         )
+        # accounts a mod has cleared (via /altguard-release): trusted, so a new
+        # account matching THEIR device should still be flagged + quarantined for
+        # review, but the cleared member themselves must never be re-quarantined
+        # by the alt-cascade. Their fingerprint stays on file as a live detector.
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS cleared (
+                   uid       TEXT PRIMARY KEY,
+                   reason    TEXT,
+                   cleared_at REAL
+               )"""
+        )
 
 
 # --- runtime settings (KV) — toggles that persist across restarts ------------
@@ -100,6 +111,27 @@ def watch_reason(uid):
 def list_watch():
     with _conn() as c:
         return [dict(r) for r in c.execute("SELECT * FROM watchlist ORDER BY added_at DESC")]
+
+
+# --- cleared: mod-trusted accounts (released) — keep as a detector, never re-quarantine
+def clear(uid, reason=""):
+    with _conn() as c:
+        c.execute(
+            "INSERT INTO cleared(uid, reason, cleared_at) VALUES (?,?,?) "
+            "ON CONFLICT(uid) DO UPDATE SET reason=excluded.reason, cleared_at=excluded.cleared_at",
+            (str(uid), reason or "", time.time()),
+        )
+
+
+def unclear(uid):
+    with _conn() as c:
+        cur = c.execute("DELETE FROM cleared WHERE uid=?", (str(uid),))
+        return cur.rowcount > 0
+
+
+def is_cleared(uid):
+    with _conn() as c:
+        return c.execute("SELECT 1 FROM cleared WHERE uid=?", (str(uid),)).fetchone() is not None
 
 
 # --- verification issuance tracking (so we never re-DM + keep a record) ------

@@ -32,6 +32,7 @@ Optional:
 """
 import hashlib
 import hmac
+import json
 import logging
 import os
 import time
@@ -452,6 +453,7 @@ class AltGuard(commands.Cog):
         results = data.get("results", [])
         if not results:
             await self._poll_shares(guild)  # still surface link-sharing
+            await self._poll_precaptures(guild)
             return
 
         acked = []
@@ -480,13 +482,18 @@ class AltGuard(commands.Cog):
                 continue
             _, removed = await self._quarantine(member, "verification flagged")
 
-            # classify every fingerprint-matched account: in-server / banned / left
-            cascaded, banned, left = [], [], []
+            # classify every fingerprint-matched account: in-server / banned / left / cleared
+            cascaded, banned, left, cleared = [], [], [], []
             for alt_uid in res.get("alt_uids", []):
                 aid = int(alt_uid)
                 alt = guild.get_member(aid)
                 if alt:
-                    if not qstore.is_quarantined(alt.id):
+                    if qstore.is_cleared(aid):
+                        # mod-trusted (released) — keep as a detector: the NEW account
+                        # is still quarantined for review above, but never re-quarantine
+                        # the cleared member. Just name them as the match.
+                        cleared.append(alt)
+                    elif not qstore.is_quarantined(alt.id):
                         ok, _ = await self._quarantine(alt, f"alt of {member.id} (same device)")
                         if ok:
                             cascaded.append(alt)
@@ -505,7 +512,7 @@ class AltGuard(commands.Cog):
                 except discord.Forbidden:
                     log.warning("Wanted to ban %s for evasion but lack permission", member)
 
-            await self._alert(guild, member, res, removed, cascaded, banned, left, evaded)
+            await self._alert(guild, member, res, removed, cascaded, banned, left, evaded, cleared)
 
         try:
             async with self.session.post(
@@ -516,6 +523,69 @@ class AltGuard(commands.Cog):
             log.debug("ack failed: %s", e)
 
         await self._poll_shares(guild)
+        await self._poll_precaptures(guild)
+
+    async def _poll_precaptures(self, guild):
+        """Surface pre-auth landing-page captures whose DEVICE matched a known
+        account — fires even for visitors who bail before completing OAuth. Loud
+        @here when the matched account is on the watchlist."""
+        try:
+            async with self.session.get(
+                f"{GATE_URL}/api/precaptures", headers=_hmac_headers(), timeout=10
+            ) as r:
+                if r.status != 200:
+                    return
+                rows = (await r.json()).get("precaptures", [])
+        except Exception:
+            return
+        if not rows:
+            return
+        ch = guild.get_channel(MODLOG_CHANNEL_ID) if guild else None
+        ids = []
+        for p in rows:
+            ids.append(p["id"])
+            if not ch:
+                continue
+            try:
+                matches = json.loads(p.get("matches") or "[]")
+            except (TypeError, ValueError):
+                matches = []
+            try:
+                attrs = json.loads(p.get("attrs") or "{}")
+            except (TypeError, ValueError):
+                attrs = {}
+            watched = [m for m in matches if qstore.is_watched(m["uid"])]
+            top = p.get("top_pct", 0)
+            match_txt = ", ".join(f"<@{m['uid']}> (`{m['uid']}` · {m['pct']}%)" for m in matches[:6]) or "—"
+            loud = bool(watched)
+            target = p.get("target_uid")
+            embed = discord.Embed(
+                title="🚨 WATCHED device opened a verify link" if loud
+                      else "👁️ Link-open device matched a known account",
+                color=0x8B0000 if loud else 0xE0A23B,
+                description=(
+                    f"A verify link **issued for** <@{target}> (`{target}`) was opened by a device that "
+                    f"matches **{len(matches)}** known account(s), up to **{top}%**. Captured on the trust "
+                    f"page **before** the Discord login — so this fires even if they never finish verifying."
+                ),
+            )
+            embed.add_field(name="Device matches", value=match_txt[:1024], inline=False)
+            if watched:
+                embed.add_field(name="🚨 On your watchlist",
+                                value=", ".join(f"<@{m['uid']}>" for m in watched)[:1024], inline=False)
+            embed.add_field(name="🖥️ Device", value=_device_profile(attrs)[:1024], inline=False)
+            conn = f"`{p.get('ip','?')}`" + (f" · JA4 `{p['ja4']}`" if p.get("ja4") else "")
+            embed.add_field(name="Connection", value=conn, inline=False)
+            embed.set_footer(text="Pre-auth capture · unattributed — the opener may not be the link's target")
+            await ch.send(content="@here" if loud else None, embed=embed,
+                          allowed_mentions=discord.AllowedMentions(everyone=True))
+        try:
+            async with self.session.post(
+                f"{GATE_URL}/api/precaptures/ack", headers=_hmac_headers(), json={"ids": ids}, timeout=10
+            ):
+                pass
+        except Exception:
+            pass
 
     async def _poll_shares(self, guild):
         """Surface link-sharing: a link issued for A opened by B (verified as B)."""
@@ -634,10 +704,11 @@ class AltGuard(commands.Cog):
     async def _before_poll(self):
         await self.bot.wait_until_ready()
 
-    async def _alert(self, guild, member, res, removed, cascaded, banned, left, evaded):
+    async def _alert(self, guild, member, res, removed, cascaded, banned, left, evaded, cleared=None):
         ch = guild.get_channel(MODLOG_CHANNEL_ID)
         if not ch:
             return
+        cleared = cleared or []
         age_days = (discord.utils.utcnow() - member.created_at).days
         reasons = "\n".join(f"• {r}" for r in res.get("reasons", [])) or "• (none)"
         removed_txt = ", ".join(r.mention for r in removed) if removed else "none"
@@ -671,6 +742,13 @@ class AltGuard(commands.Cog):
         if left:
             embed.add_field(name="Matches accounts that left", value=", ".join(f"<@{u}> (`{u}`)" for u in left)[:1024], inline=False)
         embed.add_field(name="Alts in-server also quarantined", value=cascade_txt, inline=False)
+        if cleared:
+            embed.add_field(
+                name="✅ Matches a CLEARED member (not re-quarantined)",
+                value=", ".join(f"{m.mention} (`{m.id}`)" for m in cleared)[:1024] +
+                      "\n-# this new account was held for review *because* it matches a trusted member's device",
+                inline=False,
+            )
         if not evaded:
             embed.add_field(name="Roles removed (stored for restore)", value=removed_txt, inline=False)
         embed.set_footer(text="False positive? /altguard-release @user restores their exact roles")
@@ -778,10 +856,12 @@ class AltGuard(commands.Cog):
         user="the member to verify (in-server)",
         user_id="raw Discord ID — for an ex-user who left or was banned",
         dm="True (default) = try to DM them; False = just give YOU the link",
+        quarantine="True = strip their roles + hold them until they pass (in-server only)",
     )
     @app_commands.default_permissions(administrator=True)
     async def check(self, interaction: discord.Interaction,
-                    user: discord.User = None, user_id: str = None, dm: bool = True):
+                    user: discord.User = None, user_id: str = None, dm: bool = True,
+                    quarantine: bool = False):
         await interaction.response.defer(ephemeral=True, thinking=True)
         uid = str(user.id) if user else (user_id or "").strip()
         if not uid.isdigit():
@@ -791,7 +871,8 @@ class AltGuard(commands.Cog):
             await interaction.followup.send("That's a bot — nothing to check.", ephemeral=True)
             return
 
-        in_server = interaction.guild.get_member(int(uid)) is not None
+        member_obj = interaction.guild.get_member(int(uid))
+        in_server = member_obj is not None
         target = user
         if target is None:
             try:
@@ -800,9 +881,20 @@ class AltGuard(commands.Cog):
                 target = None
 
         url = _verify_link(int(uid), interaction.guild_id)
+        # optionally hold them until they pass — strip + store roles, apply quarantine
+        q_status = ""
+        if quarantine:
+            if member_obj is None:
+                q_status = "\n⚠️ Can't quarantine — they're not in the server."
+            else:
+                ok, removed = await self._quarantine(member_obj, "manual /altguard-check quarantine")
+                q_status = (
+                    f"\n🔒 Quarantined — stripped {len(removed)} role(s); `/altguard-release` to undo."
+                    if ok else "\n⚠️ Quarantine failed — check my Manage Roles permission / role order."
+                )
         dmed = False
         if dm and target is not None:
-            dmed = await self._dm_user(target, interaction.guild)
+            dmed = await self._dm_user(target, interaction.guild, locked=quarantine)
         if dmed:
             status = "📨 Verify link DMed to them."
         elif not dm:
@@ -816,7 +908,7 @@ class AltGuard(commands.Cog):
         name = target.display_name if target else uid
         tag = " — not in server" if not in_server else ""
         await interaction.followup.send(
-            f"Verification requested for <@{uid}> (`{uid}`){tag}.\n{status}\n`{url}`\n"
+            f"Verification requested for <@{uid}> (`{uid}`){tag}.\n{status}\n`{url}`{q_status}\n"
             f"-# Scored **as {name}**; OAuth makes them log in as that exact account, so it can't be misattributed. "
             f"Link stays valid until they use it. Result lands in <#{MODLOG_CHANNEL_ID}> and `altguard-records`.",
             ephemeral=True,
@@ -833,6 +925,8 @@ class AltGuard(commands.Cog):
                             f"{' *(ex-user)*' if not in_server else ''}.",
             )
             audit.add_field(name="Delivery", value=delivery, inline=True)
+            if quarantine:
+                audit.add_field(name="Quarantine", value="🔒 held until they pass" if in_server else "—", inline=True)
             audit.set_footer(text="Verdict will post here when they complete it.")
             await ch.send(embed=audit)
 
@@ -906,10 +1000,16 @@ class AltGuard(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     async def release(self, interaction: discord.Interaction, member: discord.Member):
         ok, restored = await self._release(member)
+        # Mark trusted: their device (if on file) stays a live detector — a NEW
+        # account matching it is still quarantined for review — but the alt-cascade
+        # will never re-quarantine this member again.
+        qstore.clear(member.id, f"released by {interaction.user}")
         if ok:
             roles = ", ".join(r.mention for r in restored) if restored else "no stored roles"
             await interaction.response.send_message(
-                f"✅ Cleared quarantine on {member.mention}. Restored: {roles}.", ephemeral=True
+                f"✅ Cleared quarantine on {member.mention}. Restored: {roles}.\n"
+                f"-# Marked trusted — they won't be re-flagged, but anyone matching their device is still held for review.",
+                ephemeral=True,
             )
         else:
             await interaction.response.send_message(
