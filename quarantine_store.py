@@ -182,6 +182,14 @@ def quarantine_reason(uid):
     return row["reason"] if row else None
 
 
+def quarantined_since(uid):
+    """Epoch seconds when the quarantine role was applied (the verify clock
+    start). None if not on record."""
+    with _conn() as c:
+        row = c.execute("SELECT ts FROM quarantined WHERE uid=?", (str(uid),)).fetchone()
+    return row["ts"] if row else None
+
+
 def pop(uid):
     """Return stored role IDs and delete the record (used on release)."""
     role_ids = get(uid)

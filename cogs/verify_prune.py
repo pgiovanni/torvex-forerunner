@@ -105,18 +105,32 @@ class VerifyPrune(commands.Cog):
         qrole = guild.get_role(QUARANTINE_ROLE_ID)
         if not qrole:
             return []
-        cutoff = discord.utils.utcnow() - timedelta(hours=HOURS)
+        cutoff = time.time() - HOURS * 3600
         out = []
         for m in qrole.members:
             if self._exempt(m):
                 continue
-            if m.joined_at is None or m.joined_at > cutoff:
-                continue
+            started = self._held_since(m)
+            if started is None or started > cutoff:
+                continue  # clock starts at QUARANTINE time, not join — a long-time
+                          # member quarantined today gets a fresh 72h, not an instant kick
             v = qstore.verification(m.id)
             if v and v.get("status") == "passed":
                 continue  # passed but role lingered — never prune a verified member
             out.append(m)
         return out
+
+    def _held_since(self, m: discord.Member):
+        """Epoch seconds when this member's verify clock started: when the
+        quarantine role was applied. Falls back to when a link was issued, then
+        to join time. This is the fix for kicking the just-quarantined."""
+        ts = qstore.quarantined_since(m.id)
+        if ts is None:
+            v = qstore.verification(m.id)
+            ts = v.get("issued_at") if v else None
+        if ts is None and m.joined_at:
+            ts = m.joined_at.timestamp()
+        return ts
 
     # ------------------------------------------------------------- the sweep
     @tasks.loop(minutes=INTERVAL_MIN)
@@ -171,7 +185,7 @@ class VerifyPrune(commands.Cog):
         ch = self._modlog()
         if not ch:
             return
-        names = "\n".join(f"• {m.mention} `{m.id}` — joined {self._ago(m)}" for m in candidates[:25])
+        names = "\n".join(f"• {m.mention} `{m.id}` — {self._ago(m)}" for m in candidates[:25])
         extra = f"\n…and {len(candidates) - 25} more" if len(candidates) > 25 else ""
         e = discord.Embed(
             title=f"{self._tag} — {len(candidates)} would be {ACTION}ed",
@@ -213,13 +227,12 @@ class VerifyPrune(commands.Cog):
         except discord.HTTPException:
             pass
 
-    @staticmethod
-    def _ago(m: discord.Member) -> str:
-        if not m.joined_at:
+    def _ago(self, m: discord.Member) -> str:
+        started = self._held_since(m)
+        if not started:
             return "?"
-        d = (discord.utils.utcnow() - m.joined_at)
-        h = int(d.total_seconds() // 3600)
-        return f"{h // 24}d ago" if h >= 24 else f"{h}h ago"
+        h = int((time.time() - started) // 3600)
+        return f"held {h // 24}d" if h >= 24 else f"held {h}h"
 
     # ------------------------------------------------------------- commands
     @app_commands.command(name="prune-status",
@@ -235,7 +248,7 @@ class VerifyPrune(commands.Cog):
         e.add_field(name="Interval", value=f"{INTERVAL_MIN}m (cap {MAX_PER_CYCLE}/cycle)", inline=True)
         e.add_field(name="Last sweep",
                     value=(f"<t:{int(self.last_run)}:R>" if self.last_run else "not yet"), inline=True)
-        names = "\n".join(f"• {m.mention} — joined {self._ago(m)}" for m in candidates[:15]) or "none"
+        names = "\n".join(f"• {m.mention} — {self._ago(m)}" for m in candidates[:15]) or "none"
         extra = f"\n…and {len(candidates) - 15} more" if len(candidates) > 15 else ""
         e.add_field(name=f"Overdue now ({len(candidates)})", value=names + extra, inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True)
