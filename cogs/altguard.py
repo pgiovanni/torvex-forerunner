@@ -576,6 +576,8 @@ class AltGuard(commands.Cog):
             embed.add_field(name="🖥️ Device", value=_device_profile(attrs)[:1024], inline=False)
             conn = f"`{p.get('ip','?')}`" + (f" · JA4 `{p['ja4']}`" if p.get("ja4") else "")
             embed.add_field(name="Connection", value=conn, inline=False)
+            if p.get("timing"):
+                embed.add_field(name="🕒 Timing confidence", value=p["timing"][:1024], inline=False)
             embed.set_footer(text="Pre-auth capture · unattributed — the opener may not be the link's target")
             await ch.send(content="@here" if loud else None, embed=embed,
                           allowed_mentions=discord.AllowedMentions(everyone=True))
