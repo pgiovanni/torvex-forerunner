@@ -95,7 +95,7 @@
       "cooldown_seconds": 0
     },
     {
-      "name": "invite",
+      "name": "add-bot",
       "description": "Add Peepo's Reclaimer to your server.",
       "cog": "help",
       "cooldown_seconds": 0
@@ -216,6 +216,36 @@
       "cog": "moderation",
       "required_permissions": [
         "manage_messages"
+      ]
+    },
+    {
+      "name": "invite",
+      "description": "Get your personal tracked invite link",
+      "cog": "invites",
+      "required_permissions": []
+    },
+    {
+      "name": "tracked-invite",
+      "description": "Mint a labeled invite for a public source like Disboard (mod)",
+      "cog": "invites",
+      "required_permissions": [
+        "manage_guild"
+      ]
+    },
+    {
+      "name": "invite-stats",
+      "description": "Top inviters and join sources (mod)",
+      "cog": "invites",
+      "required_permissions": [
+        "manage_guild"
+      ]
+    },
+    {
+      "name": "invite-lockdown",
+      "description": "Block native invites + purge untracked links, dry-run unless confirmed (admin)",
+      "cog": "invites",
+      "required_permissions": [
+        "administrator"
       ]
     },
     {

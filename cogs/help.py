@@ -63,8 +63,8 @@ class Help(commands.Cog):
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="invite", description="Add Peepo's Reclaimer to your server.")
-    async def invite(self, interaction: discord.Interaction):
+    @app_commands.command(name="add-bot", description="Add Peepo's Reclaimer to your server.")
+    async def add_bot(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🐸 Add Peepo's Reclaimer",
             description=f"[Click here to invite the bot to your server]({INVITE_URL})\n\nBrings the full Torvex RPG, Peepo collectibles, economy, games, and more.",
