@@ -24,7 +24,7 @@ def _can_act(invoker: discord.Member, target: discord.Member, me: discord.Member
 
 
 class Moderation(commands.Cog):
-    """Native moderation commands (ban / unban) — replacing MEE6."""
+    """Native moderation commands (ban / unban / prune-messages) — replacing MEE6."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -162,9 +162,53 @@ class Moderation(commands.Cog):
         await interaction.followup.send(embed=embed)  # public confirmation
         await interaction.followup.send("✅ Done.", ephemeral=True)
 
+    @app_commands.command(
+        name="prune-messages",
+        description="Bulk-delete the last N messages in this channel (count-based, not by date).",
+    )
+    @app_commands.describe(amount="How many recent messages to delete (1–1000).")
+    @app_commands.default_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.guild_only()
+    async def prune_messages(self, interaction: discord.Interaction,
+                             amount: app_commands.Range[int, 1, 1000]):
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.channel
+        me = interaction.guild.me
+
+        if not hasattr(channel, "purge"):
+            await interaction.followup.send(
+                "❌ This channel type doesn't support pruning. Run it in a text/voice channel or thread.",
+                ephemeral=True)
+            return
+        if not channel.permissions_for(me).manage_messages:
+            await interaction.followup.send(
+                "❌ I need the **Manage Messages** permission in this channel.", ephemeral=True)
+            return
+
+        try:
+            deleted = await channel.purge(
+                limit=amount,
+                reason=f"/prune-messages by {interaction.user} ({interaction.user.id})")
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ Discord refused — I'm missing **Manage Messages** here.", ephemeral=True)
+            return
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ Prune failed: {e}", ephemeral=True)
+            return
+
+        n = len(deleted)
+        note = ("\n*(Discord only bulk-deletes messages newer than 14 days — older ones were skipped.)*"
+                if n < amount else "")
+        await interaction.followup.send(
+            f"🧹 Deleted **{n}** message{'' if n == 1 else 's'} in {channel.mention}.{note}",
+            ephemeral=True)
+
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
-            msg = "❌ You need the **Ban Members** permission to use this."
+            perms = ", ".join(p.replace("_", " ").title() for p in error.missing_permissions) or "required"
+            msg = f"❌ You need the **{perms}** permission to use this."
             if interaction.response.is_done():
                 await interaction.followup.send(msg, ephemeral=True)
             else:

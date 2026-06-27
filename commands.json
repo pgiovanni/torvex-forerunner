@@ -211,6 +211,14 @@
       ]
     },
     {
+      "name": "prune-messages",
+      "description": "Bulk-delete the last N messages in a channel by count (mod)",
+      "cog": "moderation",
+      "required_permissions": [
+        "manage_messages"
+      ]
+    },
+    {
       "name": "antinuke",
       "description": "Anti-nuke status (admin)",
       "cog": "antinuke",
