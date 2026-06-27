@@ -24,9 +24,12 @@ invites) + **Create Invite**, and **Manage Roles/Channels** for lockdown.
 """
 import os
 import time
+import hmac
+import hashlib
 import sqlite3
 import logging
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -50,10 +53,21 @@ DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)
 # the permission we strip from @everyone in lockdown
 NO_INVITE = dict(create_instant_invite=False)
 
+# gate access for /invite-intel (fuse invite attribution with device/verdict)
+GATE_URL = os.environ.get("ALTGUARD_GATE_URL", "").rstrip("/")
+SECRET = os.environ.get("ALTGUARD_SECRET", "")
+
+
+def _hmac_headers():
+    ts = str(time.time())
+    sig = hmac.new(SECRET.encode(), ts.encode(), hashlib.sha256).hexdigest()
+    return {"X-AltGuard-TS": ts, "X-AltGuard-Auth": sig}
+
 
 class Invites(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.session = None   # aiohttp, for gate lookups
         self._cache = {}      # guild_id -> {code: uses}
         self._vanity = {}     # guild_id -> vanity uses
         with self._conn() as c:
@@ -86,6 +100,13 @@ class Invites(commands.Cog):
         c = sqlite3.connect(DB_PATH, timeout=30)
         c.row_factory = sqlite3.Row
         return c
+
+    async def cog_load(self):
+        self.session = aiohttp.ClientSession()
+
+    async def cog_unload(self):
+        if self.session:
+            await self.session.close()
 
     # ---------------------------------------------------------------- cache
     async def _refresh_cache(self, guild):
@@ -130,6 +151,7 @@ class Invites(commands.Cog):
             return
         guild = member.guild
         before = dict(self._cache.get(guild.id, {}))
+        vbefore = self._vanity.get(guild.id, 0)
         invites = await self._refresh_cache(guild)
         used = None
         if invites is not None:
@@ -151,9 +173,12 @@ class Invites(commands.Cog):
             else:                          # native/admin/Disboard → use API inviter
                 inviter_id = str(used.inviter.id) if used.inviter else None
                 kind = "native"
-        elif "VANITY_URL" in guild.features:
-            # no normal code matched — vanity is the likely path
-            kind, label = "vanity", "vanity-url"
+        elif "VANITY_URL" in guild.features and self._vanity.get(guild.id, 0) > vbefore:
+            kind, label = "vanity", "vanity-url"          # vanity use-count ticked up
+        else:
+            # no invite code matched and vanity didn't move → Server Discovery /
+            # widget / other inviteless path. Untracked source, but still gate-verified.
+            kind, label = "discovery", "discovery"
 
         age_days = int((time.time() - member.created_at.timestamp()) / 86400)
         with self._conn() as c:
@@ -266,6 +291,56 @@ class Invites(commands.Cog):
         if src:
             e.add_field(name="By source",
                         value="\n".join(f"`{r['src']}` — {r['n']}" for r in src) or "—", inline=False)
+        await interaction.followup.send(embed=e, ephemeral=True)
+
+    @app_commands.command(name="invite-intel",
+                          description="Full join dossier: invite source + device/verdict fused by uid (mod).")
+    @app_commands.describe(user="Member to inspect", user_id="...or a raw Discord ID")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.guild_only()
+    async def invite_intel(self, interaction: discord.Interaction,
+                           user: discord.User = None, user_id: str = None):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        uid = str(user.id) if user else (user_id or "").strip()
+        if not uid.isdigit():
+            await interaction.followup.send("Give me a member or a numeric `user_id`.", ephemeral=True)
+            return
+        e = discord.Embed(title=f"🧾 Invite intel — {uid}", color=0x5865F2)
+
+        # 1) invite attribution (our own db)
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM invite_attributions WHERE uid=? AND guild_id=? ORDER BY joined_at DESC LIMIT 1",
+                (uid, str(interaction.guild.id))).fetchone()
+        if row:
+            src = row["label"] or (f"<@{row['inviter_id']}>" if row["inviter_id"] else "—")
+            e.add_field(name="Joined via",
+                        value=f"`{row['kind']}` · invite `{row['code'] or '—'}` · source: {src}", inline=False)
+            e.add_field(name="Account age at join", value=f"{row['account_age_days']} days", inline=True)
+            e.add_field(name="Joined", value=f"<t:{int(row['joined_at'])}:R>", inline=True)
+        else:
+            e.add_field(name="Joined via",
+                        value="no invite attribution on record (joined before tracking, or bot was offline)", inline=False)
+
+        # 2) device / verdict from the gate (captured at verify, not at join)
+        dev = "gate not configured"
+        if GATE_URL and self.session:
+            try:
+                async with self.session.get(f"{GATE_URL}/api/lookup", params={"uid": uid},
+                                            headers=_hmac_headers(), timeout=10) as r:
+                    data = await r.json()
+                if data.get("found"):
+                    res = data["result"]; a = res.get("attrs") or {}
+                    dev = (f"**{res.get('verdict','?')}** (risk {res.get('match_pct',0)}%) · "
+                           f"{a.get('glRenderer','?')} · {a.get('screen','?')} · "
+                           f"{res.get('country','?')}/{res.get('isp','?')} `{res.get('ip','?')}` · env {res.get('environment','?')}")
+                else:
+                    dev = "no verification on file — never completed the gate, so **no device captured**"
+            except Exception as ex:
+                dev = f"gate lookup failed: {ex}"
+        e.add_field(name="🖥️ Device / verdict (at verify)", value=dev[:1024], inline=False)
+        e.set_footer(text="invite = who/what brought them · device = captured only at verify")
         await interaction.followup.send(embed=e, ephemeral=True)
 
     @app_commands.command(name="invite-lockdown",

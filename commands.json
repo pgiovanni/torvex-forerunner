@@ -241,6 +241,14 @@
       ]
     },
     {
+      "name": "invite-intel",
+      "description": "Join dossier: invite source + device/verdict fused by uid (mod)",
+      "cog": "invites",
+      "required_permissions": [
+        "manage_guild"
+      ]
+    },
+    {
       "name": "invite-lockdown",
       "description": "Block native invites + purge untracked links, dry-run unless confirmed (admin)",
       "cog": "invites",
