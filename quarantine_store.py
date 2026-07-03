@@ -175,6 +175,10 @@ def save(uid, guild_id, role_ids, reason):
     with _conn() as c:
         existing = c.execute("SELECT uid FROM quarantined WHERE uid=?", (str(uid),)).fetchone()
         if existing:
+            # restart the prune clock on re-quarantine (e.g. leave->rejoin) so the
+            # member gets a fresh PRUNE_HOURS window instead of inheriting an ancient
+            # ts that insta-kicks on rejoin. Keep the original role snapshot.
+            c.execute("UPDATE quarantined SET ts=? WHERE uid=?", (time.time(), str(uid)))
             return
         c.execute(
             "INSERT INTO quarantined(uid, guild_id, role_ids, reason, ts) VALUES (?,?,?,?,?)",
