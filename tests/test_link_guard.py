@@ -150,6 +150,21 @@ check("expanded shorteners loaded", {"t.co", "goo.gl", "cutt.ly", "tiny.cc"} <= 
 check("a new shortener stays LOW severity",
       lg.classify_severity(hits("see https://t.co/abc"), SHORTX) == "low")
 
+# --- DNS-origin detection: unknown vanity resolving onto a known tracker IP ---
+check("load_category('grabify') includes grabify.link", "grabify.link" in lg.load_category("grabify"))
+ch = lg.candidate_hostnames("see https://new-vanity.lol/x and [m](https://foo.bar/y)", [])
+check("candidate_hostnames pulls hosts from text + masked", {"new-vanity.lol", "foo.bar"} <= ch)
+m = lg.match_tracker_ip("new-vanity.lol", {"52.173.151.229"}, {"52.173.151.229", "104.247.81.99"})
+check("unknown host on a tracker IP is flagged", m is not None and m["resolved_ip"] == "52.173.151.229")
+check("an IP-origin finding classifies HIGH",
+      m is not None and lg.classify_severity({"new-vanity.lol": m}, SHORTX) == "high")
+check("host NOT on a tracker IP stays clean",
+      lg.match_tracker_ip("normal.com", {"93.184.216.34"}, {"52.173.151.229"}) is None)
+# CDN-exclusion: a Cloudflare IP must never be learned as a tracker origin
+check("cloudflare IP flagged as shared CDN", lg._is_shared_cdn("104.26.8.202") is True)
+check("dedicated azure origin NOT shared CDN", lg._is_shared_cdn("52.173.151.229") is False)
+check("private IP excluded from tracker set", lg._is_shared_cdn("10.0.0.5") is True)
+
 print()
 if _fails:
     print(f"{len(_fails)} FAILED: {_fails}")

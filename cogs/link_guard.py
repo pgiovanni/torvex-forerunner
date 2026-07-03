@@ -35,6 +35,7 @@ the cog NEVER makes an HTTP request to a suspected tracker (that would fire it).
 """
 import asyncio
 import datetime
+import ipaddress
 import json
 import logging
 import os
@@ -44,9 +45,11 @@ import sys
 import time
 from urllib.parse import unquote, urlparse
 
+import socket
+
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import quarantine_store as qstore  # shared with AntiNuke/AltGuard — /altguard-release restores
 
@@ -59,6 +62,46 @@ _DATA = os.path.join(os.path.dirname(__file__), "..", "data", "link_hitlist.json
 # Durable catch log — survives restarts; keyed to the offender's user id so a hit
 # ties back to their AltGuard verification record (a known-offender trail).
 _TRIPDB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "linkguard.db")
+
+# Known dedicated tracker origin IPs (grabify/iplogger shared hosts). Seeded from
+# DNS recon; the cog AUTO-LEARNS more by resolving the grabify corpus and keeping
+# only IPs that >= _IP_CONSENSUS known grabber domains share — so a shared-hosting
+# coincidence can't become a block rule. DNS resolution only, never HTTP, so a
+# lookup never fires the tracker.
+_SEED_TRACKER_IPS = {"52.173.151.229", "104.247.81.99"}
+_IP_CONSENSUS = 2
+
+# Shared reverse-proxy CDN ranges (Cloudflare et al.) — these front MILLIONS of
+# unrelated sites, so an IP here can NEVER be a dedicated tracker origin even if
+# several grabber domains resolve to it (grabify.link itself sits behind
+# Cloudflare). Auto-learned IPs in these ranges are dropped, or we'd flag half the
+# web. Dedicated cloud-VM ranges (Azure/AWS/GCP) are NOT excluded — a grabber's
+# own box lives there (52.173.151.229 is Azure).
+_CDN_EXCLUDE = [ipaddress.ip_network(c) for c in (
+    "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+    "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+    "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",       # Cloudflare
+    "151.101.0.0/16",                                         # Fastly
+)]
+
+
+def _is_shared_cdn(ip):
+    """True if an IP is a shared CDN / private / reserved address — never trust it
+    as a dedicated tracker origin."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_multicast:
+        return True
+    return any(addr in net for net in _CDN_EXCLUDE)
+# hosts we never bother resolving — common infra that could never be a tracker IP.
+_SKIP_RESOLVE = {
+    "discord.com", "discordapp.com", "cdn.discordapp.com", "media.discordapp.net",
+    "tenor.com", "youtube.com", "youtu.be", "google.com", "github.com",
+    "twitter.com", "x.com", "reddit.com", "imgur.com", "twitch.tv", "spotify.com",
+}
 
 # URL-ish token (with or without scheme, or bare www.) — greedy up to whitespace
 # or a delimiter. Used to pull hostnames for suffix matching + vector labelling.
@@ -119,6 +162,17 @@ def load_shortener_rules(path=_DATA):
     except (OSError, ValueError):
         return set()
     return {normalize_rule(d) for d in data.get("shorteners", []) if normalize_rule(d)}
+
+
+def load_category(cat, path=_DATA):
+    """Normalized rule list for a single category (e.g. 'grabify'). Used to learn
+    tracker origin IPs from just the dedicated-grabber category."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return [normalize_rule(d) for d in data.get(cat, []) if normalize_rule(d)]
 
 
 def classify_severity(findings, shortener_rules):
@@ -220,6 +274,28 @@ def scan(content, embed_dicts, domains, allow=()):
     return findings
 
 
+def candidate_hostnames(content, embed_dicts):
+    """Every hostname referenced in the text, masked links, or embeds — the set
+    the IP-origin check resolves (minus the ones a domain rule already caught)."""
+    content = content or ""
+    embed_strings = []
+    for e in (embed_dicts or []):
+        _flatten(e, embed_strings)
+    tokens = set(_URL_RE.findall(content))
+    tokens.update(_URL_RE.findall(" \n ".join(embed_strings)))
+    tokens.update(_MASK_RE.findall(content))
+    return {h for h in (hostname_of(t) for t in tokens) if h}
+
+
+def match_tracker_ip(host, resolved_ips, tracker_ips):
+    """If a host resolves onto a known tracker origin IP, return an IP-vector
+    finding for it, else None. Pure — unit-testable without live DNS."""
+    hit = set(resolved_ips) & set(tracker_ips)
+    if hit:
+        return {"vectors": {"ip"}, "hidden": False, "resolved_ip": sorted(hit)[0]}
+    return None
+
+
 def defang(s):
     """Render a URL/domain un-clickable for the mod-log."""
     return (s or "").replace("http", "hxxp").replace(".", "[.]")
@@ -294,9 +370,92 @@ class LinkGuard(commands.Cog):
         # message ids already written to the durable trip log (one row per catch
         # even though we scan twice). {message_id: (expiry_ts, offense_count)}
         self._logged = {}
+        # DNS-origin detection: known tracker IPs (seed + auto-learned) + resolver
+        # cache so a repeated host isn't looked up twice. {host: (expiry_ts, {ips})}
+        self._tracker_ips = set(_SEED_TRACKER_IPS)
+        self._dns_cache = {}
         _init_tripdb()
         log.info("link_guard: loaded %d base domains (%d shorteners)",
                  len(self.base), len(self.shortener_rules))
+
+    async def cog_load(self):
+        self.refresh_tracker_ips.start()
+
+    async def cog_unload(self):
+        self.refresh_tracker_ips.cancel()
+
+    # --------------------------------------------------- DNS-origin detection
+    @staticmethod
+    def _resolve_blocking(host):
+        try:
+            return {info[4][0] for info in socket.getaddrinfo(host, None) if info[4]}
+        except OSError:
+            return set()
+
+    async def _resolve(self, host, fresh=False):
+        """A-record set for a host (cached ~5 min). Runs in an executor with a
+        hard timeout so a slow resolver can't stall the event loop. DNS only."""
+        now = time.time()
+        if not fresh:
+            hit = self._dns_cache.get(host)
+            if hit and hit[0] > now:
+                return hit[1]
+        try:
+            loop = asyncio.get_event_loop()
+            ips = await asyncio.wait_for(
+                loop.run_in_executor(None, self._resolve_blocking, host), timeout=3)
+        except Exception:
+            ips = set()
+        if len(self._dns_cache) > 4096:
+            self._dns_cache = {k: v for k, v in self._dns_cache.items() if v[0] > now}
+        self._dns_cache[host] = (now + 300, ips)
+        return ips
+
+    @tasks.loop(hours=6)
+    async def refresh_tracker_ips(self):
+        await self._rebuild_tracker_ips()
+
+    @refresh_tracker_ips.before_loop
+    async def _before_refresh(self):
+        await self.bot.wait_until_ready()
+
+    async def _rebuild_tracker_ips(self):
+        """Resolve the grabify corpus and keep IPs shared by >= _IP_CONSENSUS known
+        grabber domains — dedicated tracker origins, safe to block by IP. Catches
+        grabify's rotating vanities pointed at a known origin the domain list misses."""
+        grabify = [d for d in load_category("grabify") if "." in d]
+        try:
+            resolved = await asyncio.gather(*(self._resolve(d, fresh=True) for d in grabify))
+        except Exception:
+            return
+        counts = {}
+        for ips in resolved:
+            for ip in ips:
+                counts[ip] = counts.get(ip, 0) + 1
+        learned = {ip for ip, n in counts.items()
+                   if n >= _IP_CONSENSUS and not _is_shared_cdn(ip)}
+        self._tracker_ips = set(_SEED_TRACKER_IPS) | learned
+        log.info("link_guard: tracker-IP set = %d (%d auto-learned from grabify, CDN-filtered)",
+                 len(self._tracker_ips), len(learned))
+
+    async def _augment_ip(self, findings, content, embed_dicts, cfg):
+        """Add HIGH findings for unknown hosts that resolve onto a known tracker
+        origin IP — the durable catch for grabify's rotating vanity domains."""
+        trackers = self._tracker_ips | {str(x) for x in (cfg.get("linkguard_tracker_ips") or [])}
+        if not trackers:
+            return
+        allow = {normalize_rule(a) for a in (cfg.get("linkguard_allow_domains") or []) if normalize_rule(a)}
+        covered = set(findings)
+        for host in list(candidate_hostnames(content, embed_dicts))[:8]:
+            if host in _SKIP_RESOLVE or host in findings:
+                continue
+            if any(host == r or host.endswith("." + r) for r in covered):
+                continue  # already caught by a domain rule
+            if any(host == a or host.endswith("." + a) for a in allow):
+                continue
+            finding = match_tracker_ip(host, await self._resolve(host), trackers)
+            if finding:
+                findings[host] = finding
 
     # ------------------------------------------------------------- helpers
     def _domains_for(self, cfg):
@@ -417,6 +576,8 @@ class LinkGuard(commands.Cog):
             return
         findings = scan(content, embed_dicts, self._domains_for(cfg),
                         cfg.get("linkguard_allow_domains") or [])
+        if cfg.get("linkguard_resolve_ips", 1):
+            await self._augment_ip(findings, content, embed_dicts, cfg)
         if not findings:
             return
         fresh = self._fresh(message_id, findings.keys())
@@ -579,9 +740,14 @@ class LinkGuard(commands.Cog):
                               description=f"Posted by {who}.")
         lines = []
         for rule in sorted(findings):
-            vecs = findings[rule]["vectors"]
-            tag = "🎭 hidden in embed" if findings[rule]["hidden"] else ", ".join(
-                sorted(v for v in vecs if v != "link"))
+            meta = findings[rule]
+            vecs = meta["vectors"]
+            if meta.get("resolved_ip"):
+                tag = f"🛰️ resolved to known tracker IP `{meta['resolved_ip']}`"
+            elif meta["hidden"]:
+                tag = "🎭 hidden in embed"
+            else:
+                tag = ", ".join(sorted(v for v in vecs if v != "link"))
             lines.append(f"• `{defang(rule)}` — {tag or 'link'}")
         embed.add_field(name="Matched", value="\n".join(lines)[:1024], inline=False)
         if offense:

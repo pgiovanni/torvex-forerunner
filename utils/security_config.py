@@ -50,6 +50,8 @@ DEFAULTS = {
     "linkguard_delete": 1,           # delete the offending message (enforce only)
     "linkguard_extra_domains": [],   # per-guild additions to the base hitlist
     "linkguard_allow_domains": [],   # per-guild false-positive escapes (removed from list)
+    "linkguard_resolve_ips": 1,      # resolve unknown link hosts + match known tracker origin IPs (DNS only)
+    "linkguard_tracker_ips": [],     # extra known-tracker IPs, merged with the auto-learned grabify set
     # response — HIGH severity (real tracker/canary/hidden-embed hit): loud.
     "linkguard_catch_timeout_min": 60,   # timeout the poster on a confirmed catch
     "linkguard_taunt": 1,                # public "we caught you 😈" + laughing gifs
