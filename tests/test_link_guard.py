@@ -130,6 +130,26 @@ check("taunt gifs are tenor view urls",
       all(g.startswith("https://tenor.com/view/") for g in lg.DEFAULT_TAUNT_GIFS)
       and len(lg.DEFAULT_TAUNT_GIFS) == 2)
 
+# --- boundary-safe matching: short shortener rules must not spam FPs ----------
+# 21) a short rule like x.co must NOT match inside a longer label
+r = hits("let's just relax.com and chill, also max.com")
+check("x.co does NOT match inside relax.com/max.com", "x.co" not in r)
+# 22) but a genuine x.co host IS caught
+r = hits("shortened here https://x.co/AbCdE")
+check("x.co matches a real x.co host", "x.co" in r)
+# 23) t.co must not trip on ordinary words
+r = hits("visit root.com or at.com sometime")
+check("t.co does NOT match root.com/at.com", "t.co" not in r)
+# 24) grabber domains still match at a trailing-punctuation boundary
+r = hits("look: grabify.link.")
+check("grabber still matches before a sentence period", "grabify.link" in r)
+
+# --- expanded shortener corpus (LOW severity, per request) -------------------
+SHORTX = lg.load_shortener_rules()
+check("expanded shorteners loaded", {"t.co", "goo.gl", "cutt.ly", "tiny.cc"} <= SHORTX)
+check("a new shortener stays LOW severity",
+      lg.classify_severity(hits("see https://t.co/abc"), SHORTX) == "low")
+
 print()
 if _fails:
     print(f"{len(_fails)} FAILED: {_fails}")

@@ -39,6 +39,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import sys
 import time
 from urllib.parse import unquote, urlparse
@@ -55,6 +56,9 @@ from utils.security_config import get_config, set_config, is_enabled
 log = logging.getLogger("link_guard")
 
 _DATA = os.path.join(os.path.dirname(__file__), "..", "data", "link_hitlist.json")
+# Durable catch log — survives restarts; keyed to the offender's user id so a hit
+# ties back to their AltGuard verification record (a known-offender trail).
+_TRIPDB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "linkguard.db")
 
 # URL-ish token (with or without scheme, or bare www.) — greedy up to whitespace
 # or a delimiter. Used to pull hostnames for suffix matching + vector labelling.
@@ -142,6 +146,14 @@ def _flatten(obj, acc):
             _flatten(v, acc)
 
 
+def _bmatch(rule, blob):
+    """Substring match anchored to domain-label boundaries, so a short rule like
+    `x.co` can't match inside a longer label (`relax.com`, `x.com`) and spam false
+    positives. Dots count as boundaries, so subdomains and a domain at the end of a
+    sentence still match."""
+    return re.search(r"(?<![a-z0-9-])" + re.escape(rule) + r"(?![a-z0-9-])", blob) is not None
+
+
 def scan(content, embed_dicts, domains, allow=()):
     """Core detector. Returns {rule: {"vectors": set(...), "hidden": bool}}.
 
@@ -193,11 +205,11 @@ def scan(content, embed_dicts, domains, allow=()):
                 if (h == rule or h.endswith("." + rule)) and not host_allowed(h):
                     vectors.add("link")
         # substring across each source blob
-        if rule in blob_masked:
+        if _bmatch(rule, blob_masked):
             vectors.add("masked")
-        if rule in blob_embed:
+        if _bmatch(rule, blob_embed):
             vectors.add("embed")
-        if rule in blob_content:
+        if _bmatch(rule, blob_content):
             vectors.add("content")
         if vectors:
             # "hidden": present in the unfurled embed but NOT in the visible text
@@ -211,6 +223,48 @@ def scan(content, embed_dicts, domains, allow=()):
 def defang(s):
     """Render a URL/domain un-clickable for the mod-log."""
     return (s or "").replace("http", "hxxp").replace(".", "[.]")
+
+
+# ------------------------------------------------------- durable trip log
+def _tripdb():
+    c = sqlite3.connect(_TRIPDB, timeout=10)
+    c.row_factory = sqlite3.Row
+    return c
+
+
+def _init_tripdb():
+    with _tripdb() as c:
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS trips (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL,
+                   guild_id TEXT, user_id TEXT, username TEXT,
+                   channel_id TEXT, message_id TEXT,
+                   rules TEXT, vectors TEXT, severity TEXT,
+                   hidden INTEGER, is_webhook INTEGER, enforce INTEGER, actions TEXT)"""
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_trips_user ON trips(guild_id, user_id, ts)")
+
+
+def _persist_trip(row):
+    try:
+        with _tripdb() as c:
+            c.execute(
+                "INSERT INTO trips(ts,guild_id,user_id,username,channel_id,message_id,"
+                "rules,vectors,severity,hidden,is_webhook,enforce,actions) VALUES "
+                "(:ts,:guild_id,:user_id,:username,:channel_id,:message_id,"
+                ":rules,:vectors,:severity,:hidden,:is_webhook,:enforce,:actions)", row)
+    except Exception:
+        log.exception("link_guard: persist trip failed")
+
+
+def _count_user_trips(guild_id, user_id):
+    """Prior catches on record for this user in this guild — their offender count."""
+    try:
+        with _tripdb() as c:
+            return c.execute("SELECT COUNT(*) FROM trips WHERE guild_id=? AND user_id=?",
+                             (str(guild_id), str(user_id))).fetchone()[0]
+    except Exception:
+        return 0
 
 
 # The public "gotcha" — laughing gifs + taunt line dropped in-channel on a
@@ -237,6 +291,10 @@ class LinkGuard(commands.Cog):
         # message ids we've already punished, so the on_message + unfurl-edit
         # passes don't double-punish (dedupe of ACTIONS, separate from alerts).
         self._punished = {}
+        # message ids already written to the durable trip log (one row per catch
+        # even though we scan twice). {message_id: (expiry_ts, offense_count)}
+        self._logged = {}
+        _init_tripdb()
         log.info("link_guard: loaded %d base domains (%d shorteners)",
                  len(self.base), len(self.shortener_rules))
 
@@ -276,6 +334,7 @@ class LinkGuard(commands.Cog):
             channel=message.channel,
             message_id=message.id,
             author_id=(message.author.id if message.author else None),
+            author_name=(str(message.author) if message.author else None),
             content=message.content or "",
             embed_dicts=[e.to_dict() for e in message.embeds],
             is_webhook=bool(message.webhook_id),
@@ -294,6 +353,7 @@ class LinkGuard(commands.Cog):
         data = payload.data or {}
         author = data.get("author") or {}
         author_id = int(author["id"]) if author.get("id") else None
+        author_name = author.get("username")
         channel = guild.get_channel(payload.channel_id)
         if channel is None:
             return
@@ -302,6 +362,7 @@ class LinkGuard(commands.Cog):
             channel=channel,
             message_id=payload.message_id,
             author_id=author_id,
+            author_name=author_name,
             content=data.get("content") or "",
             embed_dicts=data.get("embeds") or [],
             is_webhook=bool(data.get("webhook_id")),
@@ -319,9 +380,35 @@ class LinkGuard(commands.Cog):
         self._punished[message_id] = now + 900
         return False
 
+    def _log_trip(self, *, guild_id, user_id, username, channel_id, message_id,
+                  findings, severity, is_webhook, enforce, acts):
+        """Persist the catch durably (one row per message, survives restarts) and
+        return how many PRIOR catches this user already has in this guild. The
+        user_id is the join key back to their AltGuard verification record."""
+        now = time.time()
+        prior = self._logged.get(message_id)
+        if prior is not None:
+            return prior[1]  # already logged this message (second scan pass)
+        offense = _count_user_trips(guild_id, user_id) if user_id else 0
+        vectors = sorted({v for f in findings.values() for v in f["vectors"]})
+        _persist_trip({
+            "ts": now, "guild_id": str(guild_id),
+            "user_id": str(user_id) if user_id else None, "username": username,
+            "channel_id": str(channel_id) if channel_id else None,
+            "message_id": str(message_id),
+            "rules": json.dumps(sorted(findings)), "vectors": json.dumps(vectors),
+            "severity": severity,
+            "hidden": 1 if any(f["hidden"] for f in findings.values()) else 0,
+            "is_webhook": 1 if is_webhook else 0, "enforce": 1 if enforce else 0,
+            "actions": json.dumps(acts)})
+        if len(self._logged) > 4096:
+            self._logged = {k: v for k, v in self._logged.items() if v[0] > now}
+        self._logged[message_id] = (now + 900, offense)
+        return offense
+
     # ------------------------------------------------------------- core
-    async def _process(self, *, guild, channel, message_id, author_id, content,
-                        embed_dicts, is_webhook, message):
+    async def _process(self, *, guild, channel, message_id, author_id, author_name,
+                        content, embed_dicts, is_webhook, message):
         if not is_enabled(guild.id, "linkguard"):
             return
         cfg = get_config(guild.id)
@@ -363,8 +450,14 @@ class LinkGuard(commands.Cog):
                 if actionable:
                     acts["timed_out"] = await self._timeout(
                         member, cfg.get("linkguard_timeout_min", 10), findings)
+        # durable record (survives restarts) + this user's prior-catch count
+        offense = self._log_trip(
+            guild_id=guild.id, user_id=author_id, username=author_name,
+            channel_id=getattr(channel, "id", None), message_id=message_id,
+            findings=findings, severity=severity, is_webhook=is_webhook,
+            enforce=enforce, acts=acts)
         await self._alert(guild, cfg, channel, author_id, is_webhook,
-                          findings, enforce, severity, acts)
+                          findings, enforce, severity, acts, offense)
 
     async def _delete(self, channel, message, message_id):
         try:
@@ -467,7 +560,7 @@ class LinkGuard(commands.Cog):
         return "@here"
 
     async def _alert(self, guild, cfg, channel, author_id, is_webhook,
-                     findings, enforce, severity, acts):
+                     findings, enforce, severity, acts, offense=0):
         ch = self._modlog(guild, cfg)
         if ch is None:
             return
@@ -491,6 +584,11 @@ class LinkGuard(commands.Cog):
                 sorted(v for v in vecs if v != "link"))
             lines.append(f"• `{defang(rule)}` — {tag or 'link'}")
         embed.add_field(name="Matched", value="\n".join(lines)[:1024], inline=False)
+        if offense:
+            embed.add_field(
+                name="🔁 Known offender",
+                value=f"**{offense}** prior LinkGuard catch(es) on record for this user "
+                      f"— logged and tied to their verification.", inline=False)
         if hidden:
             embed.add_field(
                 name="⚠️ Hidden-embed trick",

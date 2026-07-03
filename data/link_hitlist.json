@@ -29,7 +29,10 @@
     "community.defconwarningsystem"
   ],
   "shorteners": [
-    "bit.ly", "tinyurl", "shorturl"
+    "bit.ly", "tinyurl", "shorturl", "shorturl.at",
+    "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly", "cutt.ly", "rebrand.ly",
+    "rb.gy", "t.ly", "bl.ink", "soo.gd", "v.gd", "adf.ly", "shorte.st",
+    "bit.do", "tiny.cc", "x.co", "s.id", "qr.ae"
   ],
   "user_seed": [
     "xx762.de"
