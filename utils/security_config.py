@@ -44,6 +44,22 @@ DEFAULTS = {
     "verify_channel_id": None,
     # quarantine-lock: channel ids to leave visible (e.g. a #verify channel)
     "lockdown_exempt": [],
+    # link-guard (canary-token / IP-grabber link detection)
+    "linkguard_enabled": 0,          # master opt-in
+    "linkguard_enforce": 0,          # 0 = shadow/alert-only, 1 = act
+    "linkguard_delete": 1,           # delete the offending message (enforce only)
+    "linkguard_extra_domains": [],   # per-guild additions to the base hitlist
+    "linkguard_allow_domains": [],   # per-guild false-positive escapes (removed from list)
+    # response — HIGH severity (real tracker/canary/hidden-embed hit): loud.
+    "linkguard_catch_timeout_min": 60,   # timeout the poster on a confirmed catch
+    "linkguard_taunt": 1,                # public "we caught you 😈" + laughing gifs
+    "linkguard_quarantine": 1,           # also quarantine (strip roles + lock out)
+    "linkguard_quarantine_delay_sec": 600,  # ...this long AFTER the timeout (theatrics)
+    "linkguard_ping": "here",            # modlog ping: "here" | "everyone" | "none" | <role_id>
+    "linkguard_taunt_gifs": [],          # override the default laughing gifs (list of urls)
+    "linkguard_taunt_text": "",          # override the default taunt line
+    # response — LOW severity (URL-shortener-only hit, may be a legit member): gentle.
+    "linkguard_timeout_min": 10,         # short timeout, no quarantine, no public shame
 }
 
 

@@ -289,6 +289,14 @@
       ]
     },
     {
+      "name": "hitlist",
+      "description": "Canary-token / IP-grabber link detection (Manage Server)",
+      "cog": "link_guard",
+      "required_permissions": [
+        "manage_guild"
+      ]
+    },
+    {
       "name": "altguard-verify-panel",
       "description": "Post click-to-verify button (admin)",
       "cog": "altguard",

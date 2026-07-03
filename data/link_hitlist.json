@@ -1,0 +1,37 @@
+{
+  "_comment": "LinkGuard base corpus — canary-token + IP-grabber link domains. Merged from the community grabify lists (jojodevuk gist 2026-05-02 + mayzelf/grabify-domains), the iplogger.org family, canarytokens, and Paul's original AutoMod hitlist. Loaded by cogs/link_guard.py; per-guild additions live in security_config (linkguard_extra_domains). Entries WITHOUT a dot are matched as substrings (AutoMod-wildcard parity); entries with a dot match by hostname suffix AND substring. Refresh sources noted in memory (linkguard-hitlist). No HTTP is ever made against these — verification is DNS-only.",
+  "grabify": [
+    "grabify.link", "grabify.org",
+    "location.cyou", "mymap.icu", "mymap.quest", "mapss.icu", "map-s.online",
+    "crypto-o.click", "cryp-o.online", "customer.autos", "account.beauty",
+    "bank.charity", "photospace.life", "mymassive.pics", "mymassive.store",
+    "mymassive.top", "photovault.store", "photovault.pics", "imagehub.fun",
+    "picturestash.mom", "clickthis.photo", "sharevault.cloud", "picshare.mom",
+    "picshare.hair", "imagestash.pics", "xtube.chat", "myprivate.yachts",
+    "myprivate.pics", "screensnaps.top", "customersupport.click", "mypicparade.pics",
+    "stonks.boats", "stonks.fun", "toes.beauty", "barefoot.pics", "gamer.tattoo",
+    "gamer.hair", "imagevault.cloud", "sugma.mom", "yum.mom", "plz.life",
+    "massive.mom", "massive.boats", "bathtub.pics", "foot.wiki",
+    "thisdomainislong.lol", "gamergirl.pro", "picshost.pics", "pichost.pics",
+    "imghost.pics", "imagehost.pics", "toldyouso.lol", "toldyouso.pics",
+    "screenshare.pics", "noodshare.pics", "cheapcinema.club", "dateing.club",
+    "shrekis.life", "headshot.monster", "progaming.monster", "yourmy.monster",
+    "screenshot.best", "gamingfun.me", "catsnthing.com", "catsnthings.fun",
+    "joinmy.site", "fortnitechat.site", "fortnight.space", "stopify.co"
+  ],
+  "iplogger": [
+    "iplogger.org", "iplogger.com", "iplogger.co", "iplogger.ru", "iplogger.info",
+    "iplogger.cn", "iplogger.online", "iplo.ru", "02ip.ru", "2no.co", "yip.su",
+    "iplis.ru", "ezstat.ru", "maper.info", "bmwforum.co", "hondachat.com", "ps3cfw.com"
+  ],
+  "canary": [
+    "canarytokens", "canarytokens.com", "canarytokens.org",
+    "community.defconwarningsystem"
+  ],
+  "shorteners": [
+    "bit.ly", "tinyurl", "shorturl"
+  ],
+  "user_seed": [
+    "xx762.de"
+  ]
+}
