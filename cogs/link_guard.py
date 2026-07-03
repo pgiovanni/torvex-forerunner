@@ -188,8 +188,37 @@ def classify_severity(findings, shortener_rules):
     return "low"
 
 
+def _embed_url_strings(embed_dicts):
+    """Only the URL-bearing fields of an embed (any *url key: the embed url, image/
+    thumbnail/video url + proxy_url, icon urls) — where a hidden-image grabber
+    actually lives. DELIBERATELY EXCLUDES prose fields (description, title, author/
+    provider name, fields, footer text): a domain merely *mentioned* in a legit
+    unfurl (e.g. a bit.ly inside a YouTube video's description) is third-party
+    content the poster didn't control, and blaming them for it is a false positive."""
+    out = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if isinstance(v, str):
+                    if k.endswith("url"):
+                        out.append(v)
+                elif isinstance(v, (dict, list)):
+                    walk(v)
+        elif isinstance(o, (list, tuple)):
+            for v in o:
+                walk(v)
+
+    for e in (embed_dicts or []):
+        walk(e)
+    return out
+
+
 def _flatten(obj, acc):
-    """Collect every string value from a nested embed dict/list into acc."""
+    """Collect EVERY string value from a nested embed (prose included). Used ONLY
+    by the retroactive audit (scan(..., embed_prose=True)) to catch a grabber link
+    QUOTED in a mod-log entry's description/field — the live detector never uses it
+    (prose matching is the legit-unfurl false-positive source)."""
     if isinstance(obj, str):
         acc.append(obj)
     elif isinstance(obj, dict):
@@ -208,13 +237,18 @@ def _bmatch(rule, blob):
     return re.search(r"(?<![a-z0-9-])" + re.escape(rule) + r"(?![a-z0-9-])", blob) is not None
 
 
-def scan(content, embed_dicts, domains, allow=()):
+def scan(content, embed_dicts, domains, allow=(), embed_prose=False):
     """Core detector. Returns {rule: {"vectors": set(...), "hidden": bool}}.
 
     content       raw message content (may be "")
     embed_dicts   list of embed dicts (discord.Embed.to_dict() or raw payload embeds)
     domains       iterable of hitlist rules (already or not yet normalized)
     allow         iterable of domains to suppress (per-guild allowlist)
+    embed_prose   LIVE detector leaves this False: match only URL/image embed fields,
+                  never the prose (description/title) that carries third-party unfurl
+                  content — a bit.ly in a YouTube video's description is not the
+                  poster's doing. The retroactive AUDIT passes True to also scan prose
+                  (to catch a grabber link quoted inside a mod-log entry).
     """
     content = content or ""
     allow = {normalize_rule(a) for a in allow if normalize_rule(a)}
@@ -224,9 +258,12 @@ def scan(content, embed_dicts, domains, allow=()):
         if r and r not in allow:
             rules.append(r)
 
-    embed_strings = []
-    for e in (embed_dicts or []):
-        _flatten(e, embed_strings)
+    if embed_prose:
+        embed_strings = []
+        for e in (embed_dicts or []):
+            _flatten(e, embed_strings)
+    else:
+        embed_strings = _embed_url_strings(embed_dicts)
     embed_joined = " \n ".join(embed_strings)
 
     masked = _MASK_RE.findall(content)
@@ -278,11 +315,8 @@ def candidate_hostnames(content, embed_dicts):
     """Every hostname referenced in the text, masked links, or embeds — the set
     the IP-origin check resolves (minus the ones a domain rule already caught)."""
     content = content or ""
-    embed_strings = []
-    for e in (embed_dicts or []):
-        _flatten(e, embed_strings)
     tokens = set(_URL_RE.findall(content))
-    tokens.update(_URL_RE.findall(" \n ".join(embed_strings)))
+    tokens.update(_URL_RE.findall(" \n ".join(_embed_url_strings(embed_dicts))))
     tokens.update(_MASK_RE.findall(content))
     return {h for h in (hostname_of(t) for t in tokens) if h}
 

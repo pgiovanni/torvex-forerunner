@@ -93,10 +93,28 @@ check("allow-list suppresses match", "tinyurl" not in r)
 r = hits("https://mybitpay.com/checkout")
 check("unrelated domain doesn't match bit.ly by suffix", "bit.ly" not in r)
 
-# 13) embed description carrying the link (unfurl of a page that mentions it)
+# 13) FP FIX: a domain only in embed PROSE (description/title) must NOT flag the
+#     poster — legit unfurls (YouTube descriptions etc.) carry third-party links.
 embed = {"title": "Free Nitro", "description": "claim at https://fortnitechat.site/gift"}
 r = hits("free stuff", [embed])
-check("embed description link", "fortnitechat.site" in r)
+check("domain in embed prose is IGNORED (live FP fix)", "fortnitechat.site" not in r)
+# 13b) real-world FP: a YouTube unfurl whose description contains a bit.ly
+yt = {"type": "video", "url": "https://www.youtube.com/watch?v=abc",
+      "provider": {"name": "YouTube", "url": "https://www.youtube.com"},
+      "title": "some video", "description": "my socials https://bit.ly/mysocials",
+      "thumbnail": {"url": "https://i.ytimg.com/vi/abc/hq.jpg",
+                    "proxy_url": "https://images-ext-1.discordapp.net/external/x/https/i.ytimg.com/vi/abc/hq.jpg"}}
+r = hits("look https://www.youtube.com/watch?v=abc", [yt])
+check("YouTube unfurl with bit.ly in description does NOT flag poster", "bit.ly" not in r)
+# 13c) but a grabber in the embed IMAGE url IS still caught (the real attack)
+r = hits("cat pic", [{"type": "image", "url": "https://fortnitechat.site/x.png",
+                      "image": {"url": "https://fortnitechat.site/x.png"}}])
+check("grabber in embed image url still caught", "fortnitechat.site" in r)
+# 13d) AUDIT mode (embed_prose=True) DOES see prose — to catch a link quoted in a
+#      mod-log entry during the retroactive scan.
+r = lg.scan("free stuff", [{"description": "claim at https://fortnitechat.site/gift"}],
+            DOMAINS, [], embed_prose=True)
+check("audit mode sees embed prose (mod-log quotes)", "fortnitechat.site" in r)
 
 # 14) multiple domains in one message
 r = hits("https://grabify.link/a and https://iplogger.org/b")
