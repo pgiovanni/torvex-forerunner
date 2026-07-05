@@ -477,6 +477,12 @@ class AltGuard(commands.Cog):
                         "quarantine-on-join" in (qstore.quarantine_reason(member.id) or ""):
                     ok, restored = await self._release(member)
                     await self._released_alert(guild, member, res, restored, ok)
+                else:
+                    # pass with NO join-lock to lift — grandfathered member (joined
+                    # before the gate), a re-verify, or an already-cleared account.
+                    # This path was previously SILENT in the mod log; record it so
+                    # every pass leaves a trace.
+                    await self._verified_note(guild, member, res)
                 continue
             if member is None:
                 continue
@@ -679,6 +685,30 @@ class AltGuard(commands.Cog):
         embed.add_field(name="Connection", value=f"{res.get('country', '?')} · {res.get('isp', '?')}", inline=True)
         if ok:
             embed.add_field(name="Roles restored", value=roles, inline=False)
+        await ch.send(embed=embed)
+
+    async def _verified_note(self, guild, member, res):
+        """A pass that lifted no quarantine-on-join lock — grandfathered member,
+        re-verify, or already-cleared account. Previously unlogged; recorded here
+        so the mod log captures EVERY pass, not just forced-gate releases."""
+        ch = guild.get_channel(MODLOG_CHANNEL_ID) if guild else None
+        if not ch:
+            return
+        who = member.mention if member else f"<@{res['uid']}>"
+        joined = getattr(member, "joined_at", None) if member else None
+        since = f" · member since <t:{int(joined.timestamp())}:D>" if joined else ""
+        embed = discord.Embed(
+            title="✅ Verified — no lock to lift",
+            color=0x3BA55D,
+            description=(
+                f"{who} `{res['uid']}` passed verification, but no quarantine-on-join "
+                f"lock was held, so nothing was released. **Possibly grandfathered** "
+                f"(joined before the gate) — could also be a re-verify or already "
+                f"cleared.{since}"
+            ),
+        )
+        embed.add_field(name="Top device match", value=f"{res.get('risk', 0)}%", inline=True)
+        embed.add_field(name="Connection", value=f"{res.get('country', '?')} · {res.get('isp', '?')}", inline=True)
         await ch.send(embed=embed)
 
     async def _watch_alert(self, guild, res):
