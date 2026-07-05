@@ -4,6 +4,8 @@ from discord.ext import commands
 import asyncpg
 import aiohttp
 import os
+import time
+import random
 import logging
 from datetime import date
 
@@ -70,6 +72,28 @@ def xp_for_level(level: int) -> int:
 def level_from_xp(xp: int) -> int:
     level = 1
     while xp >= xp_for_level(level + 1):
+        level += 1
+    return level
+
+
+# ── MEE6-parity curve for SERVER (guild) levels ───────────────────────────────
+# MEE6's formula: XP to go from level L to L+1 = 5L² + 50L + 100, levels start
+# at 0. Server XP uses this curve so XP imported from MEE6's leaderboard API
+# lands on the exact same level number and future levelups pace identically.
+# Global level keeps the old exponential curve — it feeds RPG stat multipliers
+# and is a separate system.
+GUILD_XP_MIN = 15
+GUILD_XP_MAX = 25
+GUILD_XP_COOLDOWN = 60  # seconds — MEE6 awards XP at most once per minute
+
+def mee6_xp_for_level(level: int) -> int:
+    """Cumulative XP required to REACH `level` (level 0 = 0 XP)."""
+    l = max(level, 0)
+    return (5 * l * (l - 1) * (2 * l - 1)) // 6 + 25 * l * (l - 1) + 100 * l
+
+def mee6_level_from_xp(xp: int) -> int:
+    level = 0
+    while xp >= mee6_xp_for_level(level + 1):
         level += 1
     return level
 
@@ -176,6 +200,8 @@ class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.pool: asyncpg.Pool | None = None
+        # (user_id, guild_id) → monotonic ts of last guild-XP award (MEE6 pacing)
+        self._guild_xp_last: dict[tuple[str, str], float] = {}
 
     async def cog_load(self):
         self.pool = await asyncpg.create_pool(DB_DSN)
@@ -261,7 +287,8 @@ class Economy(commands.Cog):
         )
 
     async def record_message(self, user: discord.User | discord.Member, guild_id: int | None) -> tuple:
-        """Award bucks + XP. Returns (new_level, leveled_up, levelup_notifs)."""
+        """Award bucks + XP.
+        Returns (new_level, leveled_up, levelup_notifs, guild_level, guild_leveled_up)."""
         row = await self.get_or_create(user)
         today = date.today()
 
@@ -300,15 +327,29 @@ class Economy(commands.Cog):
             user.display_name, str(user.id)
         )
 
-        # Track XP + regular bucks per guild for local leaderboards
+        # Track XP + regular bucks per guild for local leaderboards.
+        # Server XP paces like MEE6: 15-25 XP per message, at most once a minute,
+        # levels on the MEE6 curve, and a level never goes DOWN (import policy).
+        g_new_level  = None
+        g_leveled_up = False
         if guild_id:
             guild_xp_row = await self.pool.fetchrow(
                 "SELECT xp, level, regular_bucks, daily_regular_bucks_count, daily_regular_bucks_date FROM guild_xp WHERE discord_id = $1 AND guild_id = $2",
                 str(user.id), str(guild_id)
             )
             g_old_xp    = guild_xp_row["xp"]    if guild_xp_row else 0
-            g_new_xp    = g_old_xp + XP_PER_MESSAGE
-            g_new_level = level_from_xp(g_new_xp)
+            g_old_level = guild_xp_row["level"] if guild_xp_row else 0
+
+            cd_key  = (str(user.id), str(guild_id))
+            now_ts  = time.monotonic()
+            g_xp_gain = 0 if now_ts - self._guild_xp_last.get(cd_key, -GUILD_XP_COOLDOWN) < GUILD_XP_COOLDOWN \
+                        else random.randint(GUILD_XP_MIN, GUILD_XP_MAX)
+            if g_xp_gain:
+                self._guild_xp_last[cd_key] = now_ts
+
+            g_new_xp     = g_old_xp + g_xp_gain
+            g_new_level  = max(g_old_level, mee6_level_from_xp(g_new_xp))
+            g_leveled_up = g_new_level > g_old_level
 
             g_is_new_day       = (not guild_xp_row) or (guild_xp_row["daily_regular_bucks_date"] != today)
             g_regular_count    = 0 if g_is_new_day else (guild_xp_row["daily_regular_bucks_count"] or 0)
@@ -327,9 +368,9 @@ class Economy(commands.Cog):
                     regular_bucks             = guild_xp.regular_bucks + $6,
                     daily_regular_bucks_count = CASE WHEN guild_xp.daily_regular_bucks_date = $8 THEN guild_xp.daily_regular_bucks_count + $7 ELSE $7 END,
                     daily_regular_bucks_date  = $8
-            """, str(user.id), str(guild_id), g_new_xp, g_new_level, XP_PER_MESSAGE, g_regular_to_award, g_regular_to_award, today)
+            """, str(user.id), str(guild_id), g_new_xp, g_new_level, g_xp_gain, g_regular_to_award, g_regular_to_award, today)
 
-        return (new_level, new_level > old_level, row["levelup_notifs"])
+        return (new_level, new_level > old_level, row["levelup_notifs"], g_new_level, g_leveled_up)
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild):
@@ -347,17 +388,21 @@ class Economy(commands.Cog):
         guild_id = message.guild.id if message.guild else None
         print(f"[economy] on_message: user={message.author.id} guild={guild_id}", flush=True)
         try:
-            new_level, leveled_up, user_notifs = await self.record_message(message.author, guild_id)
+            new_level, leveled_up, user_notifs, g_level, g_leveled_up = await self.record_message(message.author, guild_id)
 
-            if leveled_up and user_notifs and guild_id:
-                guild_row = await self.pool.fetchrow(
-                    "SELECT levelup_notifs FROM guild_settings WHERE guild_id = $1", str(guild_id)
-                )
-                guild_notifs = guild_row["levelup_notifs"] if guild_row else True
-                if guild_notifs:
-                    await message.channel.send(
-                        f"⬆️ {message.author.mention} leveled up to **Level {new_level}**!"
+            # Server level is the announced/reward level (MEE6 parity); the
+            # level_roles cog listens for this to swap Level N+ reward roles.
+            if g_leveled_up and guild_id:
+                self.bot.dispatch("peepo_guild_level_up", message.author, message.guild, g_level)
+                if user_notifs:
+                    guild_row = await self.pool.fetchrow(
+                        "SELECT levelup_notifs FROM guild_settings WHERE guild_id = $1", str(guild_id)
                     )
+                    guild_notifs = guild_row["levelup_notifs"] if guild_row else True
+                    if guild_notifs:
+                        await message.channel.send(
+                            f"⬆️ {message.author.mention} leveled up to **Level {g_level}**!"
+                        )
 
             await _api("POST", "/api/bot/game/sync-level", json={
                 "discordId": str(message.author.id),
@@ -388,10 +433,11 @@ class Economy(commands.Cog):
 
         if guild_row:
             g_xp    = guild_row["xp"]
-            g_level = level_from_xp(g_xp)   # recompute — stored value may lag
-            g_ct    = 0 if g_level == 1 else xp_for_level(g_level)
-            g_prog  = g_xp - g_ct
-            g_next  = xp_for_level(g_level + 1) - g_ct
+            # MEE6 curve; never show lower than the stored level (import policy)
+            g_level = max(guild_row["level"], mee6_level_from_xp(g_xp))
+            g_ct    = mee6_xp_for_level(g_level)
+            g_prog  = max(g_xp - g_ct, 0)
+            g_next  = mee6_xp_for_level(g_level + 1) - g_ct
             g_is_today   = guild_row["daily_regular_bucks_date"] == today
             g_daily_reg  = guild_row["daily_regular_bucks_count"] if g_is_today else 0
             embed.add_field(name="💵 Server Bucks",  value=f"{guild_row['regular_bucks']:,}", inline=True)
