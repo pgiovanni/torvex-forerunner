@@ -34,6 +34,20 @@ DEFAULTS = {
     "antinuke_timeout_min": 10,
     "antinuke_restore_bans": 1,
     "whitelist": [],                # ids never acted on
+    # per-vector rate overrides on top of the code defaults (antinuke.ACTION_LIMITS):
+    # {vector: [count, window_s]}. Set via /antinuke. Missing vector = default.
+    "antinuke_limits": {},
+    # message-flood: server default [count, window_s] (None = code default FLOOD_RATE)
+    "antinuke_flood": None,
+    # per-channel message-flood override: {channel_id(str): [count, window_s]}
+    "antinuke_channel_flood": {},
+    # channels where message-flood is NOT enforced (spam/bot channels — "allowed
+    # to be spammed"). mention-bomb / @everyone spam still apply everywhere.
+    "antinuke_spam_channels": [],
+    # hard lockdown: granting a role carrying Administrator / Manage-Server is
+    # instantly reverted + the granter stripped, unless the granter is the guild
+    # OWNER or this bot (ignores the general whitelist). 1 = on.
+    "antinuke_admin_lockdown": 1,
     # altguard tunables
     "quarantine_on_join": 0,        # forced gate
     "dm_on_join": 1,
@@ -62,6 +76,17 @@ DEFAULTS = {
     "linkguard_taunt_text": "",          # override the default taunt line
     # response — LOW severity (URL-shortener-only hit, may be a legit member): gentle.
     "linkguard_timeout_min": 10,         # short timeout, no quarantine, no public shame
+    # message archive + mod-log (msglog) — MEE6/Quark/Carl-bot log replacement
+    "msglog_enabled": 0,             # master opt-in (archive + logging)
+    "msglog_channel_id": None,       # log channel; falls back to modlog_channel_id
+    "msglog_deletes": 1,             # log single deletes (with audit-log WHO attribution)
+    "msglog_edits": 1,               # log before/after on edits
+    "msglog_bulk": 1,                # log bulk deletes with a transcript file
+    "msglog_log_bots": 0,            # also log EDITS by bots/webhooks (their deletes always log)
+    "msglog_media": 1,               # cache attachments to disk so deleted media can be re-posted
+    "msglog_media_max_mb": 25,       # per-file cache cap
+    "msglog_media_days": 30,         # media cache retention (log re-posts persist in Discord)
+    "msglog_ignore_channels": [],    # channels never LOGGED (still archived)
 }
 
 

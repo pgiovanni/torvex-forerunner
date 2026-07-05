@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 
 # Databases (runtime state — may contain user data)
+media_cache/
 *.db
 *.db-wal
 *.db-shm

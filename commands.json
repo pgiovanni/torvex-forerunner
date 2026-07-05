@@ -375,6 +375,22 @@
       "required_permissions": [
         "administrator"
       ]
+    },
+    {
+      "name": "msglog",
+      "description": "Message archive + deletion/edit logging with who-deleted-it attribution (Manage Server)",
+      "cog": "mod_log",
+      "required_permissions": [
+        "manage_guild"
+      ]
+    },
+    {
+      "name": "rolemenu",
+      "description": "Self-assign role panels (admin)",
+      "cog": "role_menu",
+      "required_permissions": [
+        "manage_roles"
+      ]
     }
   ]
 }
