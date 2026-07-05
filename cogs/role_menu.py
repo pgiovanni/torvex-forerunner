@@ -142,12 +142,11 @@ def _build_view(panel_id, roles):
 class RoleMenu(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self._registered = False
 
-    @commands.Cog.listener()
-    async def on_ready(self):
-        if self._registered:
-            return
+    async def cog_load(self):
+        # register persistent views at load time (cog_load, not on_ready — the
+        # bot loads cogs in setup_hook and add_view needs no guild cache, so
+        # buttons are live before the gateway can deliver a single click)
         n = 0
         with _conn() as c:
             for p in c.execute("SELECT panel_id FROM panels").fetchall():
@@ -155,8 +154,7 @@ class RoleMenu(commands.Cog):
                 if roles:
                     self.bot.add_view(_build_view(p["panel_id"], roles))
                     n += 1
-        self._registered = True
-        log.info("role menus: registered %d persistent panels", n)
+        print(f"role menus: registered {n} persistent panels")
 
     async def _render(self, guild, panel_id, notify):
         """(Re)post or edit a panel's message. `notify` is a coroutine factory for

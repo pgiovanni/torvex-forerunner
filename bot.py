@@ -34,9 +34,10 @@ async def on_message(message):
             pass
 
 @bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-
+async def setup_hook():
+    # Cogs MUST load before the gateway connects: several cogs listen for
+    # on_ready (role_menu view re-registration, invites cache priming,
+    # quarantine_lock sweep) and a listener added after READY fires never runs.
     with open("commands.json") as f:
         schema = json.load(f)
 
@@ -57,6 +58,10 @@ async def on_ready():
             print("Security config: seeded home guild from env.")
     except Exception as e:
         print(f"[WARN] security seed failed: {e}")
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
     # Sync globally so the bot works on any server (takes up to 1 hour to propagate)
     await bot.tree.sync()
