@@ -54,6 +54,7 @@ class Member:
         self.guild_permissions = types.SimpleNamespace(administrator=admin)
         self.mention = "<@%d>" % mid
         self.edit = AsyncMock(); self.timeout = AsyncMock(); self.kick = AsyncMock()
+        self.remove_roles = AsyncMock()
 
     def __str__(self): return "user%d" % self.id
 
@@ -73,10 +74,11 @@ class Guild:
 
 
 class Msg:
-    def __init__(self, guild, author, mentions=0, role_mentions=0, everyone=False):
+    def __init__(self, guild, author, mentions=0, role_mentions=0, everyone=False, channel_id=42):
         self.guild = guild; self.author = author; self.webhook_id = None
         self.mentions = [None] * mentions; self.role_mentions = [None] * role_mentions
         self.mention_everyone = everyone
+        self.channel = types.SimpleNamespace(id=channel_id)
 
 
 BOT = types.SimpleNamespace(user=types.SimpleNamespace(id=BOTID))
@@ -169,6 +171,49 @@ async def s_bot_add_untrusted():
     return newbot.kick.called  # untrusted bot add -> kicked
 
 
+async def s_mass_role_remove():
+    ex = Member(123); cog, g = fresh(ex)
+    for i in range(5):  # role_remove limit (5, 15)
+        keep, drop = Role(1400 + i), Role(1500 + i)
+        before = types.SimpleNamespace(roles=[keep, drop], guild=g, id=7000 + i)
+        after = types.SimpleNamespace(roles=[keep], guild=g, id=7000 + i)
+        await cog.on_member_update(before, after)
+    return ex.edit.called  # mass role-removal -> strip + quarantine
+
+
+async def s_admin_grant_unauthorized():
+    ex = Member(120); cog, g = fresh(ex)  # granter is NOT owner/bot
+    base = Role(1300, pos=5)
+    target = Member(121, roles=[base]); target.guild = g; g.add(target)
+    admin_role = Role(1301, pos=8, perms=discord.Permissions(administrator=True).value)
+    before = types.SimpleNamespace(roles=[base], guild=g, id=target.id)
+    target.roles = [base, admin_role]
+    await cog.on_member_update(before, target)
+    return target.remove_roles.called and ex.edit.called  # reverted + granter stripped
+
+
+async def s_admin_grant_by_owner():
+    owner = Member(OWNER); cog, g = fresh(owner)  # owner IS authorized
+    base = Role(1310, pos=5)
+    target = Member(122, roles=[base]); target.guild = g; g.add(target)
+    admin_role = Role(1311, pos=8, perms=discord.Permissions(administrator=True).value)
+    before = types.SimpleNamespace(roles=[base], guild=g, id=target.id)
+    target.roles = [base, admin_role]
+    await cog.on_member_update(before, target)
+    return not target.remove_roles.called and not owner.edit.called  # allowed
+
+
+async def s_spam_channel_exempt():
+    user = Member(124); cog, g = fresh(); g.add(user)
+    an.get_config = lambda gid: {**CFG, "antinuke_spam_channels": [99]}
+    try:
+        for _ in range(20):  # way past FLOOD_RATE, but channel is spam-allowed
+            await cog.on_message(Msg(g, user, channel_id=99))
+        return not user.timeout.called
+    finally:
+        an.get_config = lambda gid: dict(CFG)
+
+
 SCENARIOS = [
     ("mass channel-delete -> strip+quarantine", s_mass_channel_delete),
     ("below threshold (2 deletes) -> no action", s_below_threshold),
@@ -182,6 +227,10 @@ SCENARIOS = [
     ("legit 5 pings -> no action", s_legit_few_pings),
     ("role granted nuke perms -> revert + strip", s_role_grant_nuke),
     ("untrusted bot add -> kick bot", s_bot_add_untrusted),
+    ("mass role-remove (5/15s) -> strip+quarantine", s_mass_role_remove),
+    ("unauthorized admin grant -> revert + strip granter", s_admin_grant_unauthorized),
+    ("owner grants admin -> allowed", s_admin_grant_by_owner),
+    ("spam-allowed channel -> flood exempt", s_spam_channel_exempt),
 ]
 
 

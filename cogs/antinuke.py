@@ -31,7 +31,7 @@ from discord.ext import commands
 import quarantine_store as qstore  # shared with AltGuard — stores stripped roles for /altguard-release
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from utils.security_config import get_config, is_enabled
+from utils.security_config import get_config, set_config, is_enabled
 
 log = logging.getLogger("antinuke")
 
@@ -45,7 +45,21 @@ ACTION_LIMITS = {
     "ban":            (5, 20),
     "kick":           (5, 20),
     "webhook":        (4, 12),
-    "member_role":    (5, 15),
+    "member_role":    (5, 15),   # mass ROLE-GRANTS (a member gaining roles)
+    "role_remove":    (5, 15),   # mass ROLE-REMOVES (a member losing roles)
+}
+
+# friendly labels for /antinuke status + the set-limit picker.
+VECTOR_LABELS = {
+    "channel_delete": "channel deletes",
+    "channel_create": "channel creates",
+    "role_delete":    "role deletes",
+    "role_create":    "role creates",
+    "ban":            "bans",
+    "kick":           "kicks",
+    "webhook":        "webhook creates",
+    "member_role":    "role grants",
+    "role_remove":    "role removes",
 }
 
 # chat abuse: GENEROUS thresholds so announcements / normal pings pass clean.
@@ -63,6 +77,7 @@ _AUDIT = {
     "kick":           discord.AuditLogAction.kick,
     "webhook":        discord.AuditLogAction.webhook_create,
     "member_role":    discord.AuditLogAction.member_role_update,
+    "role_remove":    discord.AuditLogAction.member_role_update,
     "role_update":    discord.AuditLogAction.role_update,
     "bot_add":        discord.AuditLogAction.bot_add,
 }
@@ -73,6 +88,12 @@ _NUKE_PERMS = discord.Permissions(
     administrator=True, manage_guild=True, manage_roles=True, manage_channels=True,
     manage_webhooks=True, ban_members=True, kick_members=True, mention_everyone=True,
 ).value
+
+# the keys-to-the-kingdom — GRANTING a member a role carrying either of these is
+# a takeover vector, so it's an INSTANT lockdown (only owner + this bot may do
+# it; the general whitelist does NOT apply). Narrower than _NUKE_PERMS on purpose:
+# handing out a "helper" role with kick perms shouldn't nuke, but admin must.
+_ADMIN_LOCK_PERMS = discord.Permissions(administrator=True, manage_guild=True).value
 
 
 class AntiNuke(commands.Cog):
@@ -100,6 +121,19 @@ class AntiNuke(commands.Cog):
     def _modlog(self, guild, cfg):
         mid = cfg.get("modlog_channel_id")
         return guild.get_channel(int(mid)) if mid else None
+
+    @staticmethod
+    def _limits(cfg):
+        """Effective (count, window) per vector — per-guild overrides layered on
+        the code defaults."""
+        lim = dict(ACTION_LIMITS)
+        for k, v in (cfg.get("antinuke_limits") or {}).items():
+            if k in lim and isinstance(v, (list, tuple)) and len(v) == 2:
+                try:
+                    lim[k] = (max(1, int(v[0])), max(1, int(v[1])))
+                except (TypeError, ValueError):
+                    pass
+        return lim
 
     def _removable(self, guild, member, cfg):
         """Roles we can actually strip: not @everyone, not managed, not the
@@ -165,7 +199,7 @@ class AntiNuke(commands.Cog):
         if self._exempt(guild, user, cfg):
             return
         gid = guild.id
-        count, window = ACTION_LIMITS[action]
+        count, window = self._limits(cfg)[action]
         now = time.time()
         if action == "ban" and target_id:
             bv = self.ban_victims[(gid, user.id)]
@@ -292,14 +326,25 @@ class AntiNuke(commands.Cog):
                                             f"@everyone spam: {len(eq)} in {EVERYONE_RATE[1]}s", cfg)
                 return
 
-        # 4) message flood
-        mq = self.msgs[(gid, uid)]
+        # 4) message flood — per channel; spam channels exempt, per-channel and
+        #    server-wide overrides via /antinuke messages-allowed.
+        cid = getattr(message.channel, "id", None)
+        if cid in set(cfg.get("antinuke_spam_channels") or []):
+            return  # this channel is "allowed to be spammed"
+        fcount, fwin = FLOOD_RATE
+        base = cfg.get("antinuke_flood")
+        if isinstance(base, (list, tuple)) and len(base) == 2:
+            fcount, fwin = max(1, int(base[0])), max(1, int(base[1]))
+        ov = (cfg.get("antinuke_channel_flood") or {}).get(str(cid))
+        if isinstance(ov, (list, tuple)) and len(ov) == 2:
+            fcount, fwin = max(1, int(ov[0])), max(1, int(ov[1]))
+        mq = self.msgs[(gid, uid, cid)]
         mq.append(now)
-        while mq and now - mq[0] > FLOOD_RATE[1]:
+        while mq and now - mq[0] > fwin:
             mq.popleft()
-        if len(mq) >= FLOOD_RATE[0] and not self._debounced(gid, uid, "flood", FLOOD_RATE[1]):
+        if len(mq) >= fcount and not self._debounced(gid, uid, "flood", fwin):
             await self._respond_timeout(message.guild, message.author,
-                                        f"message flood: {len(mq)} msgs in {FLOOD_RATE[1]}s", cfg)
+                                        f"message flood: {len(mq)} msgs in {fwin}s", cfg)
 
     async def _respond_timeout(self, guild, user, why, cfg):
         member = guild.get_member(user.id)
@@ -365,8 +410,45 @@ class AntiNuke(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
-        if len(after.roles) > len(before.roles):
+        if not is_enabled(after.guild.id, "antinuke"):
+            return
+        added = [r for r in after.roles if r not in before.roles]
+        removed = [r for r in before.roles if r not in after.roles]
+        if added:
+            # keys-to-the-kingdom grant = instant lockdown (owner + bot only),
+            # independent of the rate limit.
+            await self._check_admin_grant(after, added)
             await self._record_action(after.guild, "member_role", after.id)
+        if removed:
+            await self._record_action(after.guild, "role_remove", after.id)
+
+    async def _check_admin_grant(self, member, added_roles):
+        """Granting a role carrying Administrator / Manage-Server is a takeover
+        vector. ONLY the guild owner and this bot may do it — NOT the general
+        whitelist. Anyone else: revert the grant + strip the granter, instantly."""
+        guild = member.guild
+        cfg = get_config(guild.id)
+        if not cfg.get("antinuke_admin_lockdown", 1):
+            return
+        dangerous = [r for r in added_roles
+                     if (getattr(r.permissions, "value", 0) & _ADMIN_LOCK_PERMS)]
+        if not dangerous:
+            return
+        ex = await self._executor(guild, "member_role", member.id)
+        if ex is None or ex.id == self.bot.user.id or ex.id == guild.owner_id:
+            return  # owner + bot are the ONLY authorized admin-granters
+        reverted = False
+        if self._enforce(cfg):
+            try:
+                await member.remove_roles(*dangerous,
+                    reason="AntiNuke: unauthorized admin-role grant reverted")
+                reverted = True
+            except discord.Forbidden:
+                pass
+        names = ", ".join("@" + r.name for r in dangerous)
+        tail = " — reverted" if reverted else (" (revert FAILED)" if self._enforce(cfg) else "")
+        await self._respond_strip(guild, ex,
+            f"granted admin role(s) {names} to {member}{tail}", cfg)
 
     @commands.Cog.listener()
     async def on_guild_role_update(self, before, after):
@@ -424,11 +506,13 @@ class AntiNuke(commands.Cog):
             embed.set_footer(text="Bot has admin — verify it's trusted or remove it.")
         await ch.send(content="@here", embed=embed)
 
-    # ----------------------------------------------------------- command
-    @app_commands.command(name="antinuke", description="Anti-nuke status & thresholds (admin)")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
-    async def antinuke(self, interaction: discord.Interaction):
+    # ----------------------------------------------------------- commands
+    group = app_commands.Group(
+        name="antinuke", description="Anti-nuke status & per-vector thresholds (admin)",
+        default_permissions=discord.Permissions(administrator=True), guild_only=True)
+
+    @group.command(name="status", description="Show anti-nuke mode & all thresholds")
+    async def status(self, interaction: discord.Interaction):
         cfg = get_config(interaction.guild.id)
         on = bool(cfg.get("antinuke_enabled"))
         enforce = self._enforce(cfg)
@@ -436,25 +520,118 @@ class AntiNuke(commands.Cog):
             mode = "⚪ DISABLED for this server — run `/security setup` to enable"
         else:
             mode = "🔴 ENFORCE" if enforce else "🟡 SHADOW (alert-only)"
-        wl = ", ".join(f"`{w}`" for w in (cfg.get("whitelist") or [])) or "(owner + bot only)"
-        acts = "\n".join(f"• {k}: {c}× / {w}s → strip roles" for k, (c, w) in ACTION_LIMITS.items())
+        lim = self._limits(cfg)
+        acts = "\n".join(f"• {VECTOR_LABELS.get(k, k)}: **{c}× / {w}s** → strip roles"
+                         for k, (c, w) in lim.items())
+        # message flood (server default + any per-channel overrides)
+        fb = cfg.get("antinuke_flood")
+        fb = (int(fb[0]), int(fb[1])) if isinstance(fb, (list, tuple)) and len(fb) == 2 else FLOOD_RATE
+        flood = f"• msg flood: **{fb[0]} / {fb[1]}s** → timeout (server default)"
+        for cid, v in (cfg.get("antinuke_channel_flood") or {}).items():
+            if isinstance(v, (list, tuple)) and len(v) == 2:
+                flood += f"\n• <#{cid}>: **{int(v[0])} / {int(v[1])}s**"
+        spam = cfg.get("antinuke_spam_channels") or []
+        spam_txt = ", ".join(f"<#{c}>" for c in spam) if spam else "none"
         chat = (f"• mention-bomb: {MENTION_BOMB}+ in one msg → timeout\n"
                 f"• ping spam: {MENTION_RATE[0]} mentions / {MENTION_RATE[1]}s → timeout\n"
                 f"• @everyone spam: {EVERYONE_RATE[0]} / {EVERYONE_RATE[1]}s → timeout\n"
-                f"• msg flood: {FLOOD_RATE[0]} / {FLOOD_RATE[1]}s → timeout\n"
-                f"-# one announcement / tagging a few people is FINE")
+                f"{flood}\n-# one announcement / tagging a few people is FINE")
+        wl = ", ".join(f"`{w}`" for w in (cfg.get("whitelist") or [])) or "(owner + bot only)"
+        lock = "✅ ON — only owner + this bot may grant admin" if cfg.get("antinuke_admin_lockdown", 1) else "⚠️ OFF"
         embed = discord.Embed(title="🛡️ AntiNuke", color=0x5B8CFF, description=f"**Mode:** {mode}")
         embed.add_field(name="Destructive (audit-log)", value=acts, inline=False)
-        embed.add_field(name="Escalation guards", value=(
-            "• role edited to grant nuke perms (e.g. @everyone admin) → **revert + strip** (instant)\n"
-            "• bot added by non-trusted user → **kick the bot** (instant)"), inline=False)
-        embed.add_field(name="Mass-ban recovery", value=(
-            "✅ on — victims **auto-unbanned** + re-invite link posted" if cfg.get("antinuke_restore_bans")
-            else "off"), inline=False)
         embed.add_field(name="Chat abuse (messages)", value=chat, inline=False)
-        embed.add_field(name="Whitelist (never acted on)", value=f"owner, this bot, bots, {wl}", inline=False)
-        embed.set_footer(text="Configure via /security (per server).")
+        embed.add_field(name="Spam-allowed channels", value=spam_txt, inline=False)
+        embed.add_field(name="Admin-grant lockdown", value=lock, inline=False)
+        embed.add_field(name="Escalation guards", value=(
+            "• role edited to grant nuke perms → **revert + strip** (instant)\n"
+            "• admin role granted to a member by non-owner → **revert + strip** (instant)\n"
+            "• bot added by non-trusted user → **kick the bot** (instant)"), inline=False)
+        embed.add_field(name="Whitelist (rate-limits waived)", value=f"owner, this bot, bots, {wl}", inline=False)
+        embed.set_footer(text="Tune with /antinuke messages-allowed · role-grants · role-removes · set-limit")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _set_vector(self, interaction, vector, count, window):
+        cfg = get_config(interaction.guild.id)
+        limits = dict(cfg.get("antinuke_limits") or {})
+        limits[vector] = [int(count), int(window)]
+        set_config(interaction.guild.id, antinuke_limits=limits)
+        await interaction.response.send_message(
+            f"✅ **{VECTOR_LABELS.get(vector, vector)}** limit set to **{count}× / {window}s** "
+            f"before strip + quarantine.", ephemeral=True)
+
+    @group.command(name="role-grants", description="Limit how many role-GRANTS an actor may do before it's a nuke")
+    @app_commands.describe(count="role grants allowed", window="within this many seconds")
+    async def role_grants(self, interaction: discord.Interaction,
+                          count: app_commands.Range[int, 1, 100], window: app_commands.Range[int, 1, 600]):
+        await self._set_vector(interaction, "member_role", count, window)
+
+    @group.command(name="role-removes", description="Limit how many role-REMOVES an actor may do before it's a nuke")
+    @app_commands.describe(count="role removals allowed", window="within this many seconds")
+    async def role_removes(self, interaction: discord.Interaction,
+                           count: app_commands.Range[int, 1, 100], window: app_commands.Range[int, 1, 600]):
+        await self._set_vector(interaction, "role_remove", count, window)
+
+    @group.command(name="set-limit", description="Set the rate limit for any destructive vector")
+    @app_commands.describe(vector="which action", count="allowed in the window", window="within this many seconds")
+    @app_commands.choices(vector=[
+        app_commands.Choice(name=lbl, value=key) for key, lbl in VECTOR_LABELS.items()])
+    async def set_limit(self, interaction: discord.Interaction, vector: app_commands.Choice[str],
+                        count: app_commands.Range[int, 1, 100], window: app_commands.Range[int, 1, 600]):
+        await self._set_vector(interaction, vector.value, count, window)
+
+    @group.command(name="messages-allowed", description="Set the message-flood limit (optionally per channel)")
+    @app_commands.describe(count="messages allowed", window="within this many seconds",
+                           channel="only this channel (omit = server-wide default)")
+    async def messages_allowed(self, interaction: discord.Interaction,
+                               count: app_commands.Range[int, 1, 500], window: app_commands.Range[int, 1, 600],
+                               channel: discord.TextChannel = None):
+        gid = interaction.guild.id
+        cfg = get_config(gid)
+        if channel:
+            m = dict(cfg.get("antinuke_channel_flood") or {})
+            m[str(channel.id)] = [int(count), int(window)]
+            set_config(gid, antinuke_channel_flood=m)
+            where = f"in {channel.mention}"
+        else:
+            set_config(gid, antinuke_flood=[int(count), int(window)])
+            where = "server-wide"
+        await interaction.response.send_message(
+            f"✅ Message flood {where}: **{count} msgs / {window}s** before timeout.", ephemeral=True)
+
+    @group.command(name="whitelist-channel", description="Exempt a channel from flood limits (allowed to be spammed)")
+    async def whitelist_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        gid = interaction.guild.id
+        spam = list(cfg_spam := (get_config(gid).get("antinuke_spam_channels") or []))
+        if channel.id in spam:
+            await interaction.response.send_message(f"{channel.mention} is already spam-allowed.", ephemeral=True)
+            return
+        spam.append(channel.id)
+        set_config(gid, antinuke_spam_channels=spam)
+        await interaction.response.send_message(
+            f"✅ {channel.mention} is now **spam-allowed** — message-flood limits won't fire there. "
+            f"(@everyone / mention-bomb protection still applies.)", ephemeral=True)
+
+    @group.command(name="unwhitelist-channel", description="Re-apply flood limits to a channel")
+    async def unwhitelist_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        gid = interaction.guild.id
+        spam = list(get_config(gid).get("antinuke_spam_channels") or [])
+        if channel.id not in spam:
+            await interaction.response.send_message(f"{channel.mention} wasn't spam-allowed.", ephemeral=True)
+            return
+        spam.remove(channel.id)
+        set_config(gid, antinuke_spam_channels=spam)
+        await interaction.response.send_message(
+            f"✅ Flood limits re-applied to {channel.mention}.", ephemeral=True)
+
+    @group.command(name="admin-lockdown", description="Toggle: only owner + this bot may grant Administrator")
+    async def admin_lockdown(self, interaction: discord.Interaction, enabled: bool):
+        set_config(interaction.guild.id, antinuke_admin_lockdown=1 if enabled else 0)
+        await interaction.response.send_message(
+            ("🔒 Admin-grant lockdown **ON** — only you and this bot can hand out Administrator / Manage-Server; "
+             "anyone else's grant is instantly reverted." if enabled
+             else "⚠️ Admin-grant lockdown **OFF** — admin grants now only caught by the rate limit."),
+            ephemeral=True)
 
 
 async def setup(bot):
