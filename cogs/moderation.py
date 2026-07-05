@@ -187,6 +187,10 @@ class Moderation(commands.Cog):
             return
 
         try:
+            # let the mod-log credit the invoking mod, not the bot — Discord's
+            # audit log names the bot and drops reasons on bulk deletes
+            from cogs.mod_log import note_bot_purge
+            note_bot_purge(channel.id, interaction.user.id, str(interaction.user))
             deleted = await channel.purge(
                 limit=amount,
                 reason=f"/prune-messages by {interaction.user} ({interaction.user.id})")

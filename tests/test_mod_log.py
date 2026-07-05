@@ -36,10 +36,10 @@ NOW = time.time()
 CH, AUTHOR, MOD = 111, 222, 333
 
 
-def entry(eid, count=1, age=5.0, target=AUTHOR, channel=CH, user=MOD):
+def entry(eid, count=1, age=5.0, target=AUTHOR, channel=CH, user=MOD, reason=None):
     return {"id": eid, "user_id": user, "user_name": f"mod{user}",
             "target_id": target, "channel_id": channel,
-            "count": count, "created_ts": NOW - age}
+            "count": count, "reason": reason, "created_ts": NOW - age}
 
 
 # 1) fresh new entry matching channel+author → attributed
@@ -79,6 +79,22 @@ check("newest entry preferred", hits2 and hits2["id"] == 20)
 
 # 8) self-delete: empty audit page → None
 check("no entries = self delete", ml.match_delete_entry([], {}, CH, AUTHOR, NOW) is None)
+
+# 9) audit reason rides through — the real WHO when a bot pruned for a mod
+hit = ml.match_delete_entry([entry(5, target=None,
+                                   reason="/prune-messages by mrdudebro1 (42)")],
+                            {}, CH, None, NOW)
+check("reason surfaces in deleter name", "mrdudebro1" in ml._deleter_name(hit))
+check("reason surfaces in embed line", "📝" in ml._deleter_line(hit))
+check("no reason = plain name", ml._deleter_name(entry(6)) == f"mod{MOD}")
+
+# 10) /prune-messages invoker registry — credits the mod, not the bot executor
+purges = {}
+ml.note_bot_purge(CH, 42, "paul", now=NOW)
+inv = ml.purge_invoker(ml._bot_purges, CH, NOW + 5)
+check("recent purge credited to invoking mod", inv == (42, "paul"))
+check("stale purge not credited", ml.purge_invoker(ml._bot_purges, CH, NOW + 300) is None)
+check("other channel not credited", ml.purge_invoker(ml._bot_purges, 999, NOW + 5) is None)
 
 # ---- transcript ----
 rows = [

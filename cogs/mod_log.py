@@ -119,6 +119,39 @@ def files_to_prune(entries, cutoff_ts):
     return [p for p, m in entries if m < cutoff_ts]
 
 
+# When OUR bot bulk-deletes on a mod's behalf (/prune-messages), the audit log
+# names the bot and Discord drops the X-Audit-Log-Reason on bulk deletes
+# (verified live) — so the moderation cog registers the invoker here instead.
+_bot_purges = {}  # channel_id(str) -> (mod_id, mod_name, ts)
+
+
+def note_bot_purge(channel_id, mod_id, mod_name, now=None):
+    _bot_purges[str(channel_id)] = (int(mod_id), mod_name, now or time.time())
+
+
+def purge_invoker(purges, channel_id, now, window=60.0):
+    """The mod who asked the bot to purge this channel just now, or None."""
+    rec = purges.get(str(channel_id))
+    if rec and now - rec[2] <= window:
+        return rec[0], rec[1]
+    return None
+
+
+def _deleter_name(hit):
+    """Deleter for the archive row. Audit reasons matter when a BOT performed
+    the deletion on a human's behalf (/prune-messages stamps
+    '/prune-messages by mod (id)' — the reason is the real WHO)."""
+    return hit["user_name"] + (f" — {hit['reason']}" if hit.get("reason") else "")
+
+
+def _deleter_line(hit):
+    """Deleter field for log embeds, reason included when present."""
+    line = f"<@{hit['user_id']}> (`{hit['user_id']}`)"
+    if hit.get("reason"):
+        line += f"\n📝 {_trunc(hit['reason'], 480)}"
+    return line
+
+
 class ModLog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -163,10 +196,22 @@ class ModLog(commands.Cog):
     async def cog_load(self):
         self.flusher.start()
         self.media_pruner.start()
+        # Prime the audit cache BEFORE any delete event arrives. Priming lazily
+        # at event time is a bug: the fetch would cache the very entry we're
+        # trying to attribute, making it look already-seen.
+        self._prime_task = asyncio.create_task(self._prime_all())
+
+    async def _prime_all(self):
+        await self.bot.wait_until_ready()
+        for gid in all_enabled("msglog"):
+            guild = self.bot.get_guild(gid)
+            if guild is not None:
+                await self._prime_audit(guild)
 
     async def cog_unload(self):
         self.flusher.cancel()
         self.media_pruner.cancel()
+        self._prime_task.cancel()
         self._flush()
 
     # ------------------------------------------------------------- archive
@@ -278,6 +323,7 @@ class ModLog(commands.Cog):
                 "channel_id": getattr(e.target, "id", None) if bulk
                 else getattr(extra_ch, "id", None),
                 "count": int(getattr(getattr(e, "extra", None), "count", 1) or 1),
+                "reason": getattr(e, "reason", None),
                 "created_ts": e.created_at.timestamp()}
 
     async def _fetch_entries(self, guild, action, bulk=False, limit=12):
@@ -302,7 +348,8 @@ class ModLog(commands.Cog):
                     self._audit_cache[en["id"]] = en["count"]
 
     async def _attribute(self, guild, channel_id, author_id, bulk=False):
-        await self._prime_audit(guild)
+        # No lazy priming here — see cog_load. An unprimed guild still works:
+        # fresh entries attribute via the fresh_window path.
         await asyncio.sleep(AUDIT_WAIT)
         action = discord.AuditLogAction.message_bulk_delete if bulk \
             else discord.AuditLogAction.message_delete
@@ -342,7 +389,7 @@ class ModLog(commands.Cog):
         hit = await self._attribute(guild, payload.channel_id, author_id)
         kind = "mod" if hit else ("self" if row else "unknown")
         self._mark_deleted(payload.message_id, kind,
-                           by_id=hit and hit["user_id"], by_name=hit and hit["user_name"])
+                           by_id=hit and hit["user_id"], by_name=hit and _deleter_name(hit))
 
         cfg = get_config(payload.guild_id)
         log_ch = self._log_channel(guild, cfg)
@@ -369,8 +416,7 @@ class ModLog(commands.Cog):
             embed.description = (f"Message `{payload.message_id}` in <#{payload.channel_id}> "
                                  f"— **not in the archive** (predates tracking).")
         if hit:
-            embed.add_field(name="Deleted by",
-                            value=f"<@{hit['user_id']}> (`{hit['user_id']}`)", inline=False)
+            embed.add_field(name="Deleted by", value=_deleter_line(hit), inline=False)
         files = []
         atts = json.loads(row["attachments"]) if row and row.get("attachments") else []
         for i, path in enumerate(self._cached_media(payload.message_id)):
@@ -409,9 +455,15 @@ class ModLog(commands.Cog):
                 rows += [dict(r) for r in
                          c.execute(f"SELECT * FROM messages WHERE message_id IN ({q})", chunk)]
         hit = await self._attribute(guild, payload.channel_id, None, bulk=True)
+        if hit and hit["user_id"] == self.bot.user.id:
+            inv = purge_invoker(_bot_purges, payload.channel_id, time.time())
+            if inv:  # credit the mod who ran /prune-messages, not the executor
+                hit = dict(hit, user_id=inv[0],
+                           user_name=f"{inv[1]} — via /prune-messages",
+                           reason="/prune-messages (executed by the bot)")
         for mid in ids:
             self._mark_deleted(mid, "bulk",
-                               by_id=hit and hit["user_id"], by_name=hit and hit["user_name"])
+                               by_id=hit and hit["user_id"], by_name=hit and _deleter_name(hit))
 
         cfg = get_config(payload.guild_id)
         log_ch = self._log_channel(guild, cfg)
@@ -423,8 +475,7 @@ class ModLog(commands.Cog):
             description=f"In <#{payload.channel_id}> · **{len(rows)}** recovered from the archive"
                         + (f", {len(ids) - len(rows)} predate tracking" if len(rows) < len(ids) else ""))
         if hit:
-            embed.add_field(name="Deleted by",
-                            value=f"<@{hit['user_id']}> (`{hit['user_id']}`)", inline=False)
+            embed.add_field(name="Deleted by", value=_deleter_line(hit), inline=False)
         else:
             embed.add_field(name="Deleted by",
                             value="unattributed — possibly a ban's delete-days cascade", inline=False)
