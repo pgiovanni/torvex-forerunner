@@ -98,8 +98,10 @@ class LevelRoles(commands.Cog):
             if rem_roles:
                 await member.remove_roles(*rem_roles, reason=reason)
                 removed = len(rem_roles)
-        except discord.Forbidden:
-            log.warning("level_roles: forbidden adjusting %s in %s", member.id, guild.id)
+        except discord.HTTPException as e:
+            # Forbidden, member left mid-sweep (404), transient 5xx — never let
+            # one member kill a whole sweep.
+            log.warning("level_roles: couldn't adjust %s in %s: %s", member.id, guild.id, e)
         return added, removed
 
     @commands.Cog.listener()
@@ -210,24 +212,38 @@ class LevelRoles(commands.Cog):
         )
         levels = {r["discord_id"]: max(r["level"], mee6_level_from_xp(r["xp"])) for r in rows}
 
+        # Snapshot the member list so cache mutations mid-sweep can't skip the
+        # tail; the sweep itself must survive anything one member can throw.
         checked = changed = added = removed = 0
-        for member in guild.members:
+        for member in list(guild.members):
             if member.bot:
                 continue
             checked += 1
             level = levels.get(str(member.id), 0)
-            a, r = await self._apply(member, level, mapping, reason="levelroles sync")
+            try:
+                a, r = await self._apply(member, level, mapping, reason="levelroles sync")
+            except Exception as e:
+                log.warning("level_roles: sync skipped %s: %s", member.id, e)
+                continue
             if a or r:
                 changed += 1
                 added += a
                 removed += r
                 await asyncio.sleep(1)  # only throttle when we actually hit the API
             if changed and changed % 25 == 0:
-                await interaction.edit_original_response(content=f"⏳ Syncing… {checked} checked, {changed} adjusted.")
+                try:
+                    await interaction.edit_original_response(content=f"⏳ Syncing… {checked} checked, {changed} adjusted.")
+                except discord.HTTPException:
+                    pass  # token expired on a long sweep — keep sweeping
 
-        await interaction.followup.send(
-            f"✅ Sync done: **{checked}** members checked, **{changed}** adjusted "
-            f"({added} roles added, {removed} removed).", ephemeral=True)
+        summary = (f"✅ Sync done: **{checked}** members checked, **{changed}** adjusted "
+                   f"({added} roles added, {removed} removed).")
+        print(f"[level_roles] {guild.id} sync complete: {checked} checked, {changed} adjusted "
+              f"(+{added}/-{removed})", flush=True)
+        try:
+            await interaction.followup.send(summary, ephemeral=True)
+        except discord.HTTPException:
+            pass  # completion already in the journal
 
     @group.command(name="list", description="Show the level → role reward map")
     async def list_rewards(self, interaction: discord.Interaction):
