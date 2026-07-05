@@ -377,6 +377,12 @@
       ]
     },
     {
+      "name": "activity",
+      "description": "Server activity graphs — daily lines, heatmap, leaderboards, growth",
+      "cog": "activity",
+      "cooldown_seconds": 10
+    },
+    {
       "name": "msglog",
       "description": "Message archive + deletion/edit logging with who-deleted-it attribution (Manage Server)",
       "cog": "mod_log",
