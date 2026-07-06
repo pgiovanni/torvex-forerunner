@@ -612,6 +612,23 @@ class ModLog(commands.Cog):
             who += f" ({rec['by_name']})"
         return who
 
+    @staticmethod
+    def _member_line(member):
+        # plain-text name first — mentions of users no longer in the server
+        # render as @unknown-user, and the log must say WHO it was regardless
+        return (f"**{member}** — {member.mention} (`{member.id}`)"
+                + (" 🤖" if member.bot else ""))
+
+    async def _user_line(self, target, target_id):
+        """Same, from an audit-log target that may be a bare Object (ID only)."""
+        name = str(target) if isinstance(target, (discord.User, discord.Member)) else None
+        if name is None:
+            try:
+                name = str(await self.bot.fetch_user(target_id))
+            except discord.HTTPException:
+                pass
+        return (f"**{name}** — " if name else "") + f"<@{target_id}> (`{target_id}`)"
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         guild = member.guild
@@ -621,7 +638,7 @@ class ModLog(commands.Cog):
         await asyncio.sleep(3.0)  # let the invites cog attribute the join first
         embed = discord.Embed(
             title="📥 Member joined", color=COLOR_JOIN,
-            description=f"{member.mention} (`{member.id}`)" + (" 🤖" if member.bot else ""))
+            description=self._member_line(member))
         age_days = (time.time() - member.created_at.timestamp()) / 86400
         flag = " · ⚠️ **new account**" if age_days < 7 else ""
         embed.add_field(name="Account created",
@@ -662,7 +679,7 @@ class ModLog(commands.Cog):
         embed = discord.Embed(
             title="🔨 Member banned" if banned else "♻️ Member unbanned",
             color=COLOR_BAN if banned else COLOR_JOIN,
-            description=f"<@{target_id}> (`{target_id}`)")
+            description=await self._user_line(entry.target, target_id))
         embed.add_field(name="By", value=self._mod_line(rec), inline=True)
         embed.add_field(name="Reason", value=_trunc(rec["reason"] or "No reason provided"), inline=False)
         embed.set_footer(text=f"User ID {target_id}")
@@ -703,14 +720,14 @@ class ModLog(commands.Cog):
         if rec:  # kick
             embed = discord.Embed(
                 title="👢 Member kicked", color=COLOR_KICK,
-                description=f"{member.mention} (`{member.id}`)" + (" 🤖" if member.bot else ""))
+                description=self._member_line(member))
             embed.add_field(name="By", value=self._mod_line(rec), inline=True)
             embed.add_field(name="Joined", value=joined, inline=True)
             embed.add_field(name="Reason", value=_trunc(rec["reason"] or "No reason provided"), inline=False)
         else:    # plain leave
             embed = discord.Embed(
                 title="📤 Member left", color=COLOR_LEAVE,
-                description=f"{member.mention} (`{member.id}`)" + (" 🤖" if member.bot else ""))
+                description=self._member_line(member))
             embed.add_field(name="Joined", value=joined, inline=True)
             embed.add_field(name="Members", value=f"{guild.member_count:,}", inline=True)
         if roles:
