@@ -1,26 +1,56 @@
+import re
+from datetime import timedelta
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 
-def _can_act(invoker: discord.Member, target: discord.Member, me: discord.Member):
+def _can_act(invoker: discord.Member, target: discord.Member, me: discord.Member, verb: str = "ban"):
     """Hierarchy/sanity gate for acting on an in-server member. Returns an error
     string if the action is NOT allowed, else None."""
     guild = invoker.guild
     if target.id == invoker.id:
-        return "You can't ban yourself."
+        return f"You can't {verb} yourself."
     if target.id == me.id:
-        return "I can't ban myself."
+        return f"I can't {verb} myself."
     if target.id == guild.owner_id:
-        return "You can't ban the server owner."
+        return f"You can't {verb} the server owner."
     # invoker must outrank the target (owner bypasses the role check)
     if invoker.id != guild.owner_id and target.top_role >= invoker.top_role:
-        return f"You can't ban {target.mention} — their highest role is above or equal to yours."
+        return f"You can't {verb} {target.mention} — their highest role is above or equal to yours."
     # the bot must outrank the target to carry it out
     if target.top_role >= me.top_role:
-        return (f"My role isn't high enough to ban {target.mention}. "
+        return (f"My role isn't high enough to {verb} {target.mention}. "
                 "Move my role above theirs in **Server Settings → Roles**.")
     return None
+
+
+_DURATION_RE = re.compile(r"(\d+)\s*([smhdw])", re.IGNORECASE)
+MAX_TIMEOUT = timedelta(days=28)  # Discord's hard cap
+
+
+def _parse_duration(text: str):
+    """'90m', '2h', '1d', '1h30m', or a bare number (minutes) -> timedelta, else None."""
+    text = (text or "").strip().lower()
+    if text.isdigit():
+        return timedelta(minutes=int(text))
+    parts = _DURATION_RE.findall(text)
+    # reject if there's junk beyond the matched tokens (e.g. "tomorrow")
+    if not parts or _DURATION_RE.sub("", text).strip():
+        return None
+    unit = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+    return sum((timedelta(**{unit[u]: int(n)}) for n, u in parts), timedelta())
+
+
+def _fmt_duration(delta: timedelta):
+    secs = int(delta.total_seconds())
+    out = []
+    for label, size in (("d", 86400), ("h", 3600), ("m", 60), ("s", 1)):
+        n, secs = divmod(secs, size)
+        if n:
+            out.append(f"{n}{label}")
+    return " ".join(out) or "0s"
 
 
 class Moderation(commands.Cog):
@@ -159,6 +189,104 @@ class Moderation(commands.Cog):
         )
         embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
         embed.set_footer(text=f"Unbanned by {interaction.user.display_name}")
+        await interaction.followup.send(embed=embed)  # public confirmation
+        await interaction.followup.send("✅ Done.", ephemeral=True)
+
+    @app_commands.command(name="timeout", description="Time out a member (mute + no reactions) for a duration.")
+    @app_commands.describe(
+        member="The member to time out",
+        duration="How long — e.g. 30m, 2h, 1d, 1h30m (max 28d)",
+        reason="Why (shown in the audit log and the public embed)",
+    )
+    @app_commands.default_permissions(moderate_members=True)
+    @app_commands.checks.has_permissions(moderate_members=True)
+    @app_commands.guild_only()
+    async def timeout(self, interaction: discord.Interaction, member: discord.Member,
+                      duration: str, reason: str = None):
+        await interaction.response.defer(ephemeral=True)
+        me = interaction.guild.me
+
+        if not me.guild_permissions.moderate_members:
+            await interaction.followup.send("❌ I don't have the **Timeout Members** permission.", ephemeral=True)
+            return
+        err = _can_act(interaction.user, member, me, verb="time out")
+        if err:
+            await interaction.followup.send(f"❌ {err}", ephemeral=True)
+            return
+        if member.guild_permissions.administrator:
+            await interaction.followup.send(
+                f"❌ {member.mention} is an administrator — Discord doesn't apply timeouts to admins.",
+                ephemeral=True)
+            return
+
+        delta = _parse_duration(duration)
+        if delta is None or delta < timedelta(seconds=10):
+            await interaction.followup.send(
+                "❌ I couldn't read that duration. Use things like `30m`, `2h`, `1d`, `1h30m` (min 10s).",
+                ephemeral=True)
+            return
+        if delta > MAX_TIMEOUT:
+            delta = MAX_TIMEOUT  # Discord caps at 28 days
+
+        audit = f"{interaction.user} ({interaction.user.id})"
+        full_reason = (reason or "No reason provided") + f" — by {audit}"
+        try:
+            await member.timeout(delta, reason=full_reason)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ Discord refused that — usually my role is below theirs, or I'm missing Timeout Members.",
+                ephemeral=True)
+            return
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ Timeout failed: {e}", ephemeral=True)
+            return
+
+        until = discord.utils.utcnow() + delta
+        embed = discord.Embed(
+            title="⏳ Member timed out",
+            color=0xE8A33D,
+            description=f"{member.mention} (`{member.id}`) is timed out for **{_fmt_duration(delta)}** "
+                        f"— expires {discord.utils.format_dt(until, 'R')}.",
+        )
+        embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+        embed.set_footer(text=f"Timed out by {interaction.user.display_name}")
+        await interaction.followup.send(embed=embed)  # public confirmation
+        await interaction.followup.send("✅ Done.", ephemeral=True)
+
+    @app_commands.command(name="untimeout", description="Remove a member's timeout early.")
+    @app_commands.describe(member="The timed-out member", reason="Why (audit log)")
+    @app_commands.default_permissions(moderate_members=True)
+    @app_commands.checks.has_permissions(moderate_members=True)
+    @app_commands.guild_only()
+    async def untimeout(self, interaction: discord.Interaction, member: discord.Member, reason: str = None):
+        await interaction.response.defer(ephemeral=True)
+        me = interaction.guild.me
+
+        if not me.guild_permissions.moderate_members:
+            await interaction.followup.send("❌ I don't have the **Timeout Members** permission.", ephemeral=True)
+            return
+        if not member.is_timed_out():
+            await interaction.followup.send(f"⚠️ {member.mention} isn't timed out.", ephemeral=True)
+            return
+        if member.top_role >= me.top_role:
+            await interaction.followup.send(
+                f"❌ My role isn't high enough to change {member.mention}'s timeout.", ephemeral=True)
+            return
+
+        audit = f"{interaction.user} ({interaction.user.id})"
+        try:
+            await member.timeout(None, reason=(reason or "No reason provided") + f" — by {audit}")
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ Couldn't remove the timeout: {e}", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="🔊 Timeout removed",
+            color=0x3BA55D,
+            description=f"{member.mention} (`{member.id}`) can talk again.",
+        )
+        embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+        embed.set_footer(text=f"Removed by {interaction.user.display_name}")
         await interaction.followup.send(embed=embed)  # public confirmation
         await interaction.followup.send("✅ Done.", ephemeral=True)
 

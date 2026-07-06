@@ -211,6 +211,22 @@
       ]
     },
     {
+      "name": "timeout",
+      "description": "Time out a member for a duration, e.g. 30m / 2h / 1d (mod)",
+      "cog": "moderation",
+      "required_permissions": [
+        "moderate_members"
+      ]
+    },
+    {
+      "name": "untimeout",
+      "description": "Remove a member's timeout early (mod)",
+      "cog": "moderation",
+      "required_permissions": [
+        "moderate_members"
+      ]
+    },
+    {
       "name": "prune-messages",
       "description": "Bulk-delete the last N messages in a channel by count (mod)",
       "cog": "moderation",
