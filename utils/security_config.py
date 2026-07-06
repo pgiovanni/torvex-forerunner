@@ -87,6 +87,7 @@ DEFAULTS = {
     "msglog_media_max_mb": 25,       # per-file cache cap
     "msglog_media_days": 30,         # media cache retention (log re-posts persist in Discord)
     "msglog_ignore_channels": [],    # channels never LOGGED (still archived)
+    "msglog_members": 1,             # member lifecycle: join (w/ invite used), leave, kick/ban/unban w/ WHO+reason
 }
 
 

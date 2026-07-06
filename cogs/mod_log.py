@@ -57,6 +57,11 @@ COLOR_SELF_DELETE = 0xE67E22
 COLOR_MOD_DELETE = 0xC0392B
 COLOR_BULK = 0x8B0000
 COLOR_EDIT = 0x3498DB
+COLOR_JOIN = 0x3BA55D
+COLOR_LEAVE = 0x95A5A6
+COLOR_KICK = 0xE8A33D
+COLOR_BAN = 0x992D22
+INVITES_DB = os.path.join(ROOT, "invites.db")  # invites cog's attribution store (read-only here)
 
 
 # --------------------------------------------------------------------------- pure helpers
@@ -160,6 +165,8 @@ class ModLog(commands.Cog):
         self._audit_cache = {}          # audit entry_id -> last seen count
         self._audit_lock = asyncio.Lock()
         self._primed = set()            # guild ids whose audit cache is primed
+        self._removals = {}             # user_id -> kick/ban audit record (classifies member_remove)
+        self._removal_ids_seen = set()  # audit entry ids consumed by the fallback poll
         os.makedirs(MEDIA_DIR, exist_ok=True)
         with self._conn() as c:
             c.execute("PRAGMA journal_mode=WAL")
@@ -558,6 +565,158 @@ class ModLog(commands.Cog):
     @media_pruner.before_loop
     async def _before_prune(self):
         await self.bot.wait_until_ready()
+
+    # ------------------------------------------------------------- member lifecycle
+    # Joins (with the invite used, read from the invites cog's attribution DB),
+    # leaves, and kick/ban/unban with WHO + reason. Kick/ban executors come from
+    # AUDIT_LOG_ENTRY_CREATE (real-time, carries the reason); on_member_remove
+    # waits briefly for that record so a kick is never mislogged as a leave.
+
+    def _members_log_channel(self, guild):
+        if not is_enabled(guild.id, "msglog"):
+            return None, None
+        cfg = get_config(guild.id)
+        if not cfg.get("msglog_members", 1):
+            return None, None
+        return self._log_channel(guild, cfg), cfg
+
+    def _join_invite_line(self, uid, guild_id):
+        """Latest invite attribution the invites cog recorded for this join."""
+        try:
+            c = sqlite3.connect(INVITES_DB, timeout=5)
+            c.row_factory = sqlite3.Row
+            r = c.execute("SELECT * FROM invite_attributions WHERE uid=? AND guild_id=? "
+                          "ORDER BY joined_at DESC LIMIT 1", (str(uid), str(guild_id))).fetchone()
+            c.close()
+        except sqlite3.Error:
+            return None
+        if not r or time.time() - (r["joined_at"] or 0) > 300:
+            return None  # stale row from a previous join — not this one
+        if r["kind"] == "vanity":
+            return "vanity URL"
+        if r["kind"] == "discovery":
+            return "Server Discovery / untracked"
+        if r["code"]:
+            line = f"`discord.gg/{r['code']}`"
+            if r["inviter_id"]:
+                line += f" from <@{r['inviter_id']}>"
+            if r["label"] and r["kind"] in ("public", "tracked"):
+                line += f" · “{r['label']}”"
+            return line
+        return None
+
+    @staticmethod
+    def _mod_line(rec):
+        who = f"<@{rec['by_id']}>" if rec.get("by_id") else "?"
+        if rec.get("by_name"):
+            who += f" ({rec['by_name']})"
+        return who
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        guild = member.guild
+        log_ch, _ = self._members_log_channel(guild)
+        if log_ch is None:
+            return
+        await asyncio.sleep(3.0)  # let the invites cog attribute the join first
+        embed = discord.Embed(
+            title="📥 Member joined", color=COLOR_JOIN,
+            description=f"{member.mention} (`{member.id}`)" + (" 🤖" if member.bot else ""))
+        age_days = (time.time() - member.created_at.timestamp()) / 86400
+        flag = " · ⚠️ **new account**" if age_days < 7 else ""
+        embed.add_field(name="Account created",
+                        value=f"<t:{int(member.created_at.timestamp())}:R>{flag}", inline=True)
+        embed.add_field(name="Members", value=f"{guild.member_count:,}", inline=True)
+        inv = None if member.bot else self._join_invite_line(member.id, guild.id)
+        if inv:
+            embed.add_field(name="Invite used", value=inv, inline=False)
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.set_footer(text=f"User ID {member.id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    @commands.Cog.listener()
+    async def on_audit_log_entry_create(self, entry: discord.AuditLogEntry):
+        guild = entry.guild
+        if guild is None or not is_enabled(guild.id, "msglog"):
+            return
+        A = discord.AuditLogAction
+        if entry.action not in (A.kick, A.ban, A.unban):
+            return
+        target_id = getattr(entry.target, "id", None)
+        if target_id is None:
+            return
+        now = time.time()
+        # lazy prune so the map can't grow unbounded
+        self._removals = {k: v for k, v in self._removals.items() if now - v["ts"] < 300}
+        rec = {"action": entry.action, "by_id": entry.user_id,
+               "by_name": str(entry.user) if entry.user else None,
+               "reason": entry.reason, "ts": now}
+        if entry.action in (A.kick, A.ban):
+            self._removals[target_id] = rec
+        if entry.action is A.kick:
+            return  # embed posted by on_member_remove — it still has roles/join date
+        log_ch, _ = self._members_log_channel(guild)
+        if log_ch is None:
+            return
+        banned = entry.action is A.ban
+        embed = discord.Embed(
+            title="🔨 Member banned" if banned else "♻️ Member unbanned",
+            color=COLOR_BAN if banned else COLOR_JOIN,
+            description=f"<@{target_id}> (`{target_id}`)")
+        embed.add_field(name="By", value=self._mod_line(rec), inline=True)
+        embed.add_field(name="Reason", value=_trunc(rec["reason"] or "No reason provided"), inline=False)
+        embed.set_footer(text=f"User ID {target_id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        guild = member.guild
+        if member.id == self.bot.user.id:
+            return
+        log_ch, _ = self._members_log_channel(guild)
+        if log_ch is None:
+            return
+        # wait for the audit event to classify this removal (kick/ban/leave)
+        rec = None
+        for _ in range(3):
+            await asyncio.sleep(1.5)
+            r = self._removals.get(member.id)
+            if r and time.time() - r["ts"] < 30:
+                rec = self._removals.pop(member.id)
+                break
+        if rec is None:
+            # audit event missed (no perm / gateway drop) — poll once as fallback
+            for action in (discord.AuditLogAction.kick, discord.AuditLogAction.ban):
+                for en in await self._fetch_entries(guild, action, limit=6):
+                    if en["target_id"] == member.id and time.time() - en["created_ts"] < 15 \
+                            and en["id"] not in self._removal_ids_seen:
+                        self._removal_ids_seen.add(en["id"])
+                        rec = {"action": action, "by_id": en["user_id"],
+                               "by_name": en["user_name"], "reason": en["reason"], "ts": time.time()}
+                        break
+                if rec:
+                    break
+        if rec and rec["action"] is discord.AuditLogAction.ban:
+            return  # the ban embed (with reason) is posted from the audit event
+        joined = f"<t:{int(member.joined_at.timestamp())}:R>" if member.joined_at else "?"
+        roles = [r.mention for r in reversed(member.roles) if r != guild.default_role]
+        if rec:  # kick
+            embed = discord.Embed(
+                title="👢 Member kicked", color=COLOR_KICK,
+                description=f"{member.mention} (`{member.id}`)" + (" 🤖" if member.bot else ""))
+            embed.add_field(name="By", value=self._mod_line(rec), inline=True)
+            embed.add_field(name="Joined", value=joined, inline=True)
+            embed.add_field(name="Reason", value=_trunc(rec["reason"] or "No reason provided"), inline=False)
+        else:    # plain leave
+            embed = discord.Embed(
+                title="📤 Member left", color=COLOR_LEAVE,
+                description=f"{member.mention} (`{member.id}`)" + (" 🤖" if member.bot else ""))
+            embed.add_field(name="Joined", value=joined, inline=True)
+            embed.add_field(name="Members", value=f"{guild.member_count:,}", inline=True)
+        if roles:
+            embed.add_field(name="Roles", value=_trunc(" ".join(roles), 1024), inline=False)
+        embed.set_footer(text=f"User ID {member.id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     # ------------------------------------------------------------- commands
     msglog = app_commands.Group(
