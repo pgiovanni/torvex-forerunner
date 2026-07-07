@@ -211,6 +211,14 @@
       ]
     },
     {
+      "name": "kick",
+      "description": "Kick a member from the server (mod)",
+      "cog": "moderation",
+      "required_permissions": [
+        "kick_members"
+      ]
+    },
+    {
       "name": "timeout",
       "description": "Time out a member for a duration, e.g. 30m / 2h / 1d (mod)",
       "cog": "moderation",

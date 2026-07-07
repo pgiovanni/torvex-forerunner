@@ -54,7 +54,7 @@ def _fmt_duration(delta: timedelta):
 
 
 class Moderation(commands.Cog):
-    """Native moderation commands (ban / unban / prune-messages) — replacing MEE6."""
+    """Native moderation commands (ban / unban / kick / timeout / prune-messages) — replacing MEE6."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -189,6 +189,51 @@ class Moderation(commands.Cog):
         )
         embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
         embed.set_footer(text=f"Unbanned by {interaction.user.display_name}")
+        await interaction.followup.send(embed=embed)  # public confirmation
+        await interaction.followup.send("✅ Done.", ephemeral=True)
+
+    @app_commands.command(name="kick", description="Kick a member from the server (they can rejoin with an invite).")
+    @app_commands.describe(
+        member="The member to kick",
+        reason="Why they're being kicked (shown in the audit log)",
+    )
+    @app_commands.default_permissions(kick_members=True)
+    @app_commands.checks.has_permissions(kick_members=True)
+    @app_commands.guild_only()
+    async def kick(self, interaction: discord.Interaction, member: discord.Member, reason: str = None):
+        await interaction.response.defer(ephemeral=True)
+        me = interaction.guild.me
+
+        if not me.guild_permissions.kick_members:
+            await interaction.followup.send("❌ I don't have the **Kick Members** permission.", ephemeral=True)
+            return
+        err = _can_act(interaction.user, member, me, verb="kick")
+        if err:
+            await interaction.followup.send(f"❌ {err}", ephemeral=True)
+            return
+
+        name = member.display_name
+        uid = member.id
+        audit = f"{interaction.user} ({interaction.user.id})"
+        full_reason = (reason or "No reason provided") + f" — by {audit}"
+        try:
+            await member.kick(reason=full_reason)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ Discord refused that — usually my role is below theirs, or I'm missing Kick Members.",
+                ephemeral=True)
+            return
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ Kick failed: {e}", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="👢 Member kicked",
+            color=0xE8763B,
+            description=f"**{name}** (`{uid}`) has been kicked. They can rejoin with an invite.",
+        )
+        embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+        embed.set_footer(text=f"Kicked by {interaction.user.display_name}")
         await interaction.followup.send(embed=embed)  # public confirmation
         await interaction.followup.send("✅ Done.", ephemeral=True)
 
