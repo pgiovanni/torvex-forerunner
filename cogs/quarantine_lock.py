@@ -116,6 +116,7 @@ class QuarantineLock(commands.Cog):
     @app_commands.command(name="quarantine-lock",
                           description="Force-lock the quarantine role out of every channel (admin)")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def lock_cmd(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -131,6 +132,14 @@ class QuarantineLock(commands.Cog):
         await interaction.followup.send(
             f"🔒 Quarantine lockdown ensured on **{total}** channels{exn} — {fixed} needed fixing. "
             f"New channels and any future drift are auto-corrected.", ephemeral=True)
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "❌ You need the **Administrator** permission to use this."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
 
 
 async def setup(bot):

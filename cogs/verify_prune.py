@@ -237,6 +237,7 @@ class VerifyPrune(commands.Cog):
     # ------------------------------------------------------------- commands
     @app_commands.command(name="prune-status",
                           description="Show verify-prune config + who's currently overdue (admin).")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def prune_status(self, interaction: discord.Interaction):
         guild = self.bot.get_guild(GUILD_ID)
@@ -255,6 +256,7 @@ class VerifyPrune(commands.Cog):
 
     @app_commands.command(name="prune-run",
                           description="Run the verify-prune sweep right now (admin).")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def prune_run(self, interaction: discord.Interaction):
         await interaction.response.send_message(

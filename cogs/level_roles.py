@@ -116,9 +116,10 @@ class LevelRoles(commands.Cog):
     # ── /levelroles ───────────────────────────────────────────────────────────
     group = app_commands.Group(
         name="levelroles", description="Level reward roles + MEE6 XP import (admin)",
-        default_permissions=discord.Permissions(manage_roles=True), guild_only=True)
+        default_permissions=discord.Permissions(administrator=True), guild_only=True)
 
     @group.command(name="import-mee6", description="Import XP, levels & role rewards from MEE6's leaderboard API")
+    @app_commands.checks.has_permissions(administrator=True)
     async def import_mee6(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
@@ -199,6 +200,7 @@ class LevelRoles(commands.Cog):
         await interaction.followup.send(msg[:1900], ephemeral=True)
 
     @group.command(name="sync", description="Sweep all members: give each their highest Level N+ role, strip the rest")
+    @app_commands.checks.has_permissions(administrator=True)
     async def sync(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
@@ -246,6 +248,7 @@ class LevelRoles(commands.Cog):
             pass  # completion already in the journal
 
     @group.command(name="list", description="Show the level → role reward map")
+    @app_commands.checks.has_permissions(administrator=True)
     async def list_rewards(self, interaction: discord.Interaction):
         mapping = await self._mapping(interaction.guild.id)
         if not mapping:
@@ -255,6 +258,7 @@ class LevelRoles(commands.Cog):
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @group.command(name="set", description="Set the reward role for a level")
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(level="level threshold (e.g. 10)", role="role to award at that level")
     async def set_reward(self, interaction: discord.Interaction, level: int, role: discord.Role):
         if role >= interaction.guild.me.top_role:
@@ -268,6 +272,7 @@ class LevelRoles(commands.Cog):
         await interaction.response.send_message(f"✅ Level **{level}+** now rewards {role.mention}.", ephemeral=True)
 
     @group.command(name="remove", description="Remove the reward role for a level")
+    @app_commands.checks.has_permissions(administrator=True)
     async def remove_reward(self, interaction: discord.Interaction, level: int):
         res = await self.pool.execute(
             "DELETE FROM level_roles WHERE guild_id = $1 AND level = $2",
@@ -276,6 +281,14 @@ class LevelRoles(commands.Cog):
             await interaction.response.send_message(f"No reward configured for level {level}.", ephemeral=True)
         else:
             await interaction.response.send_message(f"🗑️ Level {level} reward removed.", ephemeral=True)
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "❌ You need the **Administrator** permission to use this."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
 
 
 async def setup(bot):

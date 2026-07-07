@@ -340,8 +340,8 @@ class Moderation(commands.Cog):
         description="Bulk-delete the last N messages in this channel (count-based, not by date).",
     )
     @app_commands.describe(amount="How many recent messages to delete (1–1000).")
-    @app_commands.default_permissions(manage_messages=True)
-    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def prune_messages(self, interaction: discord.Interaction,
                              amount: app_commands.Range[int, 1, 1000]):

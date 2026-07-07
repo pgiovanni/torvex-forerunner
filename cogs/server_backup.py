@@ -184,6 +184,7 @@ class ServerBackup(commands.Cog):
                           description="Recent departures — leaves, kicks, bans, with who did them (admin)")
     @app_commands.describe(hours="how far back to look (default 24)")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def recent_leaves(self, interaction: discord.Interaction, hours: int = 24):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -212,6 +213,7 @@ class ServerBackup(commands.Cog):
                           description="Full join/leave/kick/ban log between snapshots (admin)")
     @app_commands.describe(hours="how far back to look (default 24)")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def member_activity(self, interaction: discord.Interaction, hours: int = 24):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -254,6 +256,7 @@ class ServerBackup(commands.Cog):
     # ----------------------------------------------------------- commands
     @app_commands.command(name="roster-snapshot", description="Record the member roster right now (admin)")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def roster_snapshot(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -269,6 +272,7 @@ class ServerBackup(commands.Cog):
         description="Members on record who AREN'T in the server now — your re-invite list (admin)",
     )
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def roster_missing(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -307,6 +311,7 @@ class ServerBackup(commands.Cog):
     @app_commands.command(name="structure-status",
                           description="Show the channel/role backup + what's been deleted since (admin)")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def structure_status(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -336,6 +341,7 @@ class ServerBackup(commands.Cog):
                           description="Recreate roles/channels deleted since the last backup (admin)")
     @app_commands.describe(confirm="True = actually recreate; leave blank for a dry-run preview")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def structure_restore(self, interaction: discord.Interaction, confirm: bool = False):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -414,6 +420,14 @@ class ServerBackup(commands.Cog):
             f"✅ Restore complete — recreated **{created_r}** roles and **{created_c}** channels from the {when} backup.\n"
             f"-# Channel order/positions may need a manual tidy. Member-specific overwrites for users who left were skipped.",
             ephemeral=True)
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "❌ You need the **Administrator** permission to use this."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
 
 
 async def setup(bot):

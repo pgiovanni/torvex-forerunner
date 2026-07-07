@@ -512,6 +512,7 @@ class AntiNuke(commands.Cog):
         default_permissions=discord.Permissions(administrator=True), guild_only=True)
 
     @group.command(name="status", description="Show anti-nuke mode & all thresholds")
+    @app_commands.checks.has_permissions(administrator=True)
     async def status(self, interaction: discord.Interaction):
         cfg = get_config(interaction.guild.id)
         on = bool(cfg.get("antinuke_enabled"))
@@ -561,18 +562,21 @@ class AntiNuke(commands.Cog):
             f"before strip + quarantine.", ephemeral=True)
 
     @group.command(name="role-grants", description="Limit how many role-GRANTS an actor may do before it's a nuke")
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(count="role grants allowed", window="within this many seconds")
     async def role_grants(self, interaction: discord.Interaction,
                           count: app_commands.Range[int, 1, 100], window: app_commands.Range[int, 1, 600]):
         await self._set_vector(interaction, "member_role", count, window)
 
     @group.command(name="role-removes", description="Limit how many role-REMOVES an actor may do before it's a nuke")
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(count="role removals allowed", window="within this many seconds")
     async def role_removes(self, interaction: discord.Interaction,
                            count: app_commands.Range[int, 1, 100], window: app_commands.Range[int, 1, 600]):
         await self._set_vector(interaction, "role_remove", count, window)
 
     @group.command(name="set-limit", description="Set the rate limit for any destructive vector")
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(vector="which action", count="allowed in the window", window="within this many seconds")
     @app_commands.choices(vector=[
         app_commands.Choice(name=lbl, value=key) for key, lbl in VECTOR_LABELS.items()])
@@ -581,6 +585,7 @@ class AntiNuke(commands.Cog):
         await self._set_vector(interaction, vector.value, count, window)
 
     @group.command(name="messages-allowed", description="Set the message-flood limit (optionally per channel)")
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(count="messages allowed", window="within this many seconds",
                            channel="only this channel (omit = server-wide default)")
     async def messages_allowed(self, interaction: discord.Interaction,
@@ -600,6 +605,7 @@ class AntiNuke(commands.Cog):
             f"✅ Message flood {where}: **{count} msgs / {window}s** before timeout.", ephemeral=True)
 
     @group.command(name="whitelist-channel", description="Exempt a channel from flood limits (allowed to be spammed)")
+    @app_commands.checks.has_permissions(administrator=True)
     async def whitelist_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
         gid = interaction.guild.id
         spam = list(cfg_spam := (get_config(gid).get("antinuke_spam_channels") or []))
@@ -613,6 +619,7 @@ class AntiNuke(commands.Cog):
             f"(@everyone / mention-bomb protection still applies.)", ephemeral=True)
 
     @group.command(name="unwhitelist-channel", description="Re-apply flood limits to a channel")
+    @app_commands.checks.has_permissions(administrator=True)
     async def unwhitelist_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
         gid = interaction.guild.id
         spam = list(get_config(gid).get("antinuke_spam_channels") or [])
@@ -625,6 +632,7 @@ class AntiNuke(commands.Cog):
             f"✅ Flood limits re-applied to {channel.mention}.", ephemeral=True)
 
     @group.command(name="admin-lockdown", description="Toggle: only owner + this bot may grant Administrator")
+    @app_commands.checks.has_permissions(administrator=True)
     async def admin_lockdown(self, interaction: discord.Interaction, enabled: bool):
         set_config(interaction.guild.id, antinuke_admin_lockdown=1 if enabled else 0)
         await interaction.response.send_message(
@@ -632,6 +640,14 @@ class AntiNuke(commands.Cog):
              "anyone else's grant is instantly reverted." if enabled
              else "⚠️ Admin-grant lockdown **OFF** — admin grants now only caught by the rate limit."),
             ephemeral=True)
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "❌ You need the **Administrator** permission to use this."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
 
 
 async def setup(bot):

@@ -802,6 +802,7 @@ class AltGuard(commands.Cog):
         description="Post the click-to-verify button in this channel (admin)",
     )
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def verify_panel(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🔒 Verification required",
@@ -821,6 +822,7 @@ class AltGuard(commands.Cog):
     )
     @app_commands.describe(dry_run="just count, don't DM anyone")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def sweep(self, interaction: discord.Interaction, dry_run: bool = False):
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild = interaction.guild
@@ -855,6 +857,7 @@ class AltGuard(commands.Cog):
         enabled="On = every new joiner is quarantined until they verify. Omit to just see the current state.",
     )
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def gate(self, interaction: discord.Interaction, enabled: bool = None):
         if enabled is None:
             state = "🔒 **ON**" if self.quarantine_on_join else "🔓 **OFF**"
@@ -891,6 +894,7 @@ class AltGuard(commands.Cog):
         quarantine="True = strip their roles + hold them until they pass (in-server only)",
     )
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def check(self, interaction: discord.Interaction,
                     user: discord.User = None, user_id: str = None, dm: bool = True,
                     quarantine: bool = False):
@@ -984,6 +988,7 @@ class AltGuard(commands.Cog):
         user_id="raw Discord ID — for banned/left accounts not in the server",
     )
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def lookup(self, interaction: discord.Interaction, user: discord.User = None, user_id: str = None):
         await interaction.response.defer(ephemeral=True, thinking=True)
         uid = str(user.id) if user else (user_id or "").strip()
@@ -1030,6 +1035,7 @@ class AltGuard(commands.Cog):
 
     @app_commands.command(name="altguard-release", description="Clear a quarantine and restore removed roles")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def release(self, interaction: discord.Interaction, member: discord.Member):
         ok, restored = await self._release(member)
         # Mark trusted: their device (if on file) stays a live detector — a NEW
@@ -1055,6 +1061,7 @@ class AltGuard(commands.Cog):
     )
     @app_commands.describe(user_id="raw Discord ID to watch", reason="why (e.g. 'banned raider')")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def watch(self, interaction: discord.Interaction, user_id: str, reason: str = ""):
         uid = user_id.strip()
         if not uid.isdigit():
@@ -1071,11 +1078,20 @@ class AltGuard(commands.Cog):
     @app_commands.command(name="altguard-unwatch", description="Remove an account from the watchlist")
     @app_commands.describe(user_id="raw Discord ID to stop watching")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def unwatch(self, interaction: discord.Interaction, user_id: str):
         ok = qstore.unwatch(user_id.strip())
         await interaction.response.send_message(
             f"{'✅ Removed' if ok else '⚠️ Not on'} the watchlist: `{user_id}`.", ephemeral=True
         )
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "❌ You need the **Administrator** permission to use this."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

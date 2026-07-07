@@ -236,10 +236,10 @@
     },
     {
       "name": "prune-messages",
-      "description": "Bulk-delete the last N messages in a channel by count (mod)",
+      "description": "Bulk-delete the last N messages in a channel by count (admin)",
       "cog": "moderation",
       "required_permissions": [
-        "manage_messages"
+        "administrator"
       ]
     },
     {
@@ -427,7 +427,7 @@
       "description": "Level reward roles + MEE6 XP/level import (admin)",
       "cog": "level_roles",
       "required_permissions": [
-        "manage_roles"
+        "administrator"
       ]
     }
   ]
