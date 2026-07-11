@@ -61,6 +61,7 @@ COLOR_JOIN = 0x3BA55D
 COLOR_LEAVE = 0x95A5A6
 COLOR_KICK = 0xE8A33D
 COLOR_BAN = 0x992D22
+COLOR_VOICE = 0x9B59B6
 INVITES_DB = os.path.join(ROOT, "invites.db")  # invites cog's attribution store (read-only here)
 
 
@@ -735,6 +736,47 @@ class ModLog(commands.Cog):
         embed.set_footer(text=f"User ID {member.id}")
         await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        # Voice channel join / leave / move. A same-channel before→after (mute,
+        # deafen, stream or camera toggle) is deliberately NOT logged — this
+        # tracks which channel a member is in, not their device state. Own bot
+        # excluded; other bots gated by msglog_log_bots (music bots are noise).
+        guild = member.guild
+        if guild is None or member.id == self.bot.user.id:
+            return
+        b, a = before.channel, after.channel
+        if b == a:
+            return
+        if not is_enabled(guild.id, "msglog"):
+            return
+        cfg = get_config(guild.id)
+        if not cfg.get("msglog_voice", 1):
+            return
+        if member.bot and not cfg.get("msglog_log_bots", 0):
+            return
+        log_ch = self._log_channel(guild, cfg)
+        if log_ch is None:
+            return
+
+        if b is None:          # joined voice
+            if self._skip_logging(cfg, a.id, log_ch):
+                return
+            title, color, channel = "🔊 Joined voice", COLOR_VOICE, a.mention
+        elif a is None:        # left voice
+            if self._skip_logging(cfg, b.id, log_ch):
+                return
+            title, color, channel = "🔇 Left voice", COLOR_LEAVE, b.mention
+        else:                  # moved between channels
+            if self._skip_logging(cfg, a.id, log_ch) and self._skip_logging(cfg, b.id, log_ch):
+                return
+            title, color, channel = "🔀 Switched voice", COLOR_VOICE, f"{b.mention} → {a.mention}"
+
+        embed = discord.Embed(title=title, color=color, description=self._member_line(member))
+        embed.add_field(name="Channel", value=channel, inline=False)
+        embed.set_footer(text=f"User ID {member.id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
     # ------------------------------------------------------------- commands
     msglog = app_commands.Group(
         name="msglog", description="Message archive + deletion/edit logging (Manage Server)",
@@ -779,6 +821,17 @@ class ModLog(commands.Cog):
         set_config(interaction.guild.id, msglog_ignore_channels=ignored)
         await interaction.response.send_message(f"{channel.mention}: {verb}.", ephemeral=True)
 
+    @msglog.command(name="voice", description="Toggle voice channel join/leave/move logging on or off.")
+    @app_commands.describe(enabled="On = log voice join/leave/switch to the mod-log")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def voice_cmd(self, interaction: discord.Interaction, enabled: bool):
+        set_config(interaction.guild.id, msglog_voice=1 if enabled else 0)
+        await interaction.response.send_message(
+            f"🔊 Voice logging **{'on' if enabled else 'off'}** — "
+            + ("join/leave/switch events post to the mod-log."
+               if enabled else "voice movement is no longer logged."),
+            ephemeral=True)
+
     @msglog.command(name="status", description="Archive totals + configuration.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def status_cmd(self, interaction: discord.Interaction):
@@ -812,6 +865,8 @@ class ModLog(commands.Cog):
             f"Media cache: **{n_files}** files, {n_bytes/1e6:.1f} MB "
             f"(≤{cfg.get('msglog_media_max_mb')} MB/file, {cfg.get('msglog_media_days')}d retention)",
             f"DB: {db_mb:.1f} MB",
+            f"Members: {'🟢' if cfg.get('msglog_members', 1) else '🔴'} · "
+            f"Voice: {'🟢' if cfg.get('msglog_voice', 1) else '🔴'}",
         ]
         ignored = cfg.get("msglog_ignore_channels") or []
         if ignored:
