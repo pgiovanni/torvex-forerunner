@@ -109,6 +109,21 @@ def _device_profile(attrs: dict) -> str:
     return " · ".join(parts) or "—"
 
 
+def _conn_line(res: dict, ip: bool = False) -> str:
+    """Connection summary with city-level geolocation when the gate has it.
+    Geo comes from the results row (gate stores IPQS city/region since the
+    geo-corroboration update); older rows just show country · ISP."""
+    loc = ", ".join(v for v in (res.get("city"), res.get("region")) if v)
+    if loc and not res.get("geo_trust", True):
+        loc += " (exit)"   # anonymizer exit — locates the tunnel, not the person
+    parts = [p for p in (f"📍 {loc}" if loc else None,
+                         res.get("country", "?"), res.get("isp", "?")) if p]
+    line = " · ".join(parts)
+    if ip:
+        line += f" · `{res.get('ip', '?')}`"
+    return line
+
+
 def _hmac_headers() -> dict:
     ts = str(time.time())
     sig = hmac.new(SECRET.encode(), ts.encode(), hashlib.sha256).hexdigest()
@@ -682,7 +697,7 @@ class AltGuard(commands.Cog):
             ),
         )
         embed.add_field(name="Top device match", value=f"{res.get('risk', 0)}%", inline=True)
-        embed.add_field(name="Connection", value=f"{res.get('country', '?')} · {res.get('isp', '?')}", inline=True)
+        embed.add_field(name="Connection", value=_conn_line(res), inline=True)
         if ok:
             embed.add_field(name="Roles restored", value=roles, inline=False)
         await ch.send(embed=embed)
@@ -708,7 +723,7 @@ class AltGuard(commands.Cog):
             ),
         )
         embed.add_field(name="Top device match", value=f"{res.get('risk', 0)}%", inline=True)
-        embed.add_field(name="Connection", value=f"{res.get('country', '?')} · {res.get('isp', '?')}", inline=True)
+        embed.add_field(name="Connection", value=_conn_line(res), inline=True)
         await ch.send(embed=embed)
 
     async def _watch_alert(self, guild, res):
@@ -729,7 +744,7 @@ class AltGuard(commands.Cog):
         embed.add_field(name="Verdict", value=res.get("verdict", "?"), inline=True)
         embed.add_field(name="Match", value=f"{res.get('match_pct',0)}%", inline=True)
         embed.add_field(name="🖥️ Device", value=_device_profile(res.get("attrs") or {})[:1024], inline=False)
-        embed.add_field(name="Connection", value=f"{res.get('country','?')} · {res.get('isp','?')} · `{res.get('ip','?')}`", inline=False)
+        embed.add_field(name="Connection", value=_conn_line(res, ip=True), inline=False)
         await ch.send(content="@here", embed=embed)
 
     @poll_results.before_loop
@@ -766,7 +781,7 @@ class AltGuard(commands.Cog):
         embed.add_field(name="Top device match", value=f"**{res.get('risk', 0)}%**{conf_txt}", inline=True)
         embed.add_field(name="Environment", value=env, inline=True)
         embed.add_field(name="Account age", value=f"{age_days}d", inline=True)
-        embed.add_field(name="Connection", value=f"{res.get('country', '?')} · {res.get('isp', '?')}", inline=True)
+        embed.add_field(name="Connection", value=_conn_line(res), inline=True)
         embed.add_field(name="Why", value=reasons, inline=False)
         embed.add_field(name="🖥️ Device", value=_device_profile(res.get("attrs") or {})[:1024], inline=False)
         if banned:
@@ -1018,7 +1033,7 @@ class AltGuard(commands.Cog):
             res = data["result"]
             embed.add_field(name="Last verdict", value=f"**{res['verdict']}** · top match {res.get('match_pct',0)}%", inline=True)
             embed.add_field(name="Environment", value=f"{res.get('environment','?')} · conf {res.get('confidence','?')}", inline=True)
-            embed.add_field(name="Connection", value=f"{res.get('country','?')} · {res.get('isp','?')} · `{res.get('ip','?')}`", inline=False)
+            embed.add_field(name="Connection", value=_conn_line(res, ip=True), inline=False)
             embed.add_field(name="🖥️ Device", value=_device_profile(res.get("attrs") or {})[:1024], inline=False)
 
         # device-similarity matches with %, and what they matched on
