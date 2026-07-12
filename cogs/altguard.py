@@ -66,6 +66,10 @@ MIN_ACCOUNT_AGE_DAYS = _env_int("ALTGUARD_MIN_ACCOUNT_AGE_DAYS", 7)
 # gating, or on release after they verify). Replaces MEE6 autorole. Members can
 # remove any they don't want.
 DEFAULT_ROLE_IDS = [int(x) for x in os.environ.get("ALTGUARD_DEFAULT_ROLES", "").replace(",", " ").split() if x.strip().isdigit()]
+# Age roles granted from the verify page's age-group selection (results.age =
+# "18+" | "under18"). Picking one always clears the other. 0 = feature off.
+AGE_ROLE_18PLUS = _env_int("ALTGUARD_AGE_ROLE_18PLUS", 0)
+AGE_ROLE_UNDER18 = _env_int("ALTGUARD_AGE_ROLE_UNDER18", 0)
 DM_ON_JOIN = os.environ.get("ALTGUARD_DM_ON_JOIN", "1") != "0"
 # Forced-gate mode: quarantine EVERY human the moment they join (strip access),
 # DM them the link, and auto-release them on a PASS verdict. Off = detect-only.
@@ -228,9 +232,38 @@ class AltGuard(commands.Cog):
                 out.append(r)
         return out
 
-    async def _release(self, member: discord.Member):
+    def _age_roles(self, guild, res):
+        """(grant, remove) pair for the age group picked on the verify page.
+        (None, None) when the result carries no selection or roles unset."""
+        pick = (res or {}).get("age") or ""
+        plus = guild.get_role(AGE_ROLE_18PLUS) if AGE_ROLE_18PLUS else None
+        minor = guild.get_role(AGE_ROLE_UNDER18) if AGE_ROLE_UNDER18 else None
+        if pick == "18+":
+            return plus, minor
+        if pick == "under18":
+            return minor, plus
+        return None, None
+
+    async def _apply_age_role(self, guild, member, res):
+        """Grant the picked age role (and drop the opposite) outside the release
+        path — used for passes that lift no quarantine (re-verify, grandfathered)."""
+        if not member:
+            return
+        grant, drop = self._age_roles(guild, res)
+        me = guild.me
+        if not grant or grant.managed or not me or grant >= me.top_role:
+            return
+        try:
+            if drop and drop in member.roles:
+                await member.remove_roles(drop, reason="AltGuard: age selection (verify page)")
+            if grant not in member.roles:
+                await member.add_roles(grant, reason="AltGuard: age selection (verify page)")
+        except discord.Forbidden:
+            pass
+
+    async def _release(self, member: discord.Member, res=None):
         """Remove quarantine role, restore the exact roles we removed, AND grant
-        the opt-out default roles — in a single bulk edit."""
+        the opt-out default roles + the verify-page age role — in a single bulk edit."""
         qrole = member.guild.get_role(QUARANTINE_ROLE_ID)
         me = member.guild.me
         stored = qstore.pop(member.id)
@@ -244,6 +277,13 @@ class AltGuard(commands.Cog):
         for r in restore + self._default_roles(member.guild):
             if r not in target:
                 target.append(r)
+        # age role from the verify page: add the picked one, drop the opposite
+        # (also beats a stale stored/restored age role from before the pick)
+        grant, drop = self._age_roles(member.guild, res)
+        if drop and drop in target:
+            target.remove(drop)
+        if grant and grant not in target and not grant.managed and me and grant < me.top_role:
+            target.append(grant)
         try:
             await member.edit(roles=target, reason="AltGuard: quarantine cleared (restore + defaults)")
             return True, restore
@@ -490,9 +530,11 @@ class AltGuard(commands.Cog):
                 # the gate off mid-verification can't strand a passing member.
                 if member and qstore.is_quarantined(member.id) and \
                         "quarantine-on-join" in (qstore.quarantine_reason(member.id) or ""):
-                    ok, restored = await self._release(member)
+                    ok, restored = await self._release(member, res)
                     await self._released_alert(guild, member, res, restored, ok)
                 else:
+                    # no lock to lift, but the age pick still applies
+                    await self._apply_age_role(guild, member, res)
                     # pass with NO join-lock to lift — grandfathered member (joined
                     # before the gate), a re-verify, or an already-cleared account.
                     # This path was previously SILENT in the mod log; record it so
@@ -698,6 +740,8 @@ class AltGuard(commands.Cog):
         )
         embed.add_field(name="Top device match", value=f"{res.get('risk', 0)}%", inline=True)
         embed.add_field(name="Connection", value=_conn_line(res), inline=True)
+        if res.get("age"):
+            embed.add_field(name="Age group", value=res["age"], inline=True)
         if ok:
             embed.add_field(name="Roles restored", value=roles, inline=False)
         await ch.send(embed=embed)
@@ -724,6 +768,8 @@ class AltGuard(commands.Cog):
         )
         embed.add_field(name="Top device match", value=f"{res.get('risk', 0)}%", inline=True)
         embed.add_field(name="Connection", value=_conn_line(res), inline=True)
+        if res.get("age"):
+            embed.add_field(name="Age group", value=res["age"], inline=True)
         await ch.send(embed=embed)
 
     async def _watch_alert(self, guild, res):
