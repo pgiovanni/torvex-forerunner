@@ -550,35 +550,47 @@ class Economy(commands.Cog):
             )
             return
 
-        row = await self.get_or_create(interaction.user)
-        if row["peepo_bucks"] < store_item["price"]:
-            needed = store_item["price"] - row["peepo_bucks"]
+        await self.get_or_create(interaction.user)  # ensure the row exists
+
+        # Atomic check-and-debit — the balance guard lives in the UPDATE itself,
+        # so concurrent redeems can't both pass a stale balance check.
+        debited = await self.pool.fetchrow(
+            "UPDATE discord_users SET peepo_bucks = peepo_bucks - $1 "
+            "WHERE discord_id = $2 AND peepo_bucks >= $1 RETURNING peepo_bucks",
+            store_item["price"], str(interaction.user.id)
+        )
+        if debited is None:
+            row = await self.get_or_create(interaction.user)
+            needed = max(store_item["price"] - row["peepo_bucks"], 0)
             await interaction.response.send_message(
                 f"You need **{needed:,} more 💰** to redeem {store_item['emoji']} **{store_item['name']}**.",
                 ephemeral=True
             )
             return
 
-        await self.pool.execute(
-            "UPDATE discord_users SET peepo_bucks = peepo_bucks - $1 WHERE discord_id = $2",
-            store_item["price"], str(interaction.user.id)
-        )
-
-        # Notify staff
-        log_channel = discord.utils.get(interaction.guild.text_channels, name="mod-chat")
+        # Notify staff in the home guild's mod-chat (works from DMs/other guilds too)
+        notify_guild = interaction.guild or self.bot.get_guild(PEEPOS_GUILD_ID)
+        log_channel = discord.utils.get(notify_guild.text_channels, name="mod-chat") if notify_guild else None
+        notified = False
         if log_channel:
-            await log_channel.send(
-                f"🛒 **Redemption Request**\n"
-                f"User: {interaction.user.mention} (`{interaction.user.id}`)\n"
-                f"Item: {store_item['emoji']} **{store_item['name']}**\n"
-                f"Cost: {store_item['price']:,} 💰"
-            )
+            try:
+                await log_channel.send(
+                    f"🛒 **Redemption Request**\n"
+                    f"User: {interaction.user.mention} (`{interaction.user.id}`)\n"
+                    f"Item: {store_item['emoji']} **{store_item['name']}**\n"
+                    f"Cost: {store_item['price']:,} 💰 (new balance: {debited['peepo_bucks']:,})"
+                )
+                notified = True
+            except discord.HTTPException as e:
+                log.error(f"/redeem staff notify failed: {e}")
 
-        await interaction.response.send_message(
+        msg = (
             f"✅ Redeemed {store_item['emoji']} **{store_item['name']}** for {store_item['price']:,} 💰!\n"
-            f"A staff member will fulfill your reward shortly.",
-            ephemeral=True
+            f"A staff member will fulfill your reward shortly."
         )
+        if not notified:
+            msg += "\n⚠️ Couldn't reach staff automatically — please ping a mod with this message."
+        await interaction.response.send_message(msg, ephemeral=True)
 
     # ── /levels ───────────────────────────────────────────────────────────────
     @app_commands.command(name="chat-levels", description="Top 10 members by chat level, Peepo Bucks, and Regular Bucks.")
