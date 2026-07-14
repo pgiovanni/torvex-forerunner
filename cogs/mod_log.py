@@ -62,6 +62,7 @@ COLOR_LEAVE = 0x95A5A6
 COLOR_KICK = 0xE8A33D
 COLOR_BAN = 0x992D22
 COLOR_VOICE = 0x9B59B6
+COLOR_ROLE = 0x1ABC9C
 INVITES_DB = os.path.join(ROOT, "invites.db")  # invites cog's attribution store (read-only here)
 
 
@@ -168,6 +169,7 @@ class ModLog(commands.Cog):
         self._primed = set()            # guild ids whose audit cache is primed
         self._removals = {}             # user_id -> kick/ban audit record (classifies member_remove)
         self._removal_ids_seen = set()  # audit entry ids consumed by the fallback poll
+        self._role_changes = {}         # user_id -> member_role_update audit record (attributes role diffs)
         os.makedirs(MEDIA_DIR, exist_ok=True)
         with self._conn() as c:
             c.execute("PRAGMA journal_mode=WAL")
@@ -371,9 +373,18 @@ class ModLog(commands.Cog):
         cid = cfg.get("msglog_channel_id") or cfg.get("modlog_channel_id")
         return guild.get_channel(int(cid)) if cid else None
 
+    def _media_channel(self, guild, cfg):
+        """Separate destination for deleted-media re-posts (age-restricted staff
+        channel). None = media stays attached to the log embeds as before."""
+        cid = cfg.get("msglog_media_channel_id")
+        return guild.get_channel(int(cid)) if cid else None
+
     def _skip_logging(self, cfg, channel_id, log_ch):
         if log_ch is not None and int(channel_id) == log_ch.id:
             return True  # never log the log channel — feedback loop
+        mcid = cfg.get("msglog_media_channel_id")
+        if mcid and int(channel_id) == int(mcid):
+            return True  # ...nor the media channel
         return str(channel_id) in [str(x) for x in cfg.get("msglog_ignore_channels") or []]
 
     @commands.Cog.listener()
@@ -436,15 +447,28 @@ class ModLog(commands.Cog):
                     files.append(discord.File(path, filename=orig))
             except OSError:
                 pass
+        media_ch = self._media_channel(guild, cfg)
+        route_media = bool(files) and media_ch is not None and media_ch.id != log_ch.id
         if atts and not files:
             embed.add_field(name="Attachments (not recoverable)",
                             value=_trunc("\n".join(a.get("filename", "?") for a in atts), 512),
                             inline=False)
+        elif route_media:
+            embed.add_field(name="🖼️ Deleted media",
+                            value=f"re-posted in {media_ch.mention}", inline=False)
         elif files:
             embed.add_field(name="🖼️ Deleted media re-posted below", value="​", inline=False)
         embed.set_footer(text=f"Message ID {payload.message_id}")
-        await log_ch.send(embed=embed, files=files or discord.utils.MISSING,
+        await log_ch.send(embed=embed,
+                          files=discord.utils.MISSING if route_media else (files or discord.utils.MISSING),
                           allowed_mentions=discord.AllowedMentions.none())
+        if route_media:
+            ref = discord.Embed(title="🖼️ Deleted media", color=color)
+            ref.description = (f"From message `{payload.message_id}` in <#{payload.channel_id}>"
+                               + (f", author <@{row['author_id']}>" if row else ""))
+            ref.set_footer(text=f"Message ID {payload.message_id}")
+            await media_ch.send(embed=ref, files=files,
+                                allowed_mentions=discord.AllowedMentions.none())
 
     @commands.Cog.listener()
     async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent):
@@ -658,6 +682,12 @@ class ModLog(commands.Cog):
         if guild is None or not is_enabled(guild.id, "msglog"):
             return
         A = discord.AuditLogAction
+        if entry.action is A.member_role_update:
+            self._note_role_change(entry)
+            return
+        if entry.action in (A.role_create, A.role_delete, A.role_update):
+            await self._log_guild_role_event(entry)
+            return
         if entry.action not in (A.kick, A.ban, A.unban):
             return
         target_id = getattr(entry.target, "id", None)
@@ -684,6 +714,139 @@ class ModLog(commands.Cog):
         embed.add_field(name="By", value=self._mod_line(rec), inline=True)
         embed.add_field(name="Reason", value=_trunc(rec["reason"] or "No reason provided"), inline=False)
         embed.set_footer(text=f"User ID {target_id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    def _note_role_change(self, entry):
+        """Cache a member_role_update audit record so on_member_update can say WHO."""
+        target_id = getattr(entry.target, "id", None)
+        if target_id is None:
+            return
+        now = time.time()
+        self._role_changes = {k: v for k, v in self._role_changes.items() if now - v["ts"] < 300}
+        self._role_changes[target_id] = {
+            "by_id": entry.user_id,
+            "by_name": str(entry.user) if entry.user else None,
+            "reason": entry.reason, "ts": now,
+            # for member_role_update, changes.after.roles = added, before.roles = removed
+            "added": {r.id for r in (getattr(entry.changes.after, "roles", None) or [])},
+            "removed": {r.id for r in (getattr(entry.changes.before, "roles", None) or [])},
+        }
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        if before.roles == after.roles:
+            return
+        guild = after.guild
+        if not is_enabled(guild.id, "msglog"):
+            return
+        cfg = get_config(guild.id)
+        if not cfg.get("msglog_roles", 1):
+            return
+        if after.bot and not cfg.get("msglog_log_bots", 0):
+            return
+        log_ch = self._log_channel(guild, cfg)
+        if log_ch is None:
+            return
+        added = [r for r in after.roles if r not in before.roles]
+        removed = [r for r in before.roles if r not in after.roles]
+        if not added and not removed:
+            return
+        changed_ids = {r.id for r in added} | {r.id for r in removed}
+
+        # WHO: the audit event usually lands within a second; check the cache
+        # immediately, then briefly wait. Aggregated entries (same mod changing
+        # the same member again inside Discord's merge window) don't re-dispatch
+        # the gateway event, so a one-shot poll covers that gap.
+        rec = None
+        for attempt in range(4):
+            if attempt:
+                await asyncio.sleep(1.0)
+            r = self._role_changes.get(after.id)
+            if r and time.time() - r["ts"] < 30:
+                rec = r
+                break
+        if rec is None or not (changed_ids & (rec["added"] | rec["removed"])):
+            try:
+                async for e in guild.audit_logs(limit=8, action=discord.AuditLogAction.member_role_update):
+                    if getattr(e.target, "id", None) != after.id:
+                        continue
+                    e_roles = {r.id for r in (getattr(e.changes.after, "roles", None) or [])} \
+                            | {r.id for r in (getattr(e.changes.before, "roles", None) or [])}
+                    if changed_ids & e_roles and time.time() - e.created_at.timestamp() < AUDIT_FRESH_WINDOW:
+                        rec = {"by_id": e.user.id if e.user else None,
+                               "by_name": str(e.user) if e.user else None, "reason": e.reason}
+                        break
+            except discord.Forbidden:
+                pass
+
+        # Changes made by THIS bot are deliberately not logged: /levelroles sync
+        # sweeps thousands of members, /rolemenu self-assigns and quarantine
+        # grants fire constantly, and each of those systems has its own trail.
+        if rec and rec.get("by_id") == self.bot.user.id:
+            return
+
+        embed = discord.Embed(title="🎭 Roles updated", color=COLOR_ROLE,
+                              description=self._member_line(after))
+        if added:
+            embed.add_field(name="Added", value=_trunc(" ".join(r.mention for r in added)), inline=False)
+        if removed:
+            embed.add_field(name="Removed", value=_trunc(" ".join(r.mention for r in removed)), inline=False)
+        embed.add_field(name="By", value=self._mod_line(rec) if rec else "? (no audit entry found)", inline=True)
+        if rec and rec.get("reason"):
+            embed.add_field(name="Reason", value=_trunc(rec["reason"]), inline=False)
+        embed.set_footer(text=f"User ID {after.id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    async def _log_guild_role_event(self, entry):
+        """Role created / deleted / edited — straight from the audit event, which
+        carries actor + diff in one payload (no aggregation for these actions)."""
+        guild = entry.guild
+        cfg = get_config(guild.id)
+        if not cfg.get("msglog_roles", 1):
+            return
+        log_ch = self._log_channel(guild, cfg)
+        if log_ch is None:
+            return
+        A = discord.AuditLogAction
+        role = entry.target  # discord.Role, or bare Object once deleted
+        role_id = getattr(role, "id", "?")
+        name = getattr(role, "name", None) or getattr(entry.changes.before, "name", None) \
+            or getattr(entry.changes.after, "name", None) or f"ID {role_id}"
+
+        if entry.action is A.role_create:
+            title, color = "🆕 Role created", COLOR_JOIN
+            lines = [role.mention if isinstance(role, discord.Role) else f"**{name}**"]
+        elif entry.action is A.role_delete:
+            title, color = "🗑️ Role deleted", COLOR_MOD_DELETE
+            lines = [f"**{name}**"]
+        else:  # role_update — show what changed, skip position-only reorders (noise)
+            before, after = entry.changes.before, entry.changes.after
+            diffs = []
+            for attr in ("name", "hoist", "mentionable"):
+                if hasattr(before, attr) or hasattr(after, attr):
+                    diffs.append(f"{attr}: `{getattr(before, attr, '?')}` → `{getattr(after, attr, '?')}`")
+            if hasattr(before, "colour") or hasattr(after, "colour"):
+                diffs.append(f"color: `{getattr(before, 'colour', '?')}` → `{getattr(after, 'colour', '?')}`")
+            if hasattr(before, "permissions") or hasattr(after, "permissions"):
+                pb = dict(getattr(before, "permissions", None) or discord.Permissions.none())
+                pa = dict(getattr(after, "permissions", None) or discord.Permissions.none())
+                gained = sorted(p for p, v in pa.items() if v and not pb.get(p))
+                lost = sorted(p for p, v in pb.items() if v and not pa.get(p))
+                if gained:
+                    diffs.append("perms **+** " + ", ".join(f"`{p}`" for p in gained))
+                if lost:
+                    diffs.append("perms **−** " + ", ".join(f"`{p}`" for p in lost))
+            if not diffs:
+                return
+            title, color = "✏️ Role edited", COLOR_EDIT
+            lines = [role.mention if isinstance(role, discord.Role) else f"**{name}**"] + diffs
+
+        embed = discord.Embed(title=title, color=color, description=_trunc("\n".join(lines), 4000))
+        embed.add_field(name="By", value=self._mod_line(
+            {"by_id": entry.user_id, "by_name": str(entry.user) if entry.user else None}), inline=True)
+        if entry.reason:
+            embed.add_field(name="Reason", value=_trunc(entry.reason), inline=False)
+        embed.set_footer(text=f"Role ID {role_id}")
         await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @commands.Cog.listener()
@@ -821,6 +984,20 @@ class ModLog(commands.Cog):
         set_config(interaction.guild.id, msglog_ignore_channels=ignored)
         await interaction.response.send_message(f"{channel.mention}: {verb}.", ephemeral=True)
 
+    @msglog.command(name="media-channel",
+                    description="Route deleted-media re-posts to a separate channel (e.g. 18+ staff only).")
+    @app_commands.describe(channel="Destination for media re-posts; omit to attach media to the log embeds again")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def media_channel_cmd(self, interaction: discord.Interaction,
+                                channel: discord.TextChannel = None):
+        set_config(interaction.guild.id,
+                   msglog_media_channel_id=str(channel.id) if channel else None)
+        await interaction.response.send_message(
+            f"🖼️ Deleted-media re-posts now go to {channel.mention}; the text log embeds "
+            f"reference them there." if channel else
+            "🖼️ Media routing cleared — deleted media attaches to the log embeds again.",
+            ephemeral=True)
+
     @msglog.command(name="voice", description="Toggle voice channel join/leave/move logging on or off.")
     @app_commands.describe(enabled="On = log voice join/leave/switch to the mod-log")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -830,6 +1007,18 @@ class ModLog(commands.Cog):
             f"🔊 Voice logging **{'on' if enabled else 'off'}** — "
             + ("join/leave/switch events post to the mod-log."
                if enabled else "voice movement is no longer logged."),
+            ephemeral=True)
+
+    @msglog.command(name="roles", description="Toggle role-change logging on or off.")
+    @app_commands.describe(enabled="On = log member role add/remove + role create/delete/edit")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def roles_cmd(self, interaction: discord.Interaction, enabled: bool):
+        set_config(interaction.guild.id, msglog_roles=1 if enabled else 0)
+        await interaction.response.send_message(
+            f"🎭 Role logging **{'on' if enabled else 'off'}** — "
+            + ("member role changes (with who) + role create/delete/edit post to the mod-log. "
+               "Changes made by this bot itself (level roles, role menus, quarantine) are not logged."
+               if enabled else "role changes are no longer logged."),
             ephemeral=True)
 
     @msglog.command(name="status", description="Archive totals + configuration.")
@@ -866,7 +1055,8 @@ class ModLog(commands.Cog):
             f"(≤{cfg.get('msglog_media_max_mb')} MB/file, {cfg.get('msglog_media_days')}d retention)",
             f"DB: {db_mb:.1f} MB",
             f"Members: {'🟢' if cfg.get('msglog_members', 1) else '🔴'} · "
-            f"Voice: {'🟢' if cfg.get('msglog_voice', 1) else '🔴'}",
+            f"Voice: {'🟢' if cfg.get('msglog_voice', 1) else '🔴'} · "
+            f"Roles: {'🟢' if cfg.get('msglog_roles', 1) else '🔴'}",
         ]
         ignored = cfg.get("msglog_ignore_channels") or []
         if ignored:
