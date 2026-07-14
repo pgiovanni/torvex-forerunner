@@ -462,6 +462,65 @@ class Economy(commands.Cog):
             embed.add_field(name="📅 Daily 💵",        value=f"{daily_regular:,} / {DAILY_CAP:,}", inline=True)
         await interaction.response.send_message(embed=embed)
 
+    # ── /rank ─────────────────────────────────────────────────────────────────
+    @app_commands.command(name="rank", description="Server rank, level, total XP, and XP needed for the next level.")
+    @app_commands.describe(user="Check another member's rank (optional)")
+    async def rank(self, interaction: discord.Interaction, user: discord.Member = None):
+        if not interaction.guild_id:
+            await interaction.response.send_message("This command only works in a server.", ephemeral=True)
+            return
+        target = user or interaction.user
+        if target.bot:
+            await interaction.response.send_message("Bots don't earn XP.", ephemeral=True)
+            return
+
+        guild_id = str(interaction.guild_id)
+        row = await self.pool.fetchrow(
+            "SELECT xp, level, message_count FROM guild_xp WHERE discord_id = $1 AND guild_id = $2",
+            str(target.id), guild_id
+        )
+        if not row:
+            await interaction.response.send_message(
+                f"**{target.display_name}** hasn't earned any XP in this server yet.", ephemeral=True
+            )
+            return
+
+        xp = row["xp"]
+        # MEE6 curve; never show lower than the stored level (import policy)
+        level    = max(row["level"], mee6_level_from_xp(xp))
+        floor_xp = mee6_xp_for_level(level)
+        needed   = mee6_xp_for_level(level + 1) - floor_xp
+        prog     = min(max(xp - floor_xp, 0), needed)
+
+        # Rank among current non-bot members — same population as /chat-levels local
+        member_ids = [str(m.id) for m in interaction.guild.members if not m.bot]
+        ahead = await self.pool.fetchval(
+            "SELECT COUNT(*) FROM guild_xp WHERE guild_id = $1 AND discord_id = ANY($2) AND xp > $3",
+            guild_id, member_ids, xp
+        )
+        ranked = await self.pool.fetchval(
+            "SELECT COUNT(*) FROM guild_xp WHERE guild_id = $1 AND discord_id = ANY($2)",
+            guild_id, member_ids
+        )
+
+        filled = 0 if needed <= 0 else round(10 * prog / needed)
+        bar = "▰" * filled + "▱" * (10 - filled)
+
+        embed = discord.Embed(
+            title=f"⭐ {target.display_name} — Rank #{ahead + 1:,} of {ranked:,}",
+            color=0x7289DA,
+        )
+        embed.set_thumbnail(url=target.display_avatar.url)
+        embed.add_field(name="Level",     value=str(level),                        inline=True)
+        embed.add_field(name="Total XP",  value=f"{xp:,}",                          inline=True)
+        embed.add_field(name="Messages",  value=f"{(row['message_count'] or 0):,}", inline=True)
+        embed.add_field(
+            name=f"Progress to Level {level + 1}",
+            value=f"{bar}\n{prog:,} / {needed:,} XP — **{needed - prog:,} XP to go**",
+            inline=False,
+        )
+        await interaction.response.send_message(embed=embed)
+
     # ── /store ────────────────────────────────────────────────────────────────
     @app_commands.command(name="store", description="Browse the Peepo Bucks store.")
     async def store(self, interaction: discord.Interaction):

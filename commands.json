@@ -34,7 +34,7 @@
     },
     {
       "name": "economy",
-      "description": "Peepo Bucks economy \u2014 balance, levels, leaderboard",
+      "description": "Peepo Bucks economy \u2014 balance, rank, levels, leaderboard",
       "cog": "economy",
       "cooldown_seconds": 0
     },
