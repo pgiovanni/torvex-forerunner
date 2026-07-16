@@ -51,6 +51,10 @@ FLUSH_SECONDS = 30
 RECENT_CAP = 4000           # in-memory rows for instant delete/edit lookups
 AUDIT_WAIT = 1.3            # audit entries lag the gateway event slightly
 AUDIT_FRESH_WINDOW = 120.0  # unseen audit entry counts as evidence only if this recent
+ROLELOG_WINDOW = 20.0       # per-member role-log rate-limit window
+ROLELOG_LIMIT = 6           # role changes per window before we pause this member's role logs
+ROLELOG_COOLDOWN = 10.0     # after tripping the limit, suppress this member's role logs this long (no punishment)
+ROLELOG_NUKE = 25           # role changes/window this high = griefing → quarantine as a nuke
 MENTION_RE = re.compile(r"<@[!&]?\d+>|@everyone|@here")
 
 COLOR_SELF_DELETE = 0xE67E22
@@ -170,6 +174,8 @@ class ModLog(commands.Cog):
         self._removals = {}             # user_id -> kick/ban audit record (classifies member_remove)
         self._removal_ids_seen = set()  # audit entry ids consumed by the fallback poll
         self._role_changes = {}         # user_id -> member_role_update audit record (attributes role diffs)
+        self._rolelog_hits = {}         # user_id -> [timestamps] for role-log rate limiting
+        self._rolelog_cd = {}           # user_id -> cooldown-until ts (logs suppressed while spamming)
         os.makedirs(MEDIA_DIR, exist_ok=True)
         with self._conn() as c:
             c.execute("PRAGMA journal_mode=WAL")
@@ -753,6 +759,37 @@ class ModLog(commands.Cog):
             return
         changed_ids = {r.id for r in added} | {r.id for r in removed}
 
+        # --- per-member role-log rate limit (anti-troll-flood) -------------
+        # Runs BEFORE the audit attribution so a spammer short-circuits cheaply.
+        # Mild bursts just pause this member's role logs for a short cooldown —
+        # no action against them. A massive burst that's confirmed self-inflicted
+        # reaction-role spam (bot actor + self-assign reason, read from the
+        # realtime audit cache) is treated as a nuke and quarantined.
+        now = time.time()
+        hits = [t for t in self._rolelog_hits.get(after.id, ()) if now - t < ROLELOG_WINDOW]
+        hits.append(now)
+        self._rolelog_hits[after.id] = hits
+        if len(hits) >= ROLELOG_NUKE:
+            crec = self._role_changes.get(after.id)
+            if crec and crec.get("by_id") == self.bot.user.id \
+                    and "self-assign role menu" in (crec.get("reason") or "").lower():
+                await self._quarantine_role_spammer(after, log_ch, len(hits))
+            self._rolelog_cd[after.id] = now + ROLELOG_COOLDOWN
+            self._rolelog_hits[after.id] = []
+            return
+        if now < self._rolelog_cd.get(after.id, 0):
+            return  # in cooldown — suppress this member's role logs
+        if len(hits) > ROLELOG_LIMIT:
+            self._rolelog_cd[after.id] = now + ROLELOG_COOLDOWN
+            note = discord.Embed(
+                title="🎭 Role logs paused (rate limit)", color=COLOR_ROLE,
+                description=f"{self._member_line(after)} changed roles {len(hits)}× "
+                            f"in ~{int(ROLELOG_WINDOW)}s — pausing their role logs for "
+                            f"{int(ROLELOG_COOLDOWN)}s. No action taken.")
+            note.set_footer(text=f"User ID {after.id}")
+            await log_ch.send(embed=note, allowed_mentions=discord.AllowedMentions.none())
+            return
+
         # WHO: the audit event usually lands within a second; check the cache
         # immediately, then briefly wait. Aggregated entries (same mod changing
         # the same member again inside Discord's merge window) don't re-dispatch
@@ -779,11 +816,19 @@ class ModLog(commands.Cog):
             except discord.Forbidden:
                 pass
 
-        # Changes made by THIS bot are deliberately not logged: /levelroles sync
-        # sweeps thousands of members, /rolemenu self-assigns and quarantine
-        # grants fire constantly, and each of those systems has its own trail.
+        # Bot-made role changes split two ways. The automated / self-documenting
+        # systems — /levelroles sync + level rewards (bulk), AltGuard
+        # quarantine/restore/join-defaults — fire constantly and keep their own
+        # trail, so they stay out of the log. Reaction-role self-assigns are the
+        # exception: the member clicked the button and the bot only applied it,
+        # so they DO belong here (the Age/Pronouns panels most of all),
+        # attributed to the member rather than to the bot.
+        self_assign = False
         if rec and rec.get("by_id") == self.bot.user.id:
-            return
+            if "self-assign role menu" in (rec.get("reason") or "").lower():
+                self_assign = True
+            else:
+                return
 
         embed = discord.Embed(title="🎭 Roles updated", color=COLOR_ROLE,
                               description=self._member_line(after))
@@ -791,10 +836,37 @@ class ModLog(commands.Cog):
             embed.add_field(name="Added", value=_trunc(" ".join(r.mention for r in added)), inline=False)
         if removed:
             embed.add_field(name="Removed", value=_trunc(" ".join(r.mention for r in removed)), inline=False)
-        embed.add_field(name="By", value=self._mod_line(rec) if rec else "? (no audit entry found)", inline=True)
-        if rec and rec.get("reason"):
+        by = "🎭 Self-assigned (reaction role)" if self_assign \
+            else (self._mod_line(rec) if rec else "? (no audit entry found)")
+        embed.add_field(name="By", value=by, inline=True)
+        if rec and rec.get("reason") and not self_assign:
             embed.add_field(name="Reason", value=_trunc(rec["reason"]), inline=False)
         embed.set_footer(text=f"User ID {after.id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    async def _quarantine_role_spammer(self, member, log_ch, count):
+        """Massive self-inflicted reaction-role churn = griefing. Reuse anti-nuke's
+        quarantine (strip roles + lock out, saved for restore via /altguard-release)
+        so the response matches a real nuke. Falls back to an alert if anti-nuke is
+        off or no quarantine role is configured."""
+        guild = member.guild
+        cfg = get_config(guild.id)
+        reason = f"role-toggle spam ({count}× in ~{int(ROLELOG_WINDOW)}s)"
+        anti = self.bot.get_cog("AntiNuke")
+        done = False
+        if anti is not None and cfg.get("quarantine_role_id"):
+            try:
+                done = await anti._quarantine_offender(guild, member, reason, cfg)
+            except Exception:
+                done = False
+        embed = discord.Embed(
+            title="🚨 Role-spam quarantine" if done else "🚨 Role-spam detected",
+            color=COLOR_MOD_DELETE,
+            description=f"{self._member_line(member)} — {reason}."
+                        + ("\nQuarantined (roles stripped + locked out). Reversible with `/altguard-release`."
+                           if done else
+                           "\n⚠️ Could not auto-quarantine (anti-nuke off or no quarantine role set) — review manually."))
+        embed.set_footer(text=f"User ID {member.id}")
         await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def _log_guild_role_event(self, entry):

@@ -36,8 +36,11 @@ BOOTSTRAP = {
         (1231420352555515924, "Bump", "<a:PR_HappyPat:1215670898309201960>"),
         (1367583655526137996, "Movie Night", "<:PR_WatchingStreamHigh:1215307620932526080>"),
         (1393212887161372802, "Game Nights", "<a:PR_peepoPhasmophobia:1350114563617587261>"),
-        (1355942945060294867, "18+", "<:PR_FeelsOldMan:1219184846459637860>"),
-        (1355943018611347618, "Under 18", "<:PR_peepoCap:1226260284100841493>"),
+        (1526745472838926436, "13-15", "🐣"),
+        (1526745473434517535, "16-17", "🌱"),
+        (1526745474055409736, "18-21", "✨"),
+        (1526745474743140423, "22-27", "🍷"),
+        (1526745475456434186, "28+", "🧭"),
         (1401003907597205726, "She/Her", "<:PR_PeepoBlush:1215605210509090846>"),
         (1401009394946146475, "He/Him", "<:PR_peepoPoop:1219078988996018278>"),
         (1401009462478897284, "They/Them", "<:PR_PepeDuck:1216010584818974892>"),
@@ -87,6 +90,26 @@ BOOTSTRAP_BLURB = {
 }
 
 
+# Age bands are mutually exclusive — a member has exactly one age. Clicking a band
+# button removes any other band they hold (done server-side, no page/UI removal).
+# The legacy binary 18+/under-18 roles are included so an existing member picking a
+# band also sheds their old binary role (go-forward migration).
+AGE_BAND_ROLE_IDS = {
+    1526745472838926436, 1526745473434517535, 1526745474055409736,
+    1526745474743140423, 1526745475456434186,
+    1355942945060294867, 1355943018611347618,  # legacy 18+ / under-18
+}
+EXCLUSIVE_GROUPS = [AGE_BAND_ROLE_IDS]
+
+
+def _exclusive_group(role_id):
+    """The mutually-exclusive group a role belongs to, or None."""
+    for g in EXCLUSIVE_GROUPS:
+        if int(role_id) in g:
+            return g
+    return None
+
+
 def _conn():
     c = sqlite3.connect(DB_PATH, timeout=30)
     c.row_factory = sqlite3.Row
@@ -124,6 +147,12 @@ class RoleButton(discord.ui.Button):
                 await member.remove_roles(role, reason="self-assign role menu")
                 await interaction.response.send_message(f"Removed {role.mention}.", ephemeral=True)
             else:
+                # mutually-exclusive group (e.g. age band): drop the others first
+                group = _exclusive_group(self.role_id)
+                if group:
+                    others = [r for r in member.roles if r.id in group and r.id != self.role_id]
+                    if others:
+                        await member.remove_roles(*others, reason="self-assign role menu (exclusive)")
                 await member.add_roles(role, reason="self-assign role menu")
                 await interaction.response.send_message(f"Added {role.mention}.", ephemeral=True)
         except discord.Forbidden:
