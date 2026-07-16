@@ -126,5 +126,32 @@ old, new = ("m1", NOW - 40 * 86400), ("m2", NOW - 1 * 86400)
 sel = ml.files_to_prune([old, new], NOW - 30 * 86400)
 check("prunes only files past retention", sel == ["m1"])
 
+# ---- overwrite perm diff ----
+lines = ml.perm_diff_lines({}, {}, {"connect": True}, {"speak": True})
+check("overwrite create shows allow and deny",
+      len(lines) == 2 and "`connect`" in lines[0] and "`speak`" in lines[1])
+
+lines = ml.perm_diff_lines({}, {"create_instant_invite": True},
+                           {}, {"create_instant_invite": True, "mute_members": True})
+check("new deny bit shows only the delta", lines == ["⛔ deny: `mute_members`"])
+
+lines = ml.perm_diff_lines({"speak": True}, {}, {}, {"speak": True})
+check("allow→deny is deny, not inherit", lines == ["⛔ deny: `speak`"])
+
+lines = ml.perm_diff_lines({"use_soundboard": True}, {}, {}, {})
+check("cleared allow shows as inherit", lines == ["↔️ inherit: `use_soundboard`"])
+
+lines = ml.perm_diff_lines({"connect": True}, {"speak": True},
+                           {"connect": True}, {"speak": True})
+check("no effective change yields no lines", lines == [])
+
+lines = ml.perm_diff_lines({"connect": True, "view_channel": True}, {"speak": True}, {}, {})
+check("overwrite delete inherits everything",
+      lines == ["↔️ inherit: `connect`, `speak`, `view_channel`"])
+
+# false bits in the dicts (how dict(discord.Permissions) actually arrives) are ignored
+lines = ml.perm_diff_lines({"connect": False}, {}, {"connect": False, "speak": True}, {})
+check("false bits ignored", lines == ["✅ allow: `speak`"])
+
 print(f"\n{_total - len(_fails)}/{_total} passed")
 sys.exit(1 if _fails else 0)

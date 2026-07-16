@@ -67,6 +67,7 @@ COLOR_KICK = 0xE8A33D
 COLOR_BAN = 0x992D22
 COLOR_VOICE = 0x9B59B6
 COLOR_ROLE = 0x1ABC9C
+COLOR_CHANNEL = 0x5865F2
 INVITES_DB = os.path.join(ROOT, "invites.db")  # invites cog's attribution store (read-only here)
 
 
@@ -128,6 +129,26 @@ def build_transcript(rows, guild_name=""):
 def files_to_prune(entries, cutoff_ts):
     """entries = [(path, mtime)]; return paths older than cutoff. Pure for tests."""
     return [p for p, m in entries if m < cutoff_ts]
+
+
+def perm_diff_lines(b_allow, b_deny, a_allow, a_deny):
+    """Human-readable lines for a permission-overwrite change. Inputs are
+    {perm_name: bool} dicts (dict(discord.Permissions)). A perm can move
+    between three states — allowed / denied / inherit — so the diff is three
+    buckets: newly allowed, newly denied, and reset-to-inherit (cleared from
+    allow or deny without landing in the other). Empty list = nothing changed."""
+    def on(d):
+        return {p for p, v in (d or {}).items() if v}
+    ba, bd, aa, ad = on(b_allow), on(b_deny), on(a_allow), on(a_deny)
+    lines = []
+    if aa - ba:
+        lines.append("✅ allow: " + ", ".join(f"`{p}`" for p in sorted(aa - ba)))
+    if ad - bd:
+        lines.append("⛔ deny: " + ", ".join(f"`{p}`" for p in sorted(ad - bd)))
+    inherit = ((ba - aa) | (bd - ad)) - aa - ad
+    if inherit:
+        lines.append("↔️ inherit: " + ", ".join(f"`{p}`" for p in sorted(inherit)))
+    return lines
 
 
 # When OUR bot bulk-deletes on a mod's behalf (/prune-messages), the audit log
@@ -694,6 +715,10 @@ class ModLog(commands.Cog):
         if entry.action in (A.role_create, A.role_delete, A.role_update):
             await self._log_guild_role_event(entry)
             return
+        if entry.action in (A.channel_create, A.channel_delete, A.channel_update,
+                            A.overwrite_create, A.overwrite_update, A.overwrite_delete):
+            await self._log_channel_event(entry)
+            return
         if entry.action not in (A.kick, A.ban, A.unban):
             return
         target_id = getattr(entry.target, "id", None)
@@ -921,6 +946,74 @@ class ModLog(commands.Cog):
         embed.set_footer(text=f"Role ID {role_id}")
         await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+    async def _log_channel_event(self, entry):
+        """Channel created / deleted / edited + permission-overwrite changes —
+        straight from the audit event (actor + diff in one payload, same shape
+        as role events). Own-bot changes ARE logged, unlike member-role ones:
+        overwrite edits made through the bot (REST tooling, lockdowns) are
+        exactly the kind of change the log must show, and they're rare enough
+        not to be noise. Position-only channel reorders are skipped."""
+        guild = entry.guild
+        cfg = get_config(guild.id)
+        if not cfg.get("msglog_channels", 1):
+            return
+        log_ch = self._log_channel(guild, cfg)
+        if log_ch is None:
+            return
+        A = discord.AuditLogAction
+        target_id = getattr(entry.target, "id", None)
+        chan = guild.get_channel(target_id) if target_id else None
+        name = (getattr(chan, "name", None)
+                or getattr(entry.changes.before, "name", None)
+                or getattr(entry.changes.after, "name", None) or f"ID {target_id}")
+        where = chan.mention if chan else f"**#{name}**"
+
+        if entry.action is A.channel_create:
+            title, color, lines = "🆕 Channel created", COLOR_JOIN, [where]
+        elif entry.action is A.channel_delete:
+            title, color, lines = "🗑️ Channel deleted", COLOR_MOD_DELETE, [f"**#{name}**"]
+        elif entry.action is A.channel_update:
+            before, after = entry.changes.before, entry.changes.after
+            diffs = []
+            for attr in ("name", "topic", "nsfw", "slowmode_delay", "bitrate", "user_limit"):
+                if hasattr(before, attr) or hasattr(after, attr):
+                    diffs.append(f"{attr}: `{getattr(before, attr, '?')}` → `{getattr(after, attr, '?')}`")
+            if not diffs:
+                return
+            title, color, lines = "✏️ Channel edited", COLOR_EDIT, [where] + diffs
+        else:  # overwrite_create / overwrite_update / overwrite_delete
+            who = entry.extra  # Role | Member | bare Object with .id/.type
+            if isinstance(who, discord.Role):
+                subject = f"role {who.mention}"
+            elif isinstance(who, (discord.Member, discord.User)):
+                subject = f"member {who.mention}"
+            else:
+                kind = "member" if str(getattr(who, "type", "")) == "member" else "role"
+                subject = f"{kind} <@{'&' if kind == 'role' else ''}{getattr(who, 'id', '?')}>"
+
+            def pd(obj, attr):
+                return dict(getattr(obj, attr, None) or discord.Permissions.none())
+            b, a = entry.changes.before, entry.changes.after
+            if entry.action is A.overwrite_delete:
+                title, color = "🔐 Channel permissions removed", COLOR_MOD_DELETE
+                diffs = perm_diff_lines(pd(b, "allow"), pd(b, "deny"), {}, {})
+            else:
+                title = ("🔐 Channel permissions added" if entry.action is A.overwrite_create
+                         else "🔐 Channel permissions edited")
+                color = COLOR_CHANNEL
+                diffs = perm_diff_lines(pd(b, "allow"), pd(b, "deny"), pd(a, "allow"), pd(a, "deny"))
+            if not diffs:
+                return
+            lines = [f"{where} — {subject}"] + diffs
+
+        embed = discord.Embed(title=title, color=color, description=_trunc("\n".join(lines), 4000))
+        embed.add_field(name="By", value=self._mod_line(
+            {"by_id": entry.user_id, "by_name": str(entry.user) if entry.user else None}), inline=True)
+        if entry.reason:
+            embed.add_field(name="Reason", value=_trunc(entry.reason), inline=False)
+        embed.set_footer(text=f"Channel ID {target_id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         guild = member.guild
@@ -1093,6 +1186,18 @@ class ModLog(commands.Cog):
                if enabled else "role changes are no longer logged."),
             ephemeral=True)
 
+    @msglog.command(name="channels", description="Toggle channel-change logging on or off.")
+    @app_commands.describe(enabled="On = log channel create/delete/edit + permission-overwrite changes")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def channels_cmd(self, interaction: discord.Interaction, enabled: bool):
+        set_config(interaction.guild.id, msglog_channels=1 if enabled else 0)
+        await interaction.response.send_message(
+            f"🔐 Channel logging **{'on' if enabled else 'off'}** — "
+            + ("channel create/delete/edit + permission-overwrite changes (with who) "
+               "post to the mod-log, including changes made through this bot."
+               if enabled else "channel changes are no longer logged."),
+            ephemeral=True)
+
     @msglog.command(name="status", description="Archive totals + configuration.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def status_cmd(self, interaction: discord.Interaction):
@@ -1128,7 +1233,8 @@ class ModLog(commands.Cog):
             f"DB: {db_mb:.1f} MB",
             f"Members: {'🟢' if cfg.get('msglog_members', 1) else '🔴'} · "
             f"Voice: {'🟢' if cfg.get('msglog_voice', 1) else '🔴'} · "
-            f"Roles: {'🟢' if cfg.get('msglog_roles', 1) else '🔴'}",
+            f"Roles: {'🟢' if cfg.get('msglog_roles', 1) else '🔴'} · "
+            f"Channels: {'🟢' if cfg.get('msglog_channels', 1) else '🔴'}",
         ]
         ignored = cfg.get("msglog_ignore_channels") or []
         if ignored:
