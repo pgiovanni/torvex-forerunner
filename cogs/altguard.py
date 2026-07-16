@@ -43,6 +43,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import quarantine_store as qstore
+import rejoin_roles
 from tokens import make_token, pack
 
 log = logging.getLogger("altguard")
@@ -70,6 +71,45 @@ DEFAULT_ROLE_IDS = [int(x) for x in os.environ.get("ALTGUARD_DEFAULT_ROLES", "")
 # "18+" | "under18"). Picking one always clears the other. 0 = feature off.
 AGE_ROLE_18PLUS = _env_int("ALTGUARD_AGE_ROLE_18PLUS", 0)
 AGE_ROLE_UNDER18 = _env_int("ALTGUARD_AGE_ROLE_UNDER18", 0)
+
+# Age-group bands the verify page + reaction panel offer: {pick string -> role id}.
+# From ALTGUARD_AGE_ROLES (json). The legacy 18+/under18 keys stay mapped for
+# in-flight results and existing members (go-forward migration). Picking any band
+# grants it and drops every OTHER age role (mutual exclusivity, done server-side).
+def _age_role_map():
+    m = {}
+    raw = os.environ.get("ALTGUARD_AGE_ROLES", "")
+    if raw:
+        try:
+            m = {str(k): int(v) for k, v in json.loads(raw).items() if str(v).strip().isdigit()}
+        except (ValueError, TypeError):
+            m = {}
+    if AGE_ROLE_18PLUS:
+        m.setdefault("18+", AGE_ROLE_18PLUS)
+    if AGE_ROLE_UNDER18:
+        m.setdefault("under18", AGE_ROLE_UNDER18)
+    return m
+
+
+AGE_ROLE_MAP = _age_role_map()
+ALL_AGE_ROLE_IDS = set(AGE_ROLE_MAP.values())
+
+# Returning-member role restore NEVER hands back these permissionless-but-sensitive
+# roles (staff/access/quarantine). Permission-bearing roles are already excluded by
+# rejoin_roles' permission filter; this is the belt-and-suspenders list for the ones
+# that carry no perms. Extendable via ALTGUARD_NO_RESTORE_ROLES (space/comma ids).
+NO_RESTORE_ROLE_IDS = {
+    1526741916979298316,  # 18+ Staff (adult-staff access gate)
+    1215150451234963466,  # Admin
+    1514724003992961165,  # Senior Admin
+    1500624978129719437,  # Senior Moderator
+    1215294456199254147,  # Mod
+    1466063845352017971,  # Retired Super Admin
+    1466063596445503499,  # Retired Admin
+    1466063286352089303,  # Retired Staff
+    1377788209488068689,  # Minecraft Staff
+    QUARANTINE_ROLE_ID,
+} | {int(x) for x in os.environ.get("ALTGUARD_NO_RESTORE_ROLES", "").replace(",", " ").split() if x.strip().isdigit()}
 DM_ON_JOIN = os.environ.get("ALTGUARD_DM_ON_JOIN", "1") != "0"
 # Forced-gate mode: quarantine EVERY human the moment they join (strip access),
 # DM them the link, and auto-release them on a PASS verdict. Off = detect-only.
@@ -233,29 +273,34 @@ class AltGuard(commands.Cog):
         return out
 
     def _age_roles(self, guild, res):
-        """(grant, remove) pair for the age group picked on the verify page.
-        (None, None) when the result carries no selection or roles unset."""
+        """(grant, [drop...]) for the age group picked on the verify page: the
+        picked band's role, plus every OTHER age role to remove (mutual
+        exclusivity). grant is None when the result carries no/invalid selection."""
         pick = (res or {}).get("age") or ""
-        plus = guild.get_role(AGE_ROLE_18PLUS) if AGE_ROLE_18PLUS else None
-        minor = guild.get_role(AGE_ROLE_UNDER18) if AGE_ROLE_UNDER18 else None
-        if pick == "18+":
-            return plus, minor
-        if pick == "under18":
-            return minor, plus
-        return None, None
+        grant_id = AGE_ROLE_MAP.get(pick)
+        grant = guild.get_role(grant_id) if grant_id else None
+        drops = []
+        for rid in ALL_AGE_ROLE_IDS:
+            if rid != grant_id:
+                r = guild.get_role(rid)
+                if r is not None:
+                    drops.append(r)
+        return grant, drops
 
     async def _apply_age_role(self, guild, member, res):
-        """Grant the picked age role (and drop the opposite) outside the release
-        path — used for passes that lift no quarantine (re-verify, grandfathered)."""
+        """Grant the picked age band (and drop every other age role) outside the
+        release path — used for passes that lift no quarantine (re-verify,
+        grandfathered)."""
         if not member:
             return
-        grant, drop = self._age_roles(guild, res)
+        grant, drops = self._age_roles(guild, res)
         me = guild.me
         if not grant or grant.managed or not me or grant >= me.top_role:
             return
         try:
-            if drop and drop in member.roles:
-                await member.remove_roles(drop, reason="AltGuard: age selection (verify page)")
+            to_remove = [d for d in drops if d in member.roles]
+            if to_remove:
+                await member.remove_roles(*to_remove, reason="AltGuard: age selection (verify page)")
             if grant not in member.roles:
                 await member.add_roles(grant, reason="AltGuard: age selection (verify page)")
         except discord.Forbidden:
@@ -272,16 +317,26 @@ class AltGuard(commands.Cog):
             r = member.guild.get_role(rid)
             if r and not r.managed and me and r < me.top_role:
                 restore.append(r)
+        # returning member: restore their safe pre-leave roles (self-assigned
+        # reaction roles, age band, Level N+) from the departure snapshot. The
+        # filter drops anything with power + the staff/access deny set, so a
+        # former mod/admin never regains it, and doing it here (post-verify) means
+        # a restore can't bypass the gate.
+        bot_top = me.top_role if me else None
+        for r in rejoin_roles.safe_restorable(
+                member.guild, rejoin_roles.last_known_role_ids(member.id),
+                NO_RESTORE_ROLE_IDS, bot_top):
+            if r not in restore:
+                restore.append(r)
         # final set: current roles, minus quarantine, plus restored, plus defaults
         target = [r for r in member.roles if not r.is_default() and r != qrole]
         for r in restore + self._default_roles(member.guild):
             if r not in target:
                 target.append(r)
-        # age role from the verify page: add the picked one, drop the opposite
-        # (also beats a stale stored/restored age role from before the pick)
-        grant, drop = self._age_roles(member.guild, res)
-        if drop and drop in target:
-            target.remove(drop)
+        # age band from the verify page: add the picked one, drop every other age
+        # role (also beats a stale stored/restored age role from before the pick)
+        grant, drops = self._age_roles(member.guild, res)
+        target = [r for r in target if r not in drops]
         if grant and grant not in target and not grant.managed and me and grant < me.top_role:
             target.append(grant)
         try:
@@ -371,13 +426,21 @@ class AltGuard(commands.Cog):
             if not quarantined:
                 log.warning("quarantine-on-join failed for %s — check Manage Roles + hierarchy", member)
         else:
-            # detect-only mode: grant opt-out defaults right away. (Gated mode
-            # grants them on release instead, so the reconciliation listener
-            # doesn't strip them while the member is held.)
-            defaults = self._default_roles(member.guild)
-            if defaults:
+            # detect-only mode: grant opt-out defaults right away, plus restore a
+            # returning member's safe pre-leave roles. (Gated mode does both on
+            # release instead, so the reconciliation listener doesn't strip them
+            # while the member is held.)
+            me = member.guild.me
+            bot_top = me.top_role if me else None
+            grants = list(self._default_roles(member.guild))
+            for r in rejoin_roles.safe_restorable(
+                    member.guild, rejoin_roles.last_known_role_ids(member.id),
+                    NO_RESTORE_ROLE_IDS, bot_top):
+                if r not in grants:
+                    grants.append(r)
+            if grants:
                 try:
-                    await member.add_roles(*defaults, reason="AltGuard: default roles on join")
+                    await member.add_roles(*grants, reason="AltGuard: defaults + returning-member restore")
                 except discord.Forbidden:
                     pass
         # gate ON always DMs the link (a held member has no other way in);
