@@ -161,21 +161,29 @@ class PiCount(commands.Cog):
                         pass
                 return
 
-        # invalid — delete outside the lock, then a short notice
+        # invalid — delete outside the lock. The chain position is untouched:
+        # a wrong message never resets the count. Notify privately via DM
+        # (regular messages can't get ephemeral replies); fall back to a brief
+        # self-deleting channel notice only if their DMs are closed.
         try:
             await message.delete()
         except discord.HTTPException:
             return
         if norm:  # digits, but the wrong ones
-            notice = (f"❌ {message.author.mention} `{norm[:20]}` is not next — "
-                      f"we're at **{pos}** digits of π.")
+            reason = f"❌ `{norm[:20]}` isn't the next number in π"
         else:
-            notice = (f"🔢 {message.author.mention} digits only in here — "
-                      f"we're at **{pos}** digits of π.")
+            reason = "🔢 that channel is digits of π only"
         try:
-            await message.channel.send(notice, delete_after=NOTICE_SECONDS)
+            await message.author.send(
+                f"{reason} — your message in {message.channel.mention} was removed. "
+                f"The count is safe at **{pos}** digits; nobody has to start over.")
         except discord.HTTPException:
-            pass
+            try:
+                await message.channel.send(
+                    f"{reason}, {message.author.mention} — count holds at **{pos}**.",
+                    delete_after=NOTICE_SECONDS)
+            except discord.HTTPException:
+                pass
 
     # ---------- chain repair (edits / deletes of recorded messages) ----------
 
