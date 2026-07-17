@@ -429,6 +429,14 @@
       "required_permissions": [
         "administrator"
       ]
+    },
+    {
+      "name": "picount",
+      "description": "Pi-counting channel enforcement — set-channel, recount, status, disable (admin)",
+      "cog": "pi_count",
+      "required_permissions": [
+        "administrator"
+      ]
     }
   ]
 }
