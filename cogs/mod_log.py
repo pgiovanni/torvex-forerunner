@@ -84,6 +84,43 @@ def safe_filename(name, maxlen=80):
     return name[:maxlen] or "file"
 
 
+def sticker_meta(stickers):
+    """Rich archive metadata for a message's stickers. Name alone is useless
+    for recovery — the id/url is what lets us grab the image later."""
+    return [{"id": str(s.id), "name": s.name,
+             "format": getattr(getattr(s, "format", None), "name", None),
+             "url": getattr(s, "url", None)} for s in stickers]
+
+
+def parse_stickers(raw):
+    """Archived sticker column -> [{'id','name','format','url'}]. Rows written
+    before 2026-07-17 stored a bare name list — normalize both shapes."""
+    try:
+        data = json.loads(raw or "[]")
+    except (ValueError, TypeError):
+        return []
+    out = []
+    for s in data:
+        if isinstance(s, str):
+            out.append({"id": None, "name": s, "format": None, "url": None})
+        elif isinstance(s, dict):
+            out.append({"id": s.get("id"), "name": s.get("name") or "?",
+                        "format": s.get("format"), "url": s.get("url")})
+    return out
+
+
+def media_display_name(path, atts):
+    """Original filename for a cached media file. Cache names are
+    '{message_id}_{i}_{fname}' for attachments and '{message_id}_s{i}_{name}.{ext}'
+    for stickers; a digit token maps back into the attachment list (positional
+    zip would drift when an oversized attachment was skipped)."""
+    parts = os.path.basename(path).split("_", 2)
+    tok = parts[1] if len(parts) == 3 else ""
+    if tok.isdigit() and int(tok) < len(atts):
+        return atts[int(tok)].get("filename") or parts[-1]
+    return parts[-1]
+
+
 def match_delete_entry(entries, cache, channel_id, author_id, now_ts,
                        fresh_window=AUDIT_FRESH_WINDOW):
     """Attribute a deletion from audit-log entries (newest first, as dicts:
@@ -121,6 +158,9 @@ def build_transcript(rows, guild_name=""):
                 atts = f"  [attachments: {', '.join(names)}]"
         except (ValueError, TypeError):
             pass
+        st = parse_stickers(r.get("stickers") if isinstance(r, dict) else None)
+        if st:
+            atts += f"  [stickers: {', '.join(s['name'] for s in st)}]"
         lines.append(f"[{ts}] {r['author_name'] or r['author_id']} ({r['author_id']}): "
                      f"{r['content'] or ''}{atts}")
     return "\n".join(lines) + "\n"
@@ -327,9 +367,9 @@ class ModLog(commands.Cog):
             "reply_to": str(message.reference.message_id)
             if message.reference and message.reference.message_id else None,
             "attachments": json.dumps(atts) if atts else None,
-            "stickers": json.dumps([s.name for s in message.stickers]) if message.stickers else None,
+            "stickers": json.dumps(sticker_meta(message.stickers)) if message.stickers else None,
         })
-        if atts:
+        if atts or message.stickers:
             await self._cache_media(message)
 
     async def _cache_media(self, message):
@@ -345,6 +385,19 @@ class ModLog(commands.Cog):
                 await att.save(path)
             except Exception:
                 pass  # CDN hiccup — the attachment URL metadata is still archived
+        # stickers too: a sticker message has no content and no attachments, so
+        # without this the delete log would come out EMPTY (they're tiny, ≤512KB)
+        for i, s in enumerate(message.stickers):
+            ext = getattr(s.format, "file_extension", "png")
+            if ext == "json":
+                continue  # Lottie — no image file to re-post
+            path = os.path.join(MEDIA_DIR, f"{message.id}_s{i}_{safe_filename(s.name)}.{ext}")
+            try:
+                data = await s.read()
+                with open(path, "wb") as f:
+                    f.write(data)
+            except Exception:
+                pass  # the archived sticker url is still a recovery path
 
     def _cached_media(self, message_id):
         return sorted(glob.glob(os.path.join(MEDIA_DIR, f"{message_id}_*")))
@@ -429,7 +482,8 @@ class ModLog(commands.Cog):
                    "author_id": str(m.author.id), "author_name": str(m.author),
                    "bot": 1 if m.author.bot else 0, "webhook": 1 if m.webhook_id else 0,
                    "created_ts": m.created_at.timestamp(), "content": m.content or "",
-                   "reply_to": None, "attachments": None, "stickers": None}
+                   "reply_to": None, "attachments": None,
+                   "stickers": json.dumps(sticker_meta(m.stickers)) if m.stickers else None}
 
         author_id = int(row["author_id"]) if row else None
         hit = await self._attribute(guild, payload.channel_id, author_id)
@@ -458,6 +512,13 @@ class ModLog(commands.Cog):
                 embed.add_field(name="Content", value=_trunc(row["content"]), inline=False)
                 if MENTION_RE.search(row["content"]):
                     embed.add_field(name="📣", value="Contained mentions", inline=True)
+            stickers = parse_stickers(row.get("stickers"))
+            if stickers:  # sticker messages have no content — this WAS the "empty log" bug
+                embed.add_field(
+                    name="Sticker" if len(stickers) == 1 else "Stickers",
+                    value=_trunc(", ".join(f"[{s['name']}]({s['url']})" if s["url"] else s["name"]
+                                           for s in stickers), 1024),
+                    inline=True)
         else:
             embed.description = (f"Message `{payload.message_id}` in <#{payload.channel_id}> "
                                  f"— **not in the archive** (predates tracking).")
@@ -465,13 +526,12 @@ class ModLog(commands.Cog):
             embed.add_field(name="Deleted by", value=_deleter_line(hit), inline=False)
         files = []
         atts = json.loads(row["attachments"]) if row and row.get("attachments") else []
-        for i, path in enumerate(self._cached_media(payload.message_id)):
+        for path in self._cached_media(payload.message_id):
             if len(files) >= 9:
                 break
             try:
                 if os.path.getsize(path) <= guild.filesize_limit:
-                    orig = atts[i]["filename"] if i < len(atts) else os.path.basename(path)
-                    files.append(discord.File(path, filename=orig))
+                    files.append(discord.File(path, filename=media_display_name(path, atts)))
             except OSError:
                 pass
         media_ch = self._media_channel(guild, cfg)
@@ -719,6 +779,10 @@ class ModLog(commands.Cog):
                             A.overwrite_create, A.overwrite_update, A.overwrite_delete):
             await self._log_channel_event(entry)
             return
+        if entry.action in (A.emoji_create, A.emoji_delete, A.emoji_update,
+                            A.sticker_create, A.sticker_delete, A.sticker_update):
+            await self._log_expression_event(entry)
+            return
         if entry.action not in (A.kick, A.ban, A.unban):
             return
         target_id = getattr(entry.target, "id", None)
@@ -945,6 +1009,80 @@ class ModLog(commands.Cog):
             embed.add_field(name="Reason", value=_trunc(entry.reason), inline=False)
         embed.set_footer(text=f"Role ID {role_id}")
         await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    async def _log_expression_event(self, entry):
+        """Custom emoji / sticker created, deleted or edited — audit event
+        carries actor + name diff. On DELETION the asset is grabbed and
+        re-posted: the CDN keeps serving a deleted expression's image by id,
+        so fetching at event time and attaching it to the log preserves the
+        image in Discord permanently (the CDN copy is not guaranteed to)."""
+        guild = entry.guild
+        cfg = get_config(guild.id)
+        if not cfg.get("msglog_expressions", 1):
+            return
+        log_ch = self._log_channel(guild, cfg)
+        if log_ch is None:
+            return
+        A = discord.AuditLogAction
+        is_sticker = entry.action in (A.sticker_create, A.sticker_delete, A.sticker_update)
+        kind = "Sticker" if is_sticker else "Emoji"
+        target_id = getattr(entry.target, "id", None)
+        before, after = entry.changes.before, entry.changes.after
+        name = (getattr(after, "name", None) or getattr(before, "name", None)
+                or getattr(entry.target, "name", None) or f"ID {target_id}")
+
+        if entry.action in (A.emoji_create, A.sticker_create):
+            title, color, lines = f"🆕 {kind} created", COLOR_JOIN, [f"**{name}**"]
+        elif entry.action in (A.emoji_delete, A.sticker_delete):
+            title, color, lines = f"🗑️ {kind} deleted", COLOR_MOD_DELETE, [f"**{name}**"]
+        else:
+            diffs = []
+            for attr in ("name", "description"):
+                if hasattr(before, attr) or hasattr(after, attr):
+                    diffs.append(f"{attr}: `{getattr(before, attr, '?')}` → `{getattr(after, attr, '?')}`")
+            if not diffs:
+                return
+            title, color, lines = f"✏️ {kind} edited", COLOR_EDIT, [f"**{name}**"] + diffs
+
+        embed = discord.Embed(title=title, color=color, description=_trunc("\n".join(lines), 4000))
+        embed.add_field(name="By", value=self._mod_line(
+            {"by_id": entry.user_id, "by_name": str(entry.user) if entry.user else None}), inline=True)
+        if entry.reason:
+            embed.add_field(name="Reason", value=_trunc(entry.reason), inline=False)
+        embed.set_footer(text=f"{kind} ID {target_id}")
+
+        file = discord.utils.MISSING
+        data, ext = await self._fetch_expression_asset(target_id, is_sticker)
+        if data:
+            fname = f"{safe_filename(name)}.{ext}"
+            file = discord.File(io.BytesIO(data), filename=fname)
+            embed.set_thumbnail(url=f"attachment://{fname}")
+        elif entry.action in (A.emoji_delete, A.sticker_delete):
+            embed.add_field(name="Image", value="not recoverable (CDN no longer serves it)",
+                            inline=False)
+        await log_ch.send(embed=embed, file=file,
+                          allowed_mentions=discord.AllowedMentions.none())
+
+    async def _fetch_expression_asset(self, target_id, is_sticker):
+        """Expression image bytes straight off the CDN by id. Animated emojis
+        must be asked for as .gif (a .png request serves the first frame), so
+        gif is tried first; static ones 415 on .gif and fall through to png."""
+        if not target_id:
+            return None, None
+        if is_sticker:
+            urls = [(f"https://media.discordapp.net/stickers/{target_id}.png", "png"),
+                    (f"https://cdn.discordapp.com/stickers/{target_id}.gif", "gif")]
+        else:
+            urls = [(f"https://cdn.discordapp.com/emojis/{target_id}.gif", "gif"),
+                    (f"https://cdn.discordapp.com/emojis/{target_id}.png", "png")]
+        for url, ext in urls:
+            try:
+                return await self.bot.http.get_from_cdn(url), ext
+            except discord.HTTPException:
+                continue
+            except Exception:
+                break
+        return None, None
 
     async def _log_channel_event(self, entry):
         """Channel created / deleted / edited + permission-overwrite changes —
@@ -1198,6 +1336,18 @@ class ModLog(commands.Cog):
                if enabled else "channel changes are no longer logged."),
             ephemeral=True)
 
+    @msglog.command(name="expressions", description="Toggle emoji/sticker create/delete/edit logging on or off.")
+    @app_commands.describe(enabled="On = log custom emoji + sticker changes, with the image grabbed on deletion")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def expressions_cmd(self, interaction: discord.Interaction, enabled: bool):
+        set_config(interaction.guild.id, msglog_expressions=1 if enabled else 0)
+        await interaction.response.send_message(
+            f"😀 Expression logging **{'on' if enabled else 'off'}** — "
+            + ("custom emoji + sticker create/delete/edit (with who) post to the mod-log; "
+               "deleted ones get their image re-posted so it isn't lost."
+               if enabled else "emoji/sticker changes are no longer logged."),
+            ephemeral=True)
+
     @msglog.command(name="status", description="Archive totals + configuration.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def status_cmd(self, interaction: discord.Interaction):
@@ -1234,7 +1384,8 @@ class ModLog(commands.Cog):
             f"Members: {'🟢' if cfg.get('msglog_members', 1) else '🔴'} · "
             f"Voice: {'🟢' if cfg.get('msglog_voice', 1) else '🔴'} · "
             f"Roles: {'🟢' if cfg.get('msglog_roles', 1) else '🔴'} · "
-            f"Channels: {'🟢' if cfg.get('msglog_channels', 1) else '🔴'}",
+            f"Channels: {'🟢' if cfg.get('msglog_channels', 1) else '🔴'} · "
+            f"Expressions: {'🟢' if cfg.get('msglog_expressions', 1) else '🔴'}",
         ]
         ignored = cfg.get("msglog_ignore_channels") or []
         if ignored:
@@ -1260,8 +1411,12 @@ class ModLog(commands.Cog):
         for r in rows:
             by = f" · deleted by **{r['deleted_by_name']}**" if r["deleted_by"] else ""
             kind = {"bulk": " · bulk", "mod": ""}.get(r["delete_kind"] or "", "")
+            txt = r["content"]
+            if not txt:
+                st = parse_stickers(r["stickers"])
+                txt = f"[sticker: {', '.join(s['name'] for s in st)}]" if st else "*no text*"
             lines.append(f"<t:{int(r['deleted_ts'])}:R> in <#{r['channel_id']}>{by}{kind}\n"
-                         f"> {_trunc(r['content'] or '*no text*', 150)}")
+                         f"> {_trunc(txt, 150)}")
         embed = discord.Embed(title=f"🗑️ Deleted messages — {user}",
                               description=_trunc("\n".join(lines), 4000), color=COLOR_SELF_DELETE)
         await interaction.followup.send(embed=embed, ephemeral=True)
