@@ -29,7 +29,7 @@ DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)
 INITIAL_DIGITS = 10_000
 HEADROOM = 500        # extend the digit cache when the chain gets this close to the end
 MILESTONE = 100
-NOTICE_SECONDS = 8    # how long the "wrong digit" notice stays up
+NOTICE_SECONDS = 30   # how long the "wrong digit" notice stays up if not dismissed
 
 
 def compute_pi_digits(n: int) -> str:
@@ -63,6 +63,27 @@ def normalize(content: str) -> str | None:
     if stripped and all("0" <= ch <= "9" for ch in stripped):
         return stripped
     return None
+
+
+class DismissView(discord.ui.View):
+    """Dismiss button on wrong-digit notices — usable by the person the notice
+    is for (or anyone with Manage Messages). True ephemeral messages are only
+    possible as interaction replies, so this is the in-channel equivalent."""
+
+    def __init__(self, target_id: int):
+        super().__init__(timeout=NOTICE_SECONDS)
+        self.target_id = target_id
+
+    @discord.ui.button(label="Dismiss", emoji="🗑️", style=discord.ButtonStyle.secondary)
+    async def dismiss(self, interaction: discord.Interaction, button: discord.ui.Button):
+        perms = getattr(interaction.user, "guild_permissions", None)
+        if interaction.user.id != self.target_id and not (perms and perms.manage_messages):
+            await interaction.response.send_message("This notice isn't yours to dismiss.", ephemeral=True)
+            return
+        try:
+            await interaction.message.delete()
+        except discord.HTTPException:
+            pass
 
 
 class PiCount(commands.Cog):
@@ -162,28 +183,24 @@ class PiCount(commands.Cog):
                 return
 
         # invalid — delete outside the lock. The chain position is untouched:
-        # a wrong message never resets the count. Notify privately via DM
-        # (regular messages can't get ephemeral replies); fall back to a brief
-        # self-deleting channel notice only if their DMs are closed.
+        # a wrong message never resets the count. Notice goes in the channel
+        # with a Dismiss button for the poster, auto-deleting after
+        # NOTICE_SECONDS either way.
         try:
             await message.delete()
         except discord.HTTPException:
             return
         if norm:  # digits, but the wrong ones
-            reason = f"❌ `{norm[:20]}` isn't the next number in π"
+            reason = f"❌ {message.author.mention} `{norm[:20]}` isn't the next number in π"
         else:
-            reason = "🔢 that channel is digits of π only"
+            reason = f"🔢 {message.author.mention} digits of π only in here"
         try:
-            await message.author.send(
-                f"{reason} — your message in {message.channel.mention} was removed. "
-                f"The count is safe at **{pos}** digits; nobody has to start over.")
+            await message.channel.send(
+                f"{reason} — the count holds at **{pos}**, nobody starts over.",
+                view=DismissView(message.author.id),
+                delete_after=NOTICE_SECONDS)
         except discord.HTTPException:
-            try:
-                await message.channel.send(
-                    f"{reason}, {message.author.mention} — count holds at **{pos}**.",
-                    delete_after=NOTICE_SECONDS)
-            except discord.HTTPException:
-                pass
+            pass
 
     # ---------- chain repair (edits / deletes of recorded messages) ----------
 
