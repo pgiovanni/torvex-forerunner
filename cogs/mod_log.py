@@ -55,6 +55,12 @@ ROLELOG_WINDOW = 20.0       # per-member role-log rate-limit window
 ROLELOG_LIMIT = 6           # role changes per window before we pause this member's role logs
 ROLELOG_COOLDOWN = 10.0     # after tripping the limit, suppress this member's role logs this long (no punishment)
 ROLELOG_NUKE = 25           # role changes/window this high = griefing → quarantine as a nuke
+SELFDEL_WINDOW = 300.0      # rolling window for the mass-self-delete detector
+SELFDEL_THRESHOLD = 8       # self-deletes in window → alert (Yousef/apple.231 scrubbed
+                            # their history before we caught them; self-deletes never
+                            # hit the audit log, so anti-nuke is blind here BY DESIGN —
+                            # this archive-side detector is the only tripwire possible)
+SELFDEL_QUIET = 120.0       # episode ends after this long with no further deletes
 MENTION_RE = re.compile(r"<@[!&]?\d+>|@everyone|@here")
 
 COLOR_SELF_DELETE = 0xE67E22
@@ -107,6 +113,15 @@ def parse_stickers(raw):
             out.append({"id": s.get("id"), "name": s.get("name") or "?",
                         "format": s.get("format"), "url": s.get("url")})
     return out
+
+
+def flood_update(times, now, window=SELFDEL_WINDOW, limit=SELFDEL_THRESHOLD):
+    """Rolling self-delete counter for one member. Returns (pruned times incl.
+    now, crossed) — crossed is True exactly once, on the delete that reaches
+    the limit; the episode machinery owns everything after that."""
+    times = [t for t in times if now - t <= window]
+    times.append(now)
+    return times, len(times) == limit
 
 
 def media_display_name(path, atts):
@@ -237,6 +252,7 @@ class ModLog(commands.Cog):
         self._role_changes = {}         # user_id -> member_role_update audit record (attributes role diffs)
         self._rolelog_hits = {}         # user_id -> [timestamps] for role-log rate limiting
         self._rolelog_cd = {}           # user_id -> cooldown-until ts (logs suppressed while spamming)
+        self._selfdel = {}              # (guild_id, author_id) -> {"times": [...], "episode": {...}|None}
         os.makedirs(MEDIA_DIR, exist_ok=True)
         with self._conn() as c:
             c.execute("PRAGMA journal_mode=WAL")
@@ -493,8 +509,14 @@ class ModLog(commands.Cog):
 
         cfg = get_config(payload.guild_id)
         log_ch = self._log_channel(guild, cfg)
-        if not cfg.get("msglog_deletes") or log_ch is None \
-                or self._skip_logging(cfg, payload.channel_id, log_ch):
+        if not cfg.get("msglog_deletes") or log_ch is None:
+            return
+        # mass-self-delete tripwire BEFORE the per-channel ignore check — a
+        # scrub is a scrub no matter which channel it happens in
+        if kind == "self" and row and not row.get("bot"):
+            if await self._track_selfdel(guild, row, payload.channel_id, cfg, log_ch):
+                return  # active episode: individual embeds paused, summary comes later
+        if self._skip_logging(cfg, payload.channel_id, log_ch):
             return
 
         if hit:
@@ -556,6 +578,109 @@ class ModLog(commands.Cog):
             ref.set_footer(text=f"Message ID {payload.message_id}")
             await media_ch.send(embed=ref, files=files,
                                 allowed_mentions=discord.AllowedMentions.none())
+
+    # ---------------------------------------------------- mass self-delete tripwire
+    def _alert_ping(self, guild, cfg):
+        """Who to @ on a mass self-delete. msglog_alert_ping = role/user id,
+        '0' to disable; default = the guild owner."""
+        pid = cfg.get("msglog_alert_ping")
+        if str(pid) == "0":
+            return None
+        if pid:
+            return f"<@&{pid}>" if guild.get_role(int(pid)) else f"<@{pid}>"
+        return f"<@{guild.owner_id}>"
+
+    async def _track_selfdel(self, guild, row, channel_id, cfg, log_ch):
+        """Count a self-delete; open an episode + fire the alert at threshold.
+        Returns True while an episode is active (individual embeds paused)."""
+        key = (guild.id, row["author_id"])
+        st = self._selfdel.setdefault(key, {"times": [], "episode": None})
+        now = time.time()
+        st["times"], crossed = flood_update(st["times"], now)
+        ep = st["episode"]
+        if ep:
+            ep["count"] += 1
+            ep["last"] = now
+            ep["channels"].add(str(channel_id))
+            return True
+        if not crossed:
+            return False
+        st["episode"] = {"count": len(st["times"]), "start": st["times"][0],
+                         "last": now, "channels": {str(channel_id)}}
+        member = guild.get_member(int(row["author_id"]))
+        who = self._member_line(member) if member else \
+            f"**{row.get('author_name') or '?'}** — <@{row['author_id']}> (`{row['author_id']}`)"
+        embed = discord.Embed(
+            title="🚨 Mass self-delete in progress", color=COLOR_BULK,
+            description=f"{who}\nhas deleted **{len(st['times'])}** of their own messages "
+                        f"in the last {int(SELFDEL_WINDOW / 60)} min — and counting. "
+                        f"Self-deletes never hit the audit log, so only the archive sees this.")
+        created = ((int(row["author_id"]) >> 22) + 1420070400000) / 1000
+        embed.add_field(name="Account created", value=f"<t:{int(created)}:R>", inline=True)
+        if member and member.joined_at:
+            embed.add_field(name="Joined", value=f"<t:{int(member.joined_at.timestamp())}:R>",
+                            inline=True)
+        embed.add_field(
+            name="What happens now",
+            value="Per-message delete logs for this member are paused; a summary with a "
+                  "full transcript posts when the run stops. The archive keeps everything.",
+            inline=False)
+        embed.set_footer(text=f"User ID {row['author_id']}")
+        await log_ch.send(content=self._alert_ping(guild, cfg), embed=embed,
+                          allowed_mentions=discord.AllowedMentions(users=True, roles=True))
+        asyncio.create_task(self._selfdel_summary(guild, row["author_id"], key))
+        return True
+
+    async def _selfdel_summary(self, guild, author_id, key):
+        """Wait for the deletion run to go quiet, then post one summary embed
+        with a transcript of everything that was wiped in the episode."""
+        while True:
+            await asyncio.sleep(15)
+            st = self._selfdel.get(key)
+            ep = st and st["episode"]
+            if ep is None:
+                return
+            if time.time() - ep["last"] >= SELFDEL_QUIET:
+                break
+        st["episode"] = None
+        st["times"] = []
+        self._flush()
+        with self._conn() as c:
+            rows = [dict(r) for r in c.execute(
+                "SELECT * FROM messages WHERE guild_id=? AND author_id=? AND delete_kind='self' "
+                "AND deleted_ts BETWEEN ? AND ? ORDER BY created_ts",
+                (str(guild.id), str(author_id),
+                 ep["start"] - SELFDEL_WINDOW, ep["last"] + 1))]
+            lifetime = c.execute(
+                "SELECT COUNT(*) FROM messages WHERE guild_id=? AND author_id=? "
+                "AND deleted_ts IS NOT NULL", (str(guild.id), str(author_id))).fetchone()[0]
+            total = c.execute(
+                "SELECT COUNT(*) FROM messages WHERE guild_id=? AND author_id=?",
+                (str(guild.id), str(author_id))).fetchone()[0]
+        cfg = get_config(guild.id)
+        log_ch = self._log_channel(guild, cfg)
+        if log_ch is None:
+            return
+        member = guild.get_member(int(author_id))
+        who = self._member_line(member) if member else f"<@{author_id}> (`{author_id}`)"
+        embed = discord.Embed(
+            title=f"🧨 Mass self-delete — {ep['count']} messages", color=COLOR_BULK,
+            description=f"{who}\nRun lasted {max(1, int((ep['last'] - ep['start']) / 60))} min "
+                        f"across {len(ep['channels'])} channel(s): "
+                        + " ".join(f"<#{c}>" for c in sorted(ep["channels"])))
+        embed.add_field(
+            name="Lifetime",
+            value=f"{lifetime} of {total} archived messages now deleted "
+                  f"({lifetime / total:.0%})" if total else "—", inline=False)
+        if not member:
+            embed.add_field(name="⚠️", value="No longer in the server", inline=True)
+        embed.set_footer(text=f"User ID {author_id} · transcript of the wiped messages attached")
+        files = discord.utils.MISSING
+        if rows:
+            buf = io.BytesIO(build_transcript(rows, guild.name).encode("utf-8"))
+            files = [discord.File(buf, filename=f"self_delete_{author_id}.txt")]
+        await log_ch.send(embed=embed, files=files,
+                          allowed_mentions=discord.AllowedMentions.none())
 
     @commands.Cog.listener()
     async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent):
