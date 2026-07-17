@@ -281,6 +281,14 @@
       ]
     },
     {
+      "name": "invite-unlock",
+      "description": "Reverse the lockdown so members can create native invites again, dry-run unless confirmed (admin)",
+      "cog": "invites",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
       "name": "antinuke",
       "description": "Anti-nuke status (admin)",
       "cog": "antinuke",

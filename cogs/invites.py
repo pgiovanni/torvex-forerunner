@@ -18,6 +18,12 @@ LOCKDOWN (`/invite-lockdown`) is the deliberate Phase-2 flip: deny `@everyone`
 Create-Invite, sweep channel overwrites so none re-grant it, and purge native
 invites — PRESERVING bot-tracked codes + any in INVITE_KEEP. Dry-run by default
 (`confirm:True` to act); self-maintains new-channel drift like quarantine_lock.
+UNLOCK (`/invite-unlock`) reverses it: re-grant `@everyone` Create-Invite and
+clear the channel denies — native invites come back, and the cache-diff
+attribution keeps crediting joins (kind=native, inviter from the API). Native
+UI invites default to 7-day expiry / optional max-uses; a maxed-out invite is
+DELETED by Discord the instant it's consumed, so attribution also watches for
+codes that vanish between snapshots (see `pick_used_invite`).
 
 Guild-scoped to ALTGUARD_GUILD_ID. Bot needs **Manage Server** (list/delete
 invites) + **Create Invite**, and **Manage Roles/Channels** for lockdown.
@@ -57,6 +63,37 @@ NO_INVITE = dict(create_instant_invite=False)
 GATE_URL = os.environ.get("ALTGUARD_GATE_URL", "").rstrip("/")
 SECRET = os.environ.get("ALTGUARD_SECRET", "")
 
+# how long a gateway invite-delete stays eligible for join attribution (seconds).
+# A max-uses invite is deleted the moment it's consumed; the INVITE_DELETE event
+# can land before or after the GUILD_MEMBER_ADD it belongs to.
+VANISH_WINDOW = 20.0
+
+
+def pick_used_invite(before, after, recent_gone, now):
+    """Decide which invite code a just-joined member used.
+
+    before:      {code: (uses, inviter_id)} cache snapshot from before the join
+    after:       {code: (uses, inviter_id)} fresh snapshot taken after the join
+    recent_gone: {code: (inviter_id, deleted_at)} codes the gateway said were
+                 deleted moments ago
+    Returns (code, inviter_id) or (None, None) if nothing matches unambiguously.
+    """
+    # a use-count that went up is definitive
+    for code, (uses, inviter) in after.items():
+        if uses > before.get(code, (0, None))[0]:
+            return code, inviter
+    # no count moved → the invite may have vanished on use (hit max uses, or was
+    # deleted/expired mid-join). A gateway-confirmed deletion is the strongest
+    # signal; mere absence from the list is weaker (could be lazy expiry).
+    recent = {c: inv for c, (inv, ts) in recent_gone.items()
+              if now - ts <= VANISH_WINDOW and c not in after}
+    if len(recent) == 1:
+        return next(iter(recent.items()))
+    vanished = {c: inv for c, (_u, inv) in before.items() if c not in after}
+    if len(vanished) == 1:
+        return next(iter(vanished.items()))
+    return None, None
+
 
 def _hmac_headers():
     ts = str(time.time())
@@ -67,9 +104,10 @@ def _hmac_headers():
 class Invites(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.session = None   # aiohttp, for gate lookups
-        self._cache = {}      # guild_id -> {code: uses}
-        self._vanity = {}     # guild_id -> vanity uses
+        self.session = None       # aiohttp, for gate lookups
+        self._cache = {}          # guild_id -> {code: (uses, inviter_id)}
+        self._vanity = {}         # guild_id -> vanity uses
+        self._recent_gone = {}    # guild_id -> {code: (inviter_id, deleted_at)}
         with self._conn() as c:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS invites_meta (
@@ -118,7 +156,10 @@ class Invites(commands.Cog):
             return None
         except discord.HTTPException:
             return None
-        self._cache[guild.id] = {inv.code: (inv.uses or 0) for inv in invites}
+        self._cache[guild.id] = {
+            inv.code: (inv.uses or 0, str(inv.inviter.id) if inv.inviter else None)
+            for inv in invites
+        }
         if "VANITY_URL" in guild.features:
             try:
                 v = await guild.vanity_invite()
@@ -137,12 +178,18 @@ class Invites(commands.Cog):
     @commands.Cog.listener()
     async def on_invite_create(self, invite):
         if invite.guild and invite.guild.id == GUILD_ID:
-            self._cache.setdefault(invite.guild.id, {})[invite.code] = invite.uses or 0
+            self._cache.setdefault(invite.guild.id, {})[invite.code] = (
+                invite.uses or 0, str(invite.inviter.id) if invite.inviter else None)
 
     @commands.Cog.listener()
     async def on_invite_delete(self, invite):
         if invite.guild and invite.guild.id == GUILD_ID:
-            self._cache.get(invite.guild.id, {}).pop(invite.code, None)
+            cached = self._cache.get(invite.guild.id, {}).pop(invite.code, None)
+            inviter = cached[1] if cached else (
+                str(invite.inviter.id) if getattr(invite, "inviter", None) else None)
+            # remember it briefly: a max-uses invite is deleted the instant it's
+            # consumed, and this event can beat the member-join to us
+            self._recent_gone.setdefault(invite.guild.id, {})[invite.code] = (inviter, time.time())
 
     # ---------------------------------------------------------------- attribution
     @commands.Cog.listener()
@@ -153,29 +200,27 @@ class Invites(commands.Cog):
         before = dict(self._cache.get(guild.id, {}))
         vbefore = self._vanity.get(guild.id, 0)
         invites = await self._refresh_cache(guild)
-        used = None
-        if invites is not None:
-            # find the code whose use-count went up since last we looked
-            for inv in invites:
-                if (inv.uses or 0) > before.get(inv.code, 0):
-                    used = inv
-                    break
 
         code = inviter_id = label = None
         kind = "unknown"
-        if used is not None:
-            code = used.code
+        if invites is not None:
+            now = time.time()
+            gone = self._recent_gone.setdefault(guild.id, {})
+            code, inviter_id = pick_used_invite(before, self._cache.get(guild.id, {}), gone, now)
+            for c in [c for c, (_i, ts) in gone.items() if now - ts > VANISH_WINDOW]:
+                gone.pop(c, None)
+
+        if code is not None:
             meta = self._meta(code)
             if meta:                       # bot-minted → deterministic
                 inviter_id = meta["owner_id"]
                 label = meta["label"]
                 kind = meta["kind"]
-            else:                          # native/admin/Disboard → use API inviter
-                inviter_id = str(used.inviter.id) if used.inviter else None
+            else:                          # native/admin/Disboard → API inviter (cached)
                 kind = "native"
         elif "VANITY_URL" in guild.features and self._vanity.get(guild.id, 0) > vbefore:
             kind, label = "vanity", "vanity-url"          # vanity use-count ticked up
-        else:
+        elif invites is not None:
             # no invite code matched and vanity didn't move → Server Discovery /
             # widget / other inviteless path. Untracked source, but still gate-verified.
             kind, label = "discovery", "discovery"
@@ -215,7 +260,7 @@ class Invites(commands.Cog):
                 "VALUES (?,?,?,?,?,?)",
                 (invite.code, str(guild.id), str(owner_id) if owner_id else None, label, kind, time.time()),
             )
-        self._cache.setdefault(guild.id, {})[invite.code] = invite.uses or 0
+        self._cache.setdefault(guild.id, {})[invite.code] = (invite.uses or 0, str(self.bot.user.id))
         return invite
 
     # ---------------------------------------------------------------- commands
@@ -276,7 +321,8 @@ class Invites(commands.Cog):
         with self._conn() as c:
             top = c.execute(
                 "SELECT inviter_id, COUNT(*) n FROM invite_attributions "
-                "WHERE guild_id=? AND kind='member' AND inviter_id IS NOT NULL GROUP BY inviter_id ORDER BY n DESC LIMIT 10",
+                "WHERE guild_id=? AND kind IN ('member','native') AND inviter_id IS NOT NULL "
+                "GROUP BY inviter_id ORDER BY n DESC LIMIT 10",
                 (str(interaction.guild.id),)).fetchall()
             src = c.execute(
                 "SELECT COALESCE(label, kind) src, COUNT(*) n FROM invite_attributions "
@@ -412,6 +458,57 @@ class Invites(commands.Cog):
             f"({swept} channel overwrites corrected), {purged} untracked invites purged "
             f"(kept {len(bot_codes)} tracked + {len(INVITE_KEEP)} pinned). Members invite via `/invite` now.\n"
             f"⚠️ Admin/Administrator roles still bypass this, and the vanity URL (if any) is unaffected.",
+            ephemeral=True)
+
+    @app_commands.command(name="invite-unlock",
+                          description="Reverse the lockdown: let members create native invites again (dry-run unless confirm).")
+    @app_commands.describe(confirm="Actually apply it. Without this it only reports what WOULD change.")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def invite_unlock(self, interaction: discord.Interaction, confirm: bool = False):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = interaction.guild
+        me = guild.me
+        if not (me.guild_permissions.manage_roles and me.guild_permissions.manage_channels):
+            await interaction.followup.send("❌ I need **Manage Roles** + **Manage Channels** to unlock.", ephemeral=True)
+            return
+
+        everyone_has = guild.default_role.permissions.create_instant_invite
+        denied = [ch for ch in guild.channels
+                  if ch.overwrites_for(guild.default_role).create_instant_invite is False]
+
+        if not confirm:
+            lines = [f"**Dry run** — nothing changed.",
+                     f"- `@everyone` Create-Invite currently: **{'ON' if everyone_has else 'off'}** → would be **granted**",
+                     f"- Channel overwrites denying it that would be cleared: {len(denied)}"]
+            if denied:
+                lines.append("  " + ", ".join(f"{ch.mention}" for ch in denied[:20]) + ("…" if len(denied) > 20 else ""))
+            lines.append("\nJoins through native invites still get tracked (cache-diff, `kind=native`). "
+                         "Run again with `confirm:True` to apply.")
+            await interaction.followup.send("\n".join(lines), ephemeral=True)
+            return
+
+        # APPLY
+        # 1) grant @everyone at the role level — role perms are additive, so this
+        #    covers every member regardless of per-role strips from the lockdown
+        perms = guild.default_role.permissions
+        perms.update(create_instant_invite=True)
+        await guild.default_role.edit(permissions=perms, reason="invite-unlock: native invites re-enabled")
+        # 2) clear the channel-overwrite denies the lockdown sweep planted
+        cleared = 0
+        for ch in denied:
+            ov = ch.overwrites_for(guild.default_role)
+            ov.update(create_instant_invite=None)
+            try:
+                await ch.set_permissions(guild.default_role, overwrite=ov, reason="invite-unlock sweep")
+                cleared += 1
+            except discord.HTTPException:
+                pass
+        await interaction.followup.send(
+            f"🔓 **Invite lockdown reversed.** `@everyone` can create invites again "
+            f"({cleared} channel denies cleared). Native joins are tracked via cache-diff; "
+            f"`/invite` still works for deterministic personal links.",
             ephemeral=True)
 
     @commands.Cog.listener()
