@@ -219,6 +219,19 @@ def files_to_prune(entries, cutoff_ts):
     return [p for p, m in entries if m < cutoff_ts]
 
 
+def files_to_evict(entries, max_bytes):
+    """entries = [(path, mtime, size)]; if the total exceeds max_bytes, return
+    oldest-first paths to delete until back under the cap. Pure for tests."""
+    total = sum(s for _, _, s in entries)
+    evict = []
+    for path, _, size in sorted(entries, key=lambda e: e[1]):
+        if total <= max_bytes:
+            break
+        evict.append(path)
+        total -= size
+    return evict
+
+
 def perm_diff_lines(b_allow, b_deny, a_allow, a_deny):
     """Human-readable lines for a permission-overwrite change. Inputs are
     {perm_name: bool} dicts (dict(discord.Permissions)). A perm can move
@@ -285,6 +298,7 @@ class ModLog(commands.Cog):
         self._role_changes = {}         # user_id -> member_role_update audit record (attributes role diffs)
         self._rolelog_hits = {}         # user_id -> [timestamps] for role-log rate limiting
         self._rolelog_cd = {}           # user_id -> cooldown-until ts (logs suppressed while spamming)
+        self._bytes_since_cap_check = 0  # fresh cache writes since the last size-cap enforcement
         self._selfdel = {}              # (guild_id, author_id) -> {"times": [...], "episode": {...}|None}
         os.makedirs(MEDIA_DIR, exist_ok=True)
         with self._conn() as c:
@@ -433,7 +447,13 @@ class ModLog(commands.Cog):
             try:
                 await att.save(path)
             except Exception:
-                pass  # CDN hiccup — the attachment URL metadata is still archived
+                continue  # CDN hiccup — the attachment URL metadata is still archived
+            # burst guard: the 12h pruner can't outrun a deliberate fill run, so
+            # re-check the whole-cache cap every ~512MB of fresh writes
+            self._bytes_since_cap_check += att.size
+            if self._bytes_since_cap_check >= 512 * 1024 * 1024:
+                self._bytes_since_cap_check = 0
+                self._enforce_media_cap()
         # stickers too: a sticker message has no content and no attachments, so
         # without this the delete log would come out EMPTY (they're tiny, ≤512KB)
         for i, s in enumerate(message.stickers):
@@ -848,6 +868,28 @@ class ModLog(commands.Cog):
                 os.remove(path)
             except OSError:
                 pass
+        self._enforce_media_cap()
+
+    def _enforce_media_cap(self):
+        """Hard whole-cache size cap, oldest evicted first. Age retention alone
+        leaves a disk-fill DoS open (a Nitro account can post ~250MB/message);
+        this turns the worst case into 'attacker evicts old memes'."""
+        cap_gb = 5
+        for gid in all_enabled("msglog"):
+            cap_gb = max(cap_gb, int(get_config(gid).get("msglog_media_max_gb", 5)))
+        try:
+            entries = [(e.path, e.stat().st_mtime, e.stat().st_size)
+                       for e in os.scandir(MEDIA_DIR) if e.is_file()]
+        except OSError:
+            return
+        evict = files_to_evict(entries, cap_gb * 1024 ** 3)
+        for path in evict:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        if evict:
+            print(f"[mod_log] media cache over {cap_gb}GB cap — evicted {len(evict)} oldest file(s)")
 
     @media_pruner.before_loop
     async def _before_prune(self):
@@ -1554,7 +1596,8 @@ class ModLog(commands.Cog):
             + (f" (<t:{int(span[0])}:d> → <t:{int(span[1])}:d>)" if span and span[0] else ""),
             f"**{deleted:,}** deletions · **{edits:,}** edits recorded",
             f"Media cache: **{n_files}** files, {n_bytes/1e6:.1f} MB "
-            f"(≤{cfg.get('msglog_media_max_mb')} MB/file, {cfg.get('msglog_media_days')}d retention)",
+            f"(≤{cfg.get('msglog_media_max_mb')} MB/file, {cfg.get('msglog_media_days')}d retention, "
+            f"{cfg.get('msglog_media_max_gb', 5)}GB cap)",
             f"DB: {db_mb:.1f} MB",
             f"Members: {'🟢' if cfg.get('msglog_members', 1) else '🔴'} · "
             f"Voice: {'🟢' if cfg.get('msglog_voice', 1) else '🔴'} · "

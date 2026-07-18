@@ -87,6 +87,7 @@ DEFAULTS = {
     "msglog_media_channel_id": None, # route deleted-media re-posts here (e.g. an 18+ staff channel); None = with the log embeds
     "msglog_media_max_mb": 25,       # per-file cache cap
     "msglog_media_days": 30,         # media cache retention (log re-posts persist in Discord)
+    "msglog_media_max_gb": 5,        # whole-cache hard cap — oldest evicted beyond this (disk-fill DoS guard)
     "msglog_ignore_channels": [],    # channels never LOGGED (still archived)
     "msglog_members": 1,             # member lifecycle: join (w/ invite used), leave, kick/ban/unban w/ WHO+reason
     "msglog_roles": 1,               # member role add/remove (w/ WHO) + role create/delete/edit; own-bot changes never logged

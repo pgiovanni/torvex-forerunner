@@ -170,5 +170,16 @@ check("no metadata + unknown ext stays quarantined",
 check("spoofed content_type without media ext stays quarantined",
       not ml.is_repostable("123_0_tool.exe", [{"filename": "tool.exe", "content_type": "application/x-msdownload"}]))
 
+# ---- size-cap eviction: oldest-first until back under the cap
+_e = [("old.png", 100, 400), ("mid.png", 200, 400), ("new.png", 300, 400)]
+check("under cap evicts nothing", ml.files_to_evict(_e, 2000) == [])
+check("at cap evicts nothing", ml.files_to_evict(_e, 1200) == [])
+check("one over evicts exactly the oldest", ml.files_to_evict(_e, 1199) == ["old.png"])
+check("deep over evicts oldest-first until under",
+      ml.files_to_evict(_e, 500) == ["old.png", "mid.png"])
+check("cap zero evicts everything",
+      ml.files_to_evict(_e, 0) == ["old.png", "mid.png", "new.png"])
+check("empty cache is a no-op", ml.files_to_evict([], 1) == [])
+
 print(f"\n{_total - len(_fails)}/{_total} passed")
 sys.exit(1 if _fails else 0)
