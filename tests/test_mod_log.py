@@ -153,5 +153,22 @@ check("overwrite delete inherits everything",
 lines = ml.perm_diff_lines({"connect": False}, {}, {"connect": False, "speak": True}, {})
 check("false bits ignored", lines == ["✅ allow: `speak`"])
 
+# ---- re-post allowlist: only renderable media may be re-uploaded to a log channel
+_atts = [{"filename": "meme.png", "content_type": "image/png"},
+         {"filename": "payload.exe", "content_type": "application/x-msdownload"},
+         {"filename": "AQP2m8dnojnZ", "content_type": "video/mp4"},   # extensionless rip
+         {"filename": "notes.pdf", "content_type": "application/pdf"}]
+check("image reposts", ml.is_repostable("123_0_meme.png", _atts))
+check("exe never reposts", not ml.is_repostable("123_1_payload.exe", _atts))
+check("extensionless video reposts via content_type",
+      ml.is_repostable("123_2_AQP2m8dnojnZ", _atts))
+check("pdf not reposted", not ml.is_repostable("123_3_notes.pdf", _atts))
+check("sticker grab (png cache name) reposts",
+      ml.is_repostable("123_s0_popcorn.png", []))
+check("no metadata + unknown ext stays quarantined",
+      not ml.is_repostable("123_0_mystery.bin", []))
+check("spoofed content_type without media ext stays quarantined",
+      not ml.is_repostable("123_0_tool.exe", [{"filename": "tool.exe", "content_type": "application/x-msdownload"}]))
+
 print(f"\n{_total - len(_fails)}/{_total} passed")
 sys.exit(1 if _fails else 0)

@@ -28,6 +28,7 @@ Backfill of pre-cog history = backfill_history.py (REST, writes the same DB).
 """
 import asyncio
 import glob
+import hashlib
 import io
 import json
 import os
@@ -134,6 +135,38 @@ def media_display_name(path, atts):
     if tok.isdigit() and int(tok) < len(atts):
         return atts[int(tok)].get("filename") or parts[-1]
     return parts[-1]
+
+
+# Only renderable media is ever re-uploaded to a log channel. Anything else
+# (exe, zip, apk, pdf, scripts…) is summarized name+size+sha256 instead — the
+# bot must never re-distribute a potentially hostile file under its own name
+# to staff. The disk copy stays in media_cache for forensics until pruned.
+REPOST_MEDIA_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp",
+                     ".mp4", ".mov", ".webm",
+                     ".mp3", ".ogg", ".wav", ".m4a", ".flac"}
+
+
+def is_repostable(path, atts):
+    """True if this cached file is image/video/audio and safe to re-upload.
+    Checks the original filename's extension first, then the content_type
+    Discord recorded at post time (covers extensionless downloads)."""
+    ext = os.path.splitext(media_display_name(path, atts).lower())[1]
+    if ext in REPOST_MEDIA_EXTS:
+        return True
+    parts = os.path.basename(path).split("_", 2)
+    tok = parts[1] if len(parts) == 3 else ""
+    if tok.isdigit() and int(tok) < len(atts):
+        ct = (atts[int(tok)].get("content_type") or "").lower()
+        return ct.split("/")[0] in ("image", "video", "audio")
+    return False
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def match_delete_entry(entries, cache, channel_id, author_id, now_ts,
@@ -546,9 +579,12 @@ class ModLog(commands.Cog):
                                  f"— **not in the archive** (predates tracking).")
         if hit:
             embed.add_field(name="Deleted by", value=_deleter_line(hit), inline=False)
-        files = []
+        files, quarantined = [], []
         atts = json.loads(row["attachments"]) if row and row.get("attachments") else []
         for path in self._cached_media(payload.message_id):
+            if not is_repostable(path, atts):
+                quarantined.append(path)
+                continue
             if len(files) >= 9:
                 break
             try:
@@ -556,9 +592,23 @@ class ModLog(commands.Cog):
                     files.append(discord.File(path, filename=media_display_name(path, atts)))
             except OSError:
                 pass
+        if quarantined:
+            lines = []
+            for p in quarantined[:5]:
+                try:
+                    lines.append(f"`{media_display_name(p, atts)}` · {os.path.getsize(p):,} B\n"
+                                 f"sha256 `{file_sha256(p)}`")
+                except OSError:
+                    lines.append(f"`{media_display_name(p, atts)}` · unreadable")
+            if len(quarantined) > 5:
+                lines.append(f"… +{len(quarantined) - 5} more")
+            embed.add_field(
+                name=f"⚠️ Non-media file{'s' if len(quarantined) != 1 else ''} — NOT re-posted",
+                value=_trunc("\n".join(lines) + "\nKept on disk (media_cache) for review.", 1024),
+                inline=False)
         media_ch = self._media_channel(guild, cfg)
         route_media = bool(files) and media_ch is not None and media_ch.id != log_ch.id
-        if atts and not files:
+        if atts and not files and not quarantined:
             embed.add_field(name="Attachments (not recoverable)",
                             value=_trunc("\n".join(a.get("filename", "?") for a in atts), 512),
                             inline=False)
