@@ -11,6 +11,8 @@ from discord.ext import commands
 EMOJI_RE = re.compile(r"<(a?):([A-Za-z0-9_]{2,32}):(\d{15,25})>")
 # a pasted CDN link, e.g. https://cdn.discordapp.com/emojis/123456789.webp?size=96
 CDN_RE = re.compile(r"(?:cdn|media)\.discordapp\.(?:com|net)/emojis/(\d{15,25})")
+# any other Discord CDN image link (attachments etc.) — uploaded as-is
+DISCORD_URL_RE = re.compile(r"https?://(?:cdn|media)\.discordapp\.(?:com|net)/\S+", re.IGNORECASE)
 NAME_RE = re.compile(r"[^A-Za-z0-9_]")
 MAX_EMOJI_BYTES = 256 * 1024  # Discord upload cap
 MAX_PER_CALL = 10
@@ -23,15 +25,45 @@ def _clean_name(name: str) -> str:
     return name if len(name) >= 2 else ""
 
 
+def _shrink_if_needed(data: bytes):
+    """Return emoji-uploadable bytes, downscaling stills over the 256KB cap.
+    None if it can't be made to fit (e.g. oversized animation)."""
+    if len(data) <= MAX_EMOJI_BYTES:
+        return data
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(data))
+        if getattr(im, "is_animated", False):
+            return None
+        im.thumbnail((128, 128))
+        buf = io.BytesIO()
+        im.convert("RGBA").save(buf, "PNG")
+        out = buf.getvalue()
+        return out if len(out) <= MAX_EMOJI_BYTES else None
+    except Exception:
+        return None
+
+
 class Emojis(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    async def _fetch(self, session: aiohttp.ClientSession, url: str):
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                return None
-            return await resp.read()
+    async def _fetch(self, session: aiohttp.ClientSession, url: str,
+                     cap: int = 8 * 1024 * 1024, redirects: bool = True):
+        """GET url, returning at most `cap` bytes (None on error/oversize).
+        Streaming cap so a link to a huge attachment can't balloon RAM."""
+        try:
+            async with session.get(url, allow_redirects=redirects) as resp:
+                if resp.status != 200:
+                    return None
+                data = b""
+                async for chunk in resp.content.iter_chunked(64 * 1024):
+                    data += chunk
+                    if len(data) > cap:
+                        return None
+                return data
+        except aiohttp.ClientError:
+            return None
 
     async def _fetch_emoji(self, session, emoji_id: str, animated: bool):
         """Fetch emoji bytes from the CDN, retrying smaller if over the upload cap.
@@ -65,6 +97,7 @@ class Emojis(commands.Cog):
 
         found = EMOJI_RE.findall(emoji)
         targets = [(anim == "a", nm, eid) for anim, nm, eid in found]
+        url_target = None
         if not targets:
             bare = emoji.strip().strip("<>")
             m = CDN_RE.search(bare)
@@ -77,10 +110,15 @@ class Emojis(commands.Cog):
                         ephemeral=True)
                 # animated unknown for a bare ID/link; we try gif first and fall back
                 targets = [(True, name, bare)]
+            elif DISCORD_URL_RE.match(bare):
+                if not name:
+                    return await interaction.response.send_message(
+                        "❌ An image link doesn't carry a name — pass `name:` too.", ephemeral=True)
+                url_target = bare
             else:
                 return await interaction.response.send_message(
                     "❌ No custom emoji found. Paste the emoji itself (like `<:pepe:1234…>`), "
-                    "a raw emoji ID, or a cdn.discordapp.com/emojis link.",
+                    "a raw emoji ID, or a Discord CDN link (emoji or attachment).",
                     ephemeral=True)
         if name and len(targets) > 1:
             return await interaction.response.send_message(
@@ -92,6 +130,34 @@ class Emojis(commands.Cog):
         have = {e.id for e in guild.emojis}
         reason = f"/steal-emoji by {interaction.user} ({interaction.user.id})"
         added, failed = [], []
+
+        if url_target:
+            final_name = _clean_name(name)
+            if not final_name:
+                return await interaction.followup.send(
+                    "❌ Bad name — 2–32 letters/numbers/underscores.")
+            async with aiohttp.ClientSession() as session:
+                # no redirects on arbitrary links — the CDN serves directly, and a
+                # redirect is the one way a link could escape the allowlisted host
+                data = await self._fetch(session, url_target, redirects=False)
+            if data is None:
+                return await interaction.followup.send(
+                    "❌ Couldn't fetch that link (expired, deleted, or too big — attachment links go stale, re-copy it).")
+            data = _shrink_if_needed(data)
+            if data is None:
+                return await interaction.followup.send(
+                    "❌ Image is over 256KB and I couldn't shrink it (animated images can't be resized).")
+            try:
+                new = await guild.create_custom_emoji(name=final_name, image=data, reason=reason)
+                return await interaction.followup.send(f"✅ Stole {new}")
+            except ValueError:
+                return await interaction.followup.send(
+                    "❌ That link isn't a valid image (png/jpg/gif/webp).")
+            except discord.HTTPException as e:
+                if e.code == 30008:
+                    return await interaction.followup.send(
+                        "❌ Emoji slots are FULL — free one up or boost.")
+                return await interaction.followup.send(f"❌ Discord rejected it: {e.text}")
 
         async with aiohttp.ClientSession() as session:
             for animated, orig_name, eid in targets:
