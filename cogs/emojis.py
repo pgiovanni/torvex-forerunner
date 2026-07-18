@@ -9,6 +9,8 @@ from discord.ext import commands
 
 # <a:name:id> (animated) or <:name:id> (static)
 EMOJI_RE = re.compile(r"<(a?):([A-Za-z0-9_]{2,32}):(\d{15,25})>")
+# a pasted CDN link, e.g. https://cdn.discordapp.com/emojis/123456789.webp?size=96
+CDN_RE = re.compile(r"(?:cdn|media)\.discordapp\.(?:com|net)/emojis/(\d{15,25})")
 NAME_RE = re.compile(r"[^A-Za-z0-9_]")
 MAX_EMOJI_BYTES = 256 * 1024  # Discord upload cap
 MAX_PER_CALL = 10
@@ -49,7 +51,7 @@ class Emojis(commands.Cog):
     @app_commands.command(name="steal-emoji",
                           description="Copy custom emojis into this server — paste them (or one emoji ID) and I'll grab them.")
     @app_commands.describe(
-        emoji="Paste the emoji(s) to steal (from any server), or a raw emoji ID",
+        emoji="Paste the emoji(s) to steal (from any server), a raw emoji ID, or a CDN emoji link",
         name="Rename it (only when stealing a single emoji)")
     @app_commands.default_permissions(manage_emojis=True)
     @app_commands.checks.has_permissions(manage_emojis=True)
@@ -65,16 +67,20 @@ class Emojis(commands.Cog):
         targets = [(anim == "a", nm, eid) for anim, nm, eid in found]
         if not targets:
             bare = emoji.strip().strip("<>")
+            m = CDN_RE.search(bare)
+            if m:
+                bare = m.group(1)
             if bare.isdigit():
                 if not name:
                     return await interaction.response.send_message(
-                        "❌ When stealing by raw ID I can't see the original name — pass `name:` too.",
+                        "❌ An ID or CDN link doesn't carry the original name — pass `name:` too.",
                         ephemeral=True)
-                # animated unknown for a bare ID; we try gif first and fall back
+                # animated unknown for a bare ID/link; we try gif first and fall back
                 targets = [(True, name, bare)]
             else:
                 return await interaction.response.send_message(
-                    "❌ No custom emoji found. Paste the emoji itself (like `<:pepe:1234…>`) or a raw emoji ID.",
+                    "❌ No custom emoji found. Paste the emoji itself (like `<:pepe:1234…>`), "
+                    "a raw emoji ID, or a cdn.discordapp.com/emojis link.",
                     ephemeral=True)
         if name and len(targets) > 1:
             return await interaction.response.send_message(
