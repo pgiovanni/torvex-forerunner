@@ -134,6 +134,76 @@ def parse_stickers(raw):
     return out
 
 
+def poll_meta(poll):
+    """Archive metadata for a Discord poll. Polls carry no message.content, no
+    attachments and no stickers, so without this a deleted poll archives as a
+    fully EMPTY row and its delete log shows nothing at all (same failure
+    shape as the sticker bug, hit live 2026-07-20)."""
+    return {"question": poll.question or "",
+            "answers": [{"text": a.text or "",
+                         "emoji": str(a.emoji) if a.emoji else None}
+                        for a in poll.answers],
+            "multiple": bool(getattr(poll, "multiple", False)),
+            "expires_ts": poll.expires_at.timestamp()
+            if getattr(poll, "expires_at", None) else None}
+
+
+def forward_meta(message):
+    """Metadata for a forwarded message (message_snapshots) — the other
+    message type whose own content is empty. The forwarded text lives in the
+    snapshot; the origin channel/message id in message.reference."""
+    snaps = list(getattr(message, "message_snapshots", None) or [])
+    if not snaps:
+        return None
+    s = snaps[0]
+    ref = getattr(message, "reference", None)
+    return {"content": s.content or "",
+            "attachments": [a.filename for a in s.attachments],
+            "stickers": [st.name for st in s.stickers],
+            "origin_channel_id": str(ref.channel_id) if ref else None,
+            "origin_message_id": str(ref.message_id)
+            if ref and ref.message_id else None}
+
+
+def parse_json_obj(raw):
+    """Archived json-dict column (poll/forward) -> dict or None. NULL for all
+    rows written before 2026-07-20; tolerates garbage."""
+    try:
+        data = json.loads(raw or "null")
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def format_poll(meta, joiner="\n"):
+    """Human-readable poll rendering for embeds (newline) and transcripts."""
+    if not meta:
+        return ""
+    parts = [meta.get("question") or "?"]
+    for a in meta.get("answers") or []:
+        e = f"{a.get('emoji')} " if a.get("emoji") else ""
+        parts.append(f"• {e}{a.get('text') or ''}".rstrip())
+    if meta.get("multiple"):
+        parts.append("(multiple answers allowed)")
+    return joiner.join(parts)
+
+
+def format_forward(meta):
+    """Human-readable forwarded-snapshot rendering for the delete embed."""
+    if not meta:
+        return ""
+    parts = []
+    if meta.get("origin_channel_id"):
+        parts.append(f"from <#{meta['origin_channel_id']}>")
+    if meta.get("content"):
+        parts.append(_trunc(meta["content"], 800))
+    if meta.get("attachments"):
+        parts.append("[attachments: " + ", ".join(meta["attachments"]) + "]")
+    if meta.get("stickers"):
+        parts.append("[stickers: " + ", ".join(meta["stickers"]) + "]")
+    return "\n".join(parts) or "(empty snapshot)"
+
+
 def flood_update(times, now, window=SELFDEL_WINDOW, limit=SELFDEL_THRESHOLD):
     """Rolling self-delete counter for one member. Returns (pruned times incl.
     now, crossed) — crossed is True exactly once, on the delete that reaches
@@ -227,6 +297,12 @@ def build_transcript(rows, guild_name=""):
         st = parse_stickers(r.get("stickers") if isinstance(r, dict) else None)
         if st:
             atts += f"  [stickers: {', '.join(s['name'] for s in st)}]"
+        pm = parse_json_obj(r.get("poll") if isinstance(r, dict) else None)
+        if pm:
+            atts += f"  [poll: {format_poll(pm, joiner=' | ')}]"
+        fw = parse_json_obj(r.get("forward") if isinstance(r, dict) else None)
+        if fw:
+            atts += f"  [forwarded: {_trunc(fw.get('content') or '', 200)}]"
         lines.append(f"[{ts}] {r['author_name'] or r['author_id']} ({r['author_id']}): "
                      f"{r['content'] or ''}{atts}")
     return "\n".join(lines) + "\n"
@@ -339,6 +415,11 @@ class ModLog(commands.Cog):
             c.execute("CREATE INDEX IF NOT EXISTS idx_msgs_chan ON messages(guild_id, channel_id, created_ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_msgs_author ON messages(guild_id, author_id, created_ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_msgs_deleted ON messages(guild_id, deleted_ts)")
+            # 2026-07-20: polls + forwarded messages archive as empty rows without these
+            cols = {r[1] for r in c.execute("PRAGMA table_info(messages)")}
+            for col in ("poll", "forward"):
+                if col not in cols:
+                    c.execute(f"ALTER TABLE messages ADD COLUMN {col} TEXT")
             c.execute(
                 """CREATE TABLE IF NOT EXISTS edits (
                        message_id TEXT, guild_id TEXT,
@@ -390,12 +471,13 @@ class ModLog(commands.Cog):
                 c.executemany(
                     """INSERT OR IGNORE INTO messages
                        (message_id,guild_id,channel_id,author_id,author_name,bot,webhook,
-                        created_ts,content,reply_to,attachments,stickers,
+                        created_ts,content,reply_to,attachments,stickers,poll,forward,
                         deleted_ts,deleted_by,deleted_by_name,delete_kind)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     [(r["message_id"], r["guild_id"], r["channel_id"], r["author_id"],
                       r["author_name"], r["bot"], r["webhook"], r["created_ts"],
                       r["content"], r["reply_to"], r["attachments"], r["stickers"],
+                      r.get("poll"), r.get("forward"),
                       r.get("deleted_ts"), r.get("deleted_by"), r.get("deleted_by_name"),
                       r.get("delete_kind")) for r in items])
         except Exception:
@@ -437,6 +519,7 @@ class ModLog(commands.Cog):
             return
         atts = [{"filename": a.filename, "url": a.url, "size": a.size,
                  "content_type": a.content_type} for a in message.attachments]
+        fwd = forward_meta(message)
         self._remember({
             "message_id": str(message.id), "guild_id": str(message.guild.id),
             "channel_id": str(message.channel.id),
@@ -449,6 +532,8 @@ class ModLog(commands.Cog):
             if message.reference and message.reference.message_id else None,
             "attachments": json.dumps(atts) if atts else None,
             "stickers": json.dumps(sticker_meta(message.stickers)) if message.stickers else None,
+            "poll": json.dumps(poll_meta(message.poll)) if message.poll else None,
+            "forward": json.dumps(fwd) if fwd else None,
         })
         if atts or message.stickers:
             await self._cache_media(message)
@@ -564,6 +649,7 @@ class ModLog(commands.Cog):
         row = self._get_row(payload.message_id)
         if row is None and payload.cached_message is not None:
             m = payload.cached_message
+            fwd = forward_meta(m)
             row = {"message_id": str(m.id), "guild_id": str(payload.guild_id),
                    "channel_id": str(payload.channel_id),
                    "author_id": str(m.author.id), "author_name": str(m.author),
@@ -572,7 +658,9 @@ class ModLog(commands.Cog):
                    "reply_to": str(m.reference.message_id)
                    if m.reference and m.reference.message_id else None,
                    "attachments": None,
-                   "stickers": json.dumps(sticker_meta(m.stickers)) if m.stickers else None}
+                   "stickers": json.dumps(sticker_meta(m.stickers)) if m.stickers else None,
+                   "poll": json.dumps(poll_meta(m.poll)) if getattr(m, "poll", None) else None,
+                   "forward": json.dumps(fwd) if fwd else None}
 
         author_id = int(row["author_id"]) if row else None
         hit = await self._attribute(guild, payload.channel_id, author_id)
@@ -624,6 +712,14 @@ class ModLog(commands.Cog):
                     value=_trunc(", ".join(f"[{s['name']}]({s['url']})" if s["url"] else s["name"]
                                            for s in stickers), 1024),
                     inline=True)
+            pm = parse_json_obj(row.get("poll"))
+            if pm:  # polls are the other no-content message type (the "pole" case)
+                embed.add_field(name="📊 Poll", value=_trunc(format_poll(pm), 1024),
+                                inline=False)
+            fw = parse_json_obj(row.get("forward"))
+            if fw:
+                embed.add_field(name="↪️ Forwarded message",
+                                value=_trunc(format_forward(fw), 1024), inline=False)
         else:
             embed.description = (f"Message `{payload.message_id}` in <#{payload.channel_id}> "
                                  f"— **not in the archive** (predates tracking).")
@@ -1694,7 +1790,16 @@ class ModLog(commands.Cog):
             txt = r["content"]
             if not txt:
                 st = parse_stickers(r["stickers"])
-                txt = f"[sticker: {', '.join(s['name'] for s in st)}]" if st else "*no text*"
+                pm = parse_json_obj(r["poll"])
+                fw = parse_json_obj(r["forward"])
+                if st:
+                    txt = f"[sticker: {', '.join(s['name'] for s in st)}]"
+                elif pm:
+                    txt = f"[poll: {format_poll(pm, joiner=' | ')}]"
+                elif fw:
+                    txt = f"[forwarded: {fw.get('content') or ''}]"
+                else:
+                    txt = "*no text*"
             lines.append(f"<t:{int(r['deleted_ts'])}:R> in <#{r['channel_id']}>{by}{kind}\n"
                          f"> {_trunc(txt, 150)}")
         embed = discord.Embed(title=f"🗑️ Deleted messages — {user}",
