@@ -181,5 +181,26 @@ check("cap zero evicts everything",
       ml.files_to_evict(_e, 0) == ["old.png", "mid.png", "new.png"])
 check("empty cache is a no-op", ml.files_to_evict([], 1) == [])
 
+# ---- ghost-ping forensics: mention extraction + edit-away diff
+check("user mentions extracted in order, deduped",
+      ml.extract_mentions("<@111> hi <@!222> <@111>") == (["111", "222"], [], False, False))
+check("role mention not misread as user",
+      ml.extract_mentions("<@&333> ping") == ([], ["333"], False, False))
+check("everyone and here flagged",
+      ml.extract_mentions("wake up @everyone and @here") == ([], [], True, True))
+check("plain text extracts nothing",
+      ml.extract_mentions("no pings here, just email@example.com") == ([], [], False, False))
+check("empty/None content is safe",
+      ml.extract_mentions(None) == ([], [], False, False))
+
+check("edit removing a user ping is caught",
+      ml.mentions_removed("<@111> loser", "loser") == (["111"], [], False, False))
+check("edit keeping the ping reports nothing",
+      ml.mentions_removed("<@111> hey", "<@111> hey there") == ([], [], False, False))
+check("everyone edited out is caught",
+      ml.mentions_removed("@everyone free nitro", "free nitro") == ([], [], True, False))
+check("role ping swapped for user ping reports only the role",
+      ml.mentions_removed("<@&333> raid", "<@111> raid") == ([], ["333"], False, False))
+
 print(f"\n{_total - len(_fails)}/{_total} passed")
 sys.exit(1 if _fails else 0)

@@ -64,6 +64,24 @@ SELFDEL_THRESHOLD = 8       # self-deletes in window → alert (Yousef/apple.231
 SELFDEL_QUIET = 120.0       # episode ends after this long with no further deletes
 MENTION_RE = re.compile(r"<@[!&]?\d+>|@everyone|@here")
 
+
+def extract_mentions(content):
+    """content -> (user_ids, role_ids, everyone, here), order-preserving dedupe.
+    Ghost-ping forensics need WHO was pinged: raw <@id> markup in an embed
+    renders as @unknown-user whenever the client can't resolve it."""
+    c = content or ""
+    users = list(dict.fromkeys(re.findall(r"<@!?(\d+)>", c)))
+    roles = list(dict.fromkeys(re.findall(r"<@&(\d+)>", c)))
+    return users, roles, "@everyone" in c, "@here" in c
+
+
+def mentions_removed(old, new):
+    """Mentions present in old content but gone from new — the edit-away ghost ping."""
+    ou, orl, oe, oh = extract_mentions(old)
+    nu, nrl, ne, nh = extract_mentions(new)
+    return ([u for u in ou if u not in nu], [r for r in orl if r not in nrl],
+            oe and not ne, oh and not nh)
+
 COLOR_SELF_DELETE = 0xE67E22
 COLOR_MOD_DELETE = 0xC0392B
 COLOR_BULK = 0x8B0000
@@ -551,7 +569,9 @@ class ModLog(commands.Cog):
                    "author_id": str(m.author.id), "author_name": str(m.author),
                    "bot": 1 if m.author.bot else 0, "webhook": 1 if m.webhook_id else 0,
                    "created_ts": m.created_at.timestamp(), "content": m.content or "",
-                   "reply_to": None, "attachments": None,
+                   "reply_to": str(m.reference.message_id)
+                   if m.reference and m.reference.message_id else None,
+                   "attachments": None,
                    "stickers": json.dumps(sticker_meta(m.stickers)) if m.stickers else None}
 
         author_id = int(row["author_id"]) if row else None
@@ -586,7 +606,17 @@ class ModLog(commands.Cog):
             if row.get("content"):
                 embed.add_field(name="Content", value=_trunc(row["content"]), inline=False)
                 if MENTION_RE.search(row["content"]):
-                    embed.add_field(name="📣", value="Contained mentions", inline=True)
+                    pinged = await self._mention_lines(guild, *extract_mentions(row["content"]))
+                    embed.add_field(name="📣 Pinged", value=_trunc("\n".join(pinged)),
+                                    inline=False)
+            if row.get("reply_to"):  # reply ghost-ping: no mention markup, still pings
+                ref = self._get_row(row["reply_to"])
+                if ref:
+                    embed.add_field(
+                        name="↩️ Reply to",
+                        value=f"**{ref['author_name']}** (`{ref['author_id']}`) "
+                              f"— reply-pings the author unless suppressed",
+                        inline=False)
             stickers = parse_stickers(row.get("stickers"))
             if stickers:  # sticker messages have no content — this WAS the "empty log" bug
                 embed.add_field(
@@ -849,6 +879,12 @@ class ModLog(commands.Cog):
         embed.add_field(name="Before",
                         value=_trunc(old) if old is not None else "*not in archive*", inline=False)
         embed.add_field(name="After", value=_trunc(new) or "*empty*", inline=False)
+        if old:  # edit-away ghost ping: mention gone from the new content
+            gu, gr, ge, gh = mentions_removed(old, new)
+            if gu or gr or ge or gh:
+                gone = await self._mention_lines(guild, gu, gr, ge, gh)
+                embed.add_field(name="📣 Pings edited out",
+                                value=_trunc("\n".join(gone)), inline=False)
         embed.set_footer(text=f"Message ID {payload.message_id}")
         await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
@@ -947,6 +983,32 @@ class ModLog(commands.Cog):
         # render as @unknown-user, and the log must say WHO it was regardless
         return (f"**{member}** — {member.mention} (`{member.id}`)"
                 + (" 🤖" if member.bot else ""))
+
+    async def _mention_lines(self, guild, users, roles, everyone, here,
+                             max_users=15, max_fetch=5):
+        """Resolve mention ids to plain-text names for a ping field (same
+        @unknown-user rationale as _member_line). fetch_user is capped so a
+        paste full of dead ids can't turn one delete into an API storm."""
+        lines, fetched = [], 0
+        for uid in users[:max_users]:
+            u = guild.get_member(int(uid)) or self.bot.get_user(int(uid))
+            if u is None and fetched < max_fetch:
+                fetched += 1
+                try:
+                    u = await self.bot.fetch_user(int(uid))
+                except discord.HTTPException:
+                    u = None
+            lines.append(f"**{u}** (`{uid}`)" if u else f"unknown user (`{uid}`)")
+        if len(users) > max_users:
+            lines.append(f"…and {len(users) - max_users} more users")
+        for rid in roles:
+            r = guild.get_role(int(rid))
+            lines.append(f"role **{r.name}** (`{rid}`)" if r else f"unknown role (`{rid}`)")
+        if everyone:
+            lines.append("**@everyone**")
+        if here:
+            lines.append("**@here**")
+        return lines
 
     async def _user_line(self, target, target_id):
         """Same, from an audit-log target that may be a bare Object (ID only)."""
