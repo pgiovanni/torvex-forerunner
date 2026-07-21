@@ -7,3 +7,4 @@ asyncpg
 python-chess
 cairosvg
 matplotlib>=3.8
+anthropic

@@ -461,6 +461,32 @@
       "required_permissions": [
         "manage_emojis"
       ]
+    },
+    {
+      "name": "ask",
+      "description": "Ask the AI — it knows the server 🤖",
+      "cog": "ai",
+      "cooldown_seconds": 15
+    },
+    {
+      "name": "ai-usage",
+      "description": "Check your AI energy for today ⚡",
+      "cog": "ai",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "ai-status",
+      "description": "AI spend + usage this month (admin)",
+      "cog": "ai",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "ai-privacy",
+      "description": "Toggle whether your messages can appear as AI context 🔒",
+      "cog": "ai",
+      "cooldown_seconds": 0
     }
   ]
 }
