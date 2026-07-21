@@ -25,6 +25,7 @@ import sys
 import time
 import sqlite3
 import logging
+from collections import deque
 
 import discord
 from discord import app_commands
@@ -133,6 +134,7 @@ class AI(commands.Cog):
         self.bot = bot
         self.provider = None  # built in cog_load from .env (see utils/ai_provider)
         self._chat_last = {}  # user_id -> monotonic ts of last ping-chat (cooldown)
+        self._ai_msgs = deque(maxlen=400)  # ids of AI answers (reply-to-continue)
         with self._conn() as c:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS ai_usage (
@@ -258,7 +260,7 @@ class AI(commands.Cog):
         return 0, None
 
     async def _generate(self, guild, channel, user, question, tier, character,
-                        bucks_charged, skip_message_id=None):
+                        bucks_charged, skip_message_id=None, replied_to=None):
         """Call the model, meter the cost. Returns (text, footer, None) on
         success, (None, None, error_message) on failure (bucks refunded)."""
         model = MODEL_QUICK if tier == "quick" else MODEL_SMART
@@ -267,6 +269,8 @@ class AI(commands.Cog):
         context = await self._channel_context(channel, guild, skip_message_id)
         user_content = (
             (f"Recent messages in #{channel.name}:\n{context}\n\n" if context else "")
+            + (f"Your earlier message they are replying to:\n{replied_to[:1500]}\n\n"
+               if replied_to else "")
             + f"{user.display_name} asks: {question}"
         )
         system = PERSONAS.get(character, PERSONAS["peepo"]) + "\n\n" + BASE_RULES
@@ -309,9 +313,12 @@ class AI(commands.Cog):
         else:
             chunks.append(footer)
         none = discord.AllowedMentions.none()
-        await first_send(chunks[0], allowed_mentions=none)
+        sent = await first_send(chunks[0], allowed_mentions=none)
+        if sent is not None:
+            self._ai_msgs.append(sent.id)
         for extra in chunks[1:]:
-            await channel.send(extra, allowed_mentions=none)
+            m = await channel.send(extra, allowed_mentions=none)
+            self._ai_msgs.append(m.id)
 
     # ── /ask ──────────────────────────────────────────────────────────────────
 
@@ -358,11 +365,32 @@ class AI(commands.Cog):
 
     # ── ping-to-chat: @Peepo's Reclaimer <question> ──────────────────────────
 
+    async def _replied_to_me(self, message: discord.Message, me):
+        """The AI answer this message replies to, or None. Scoped to AI
+        answers (id ring buffer + the -# footer as restart-surviving
+        fallback) so replies to wordle/level-up/etc. bot messages never
+        trigger a metered ask. Fetches only on cache miss."""
+        ref = message.reference
+        if ref is None or ref.message_id is None:
+            return None
+        r = ref.resolved
+        if r is None:
+            try:
+                r = await message.channel.fetch_message(ref.message_id)
+            except discord.HTTPException:
+                return None
+        if not isinstance(r, discord.Message) or r.author.id != me.id:
+            return None
+        if r.id in self._ai_msgs or "\n-# " in r.content or r.content.startswith("-# "):
+            return r
+        return None
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """MEE6-style chat: an @-mention of the bot with text is a question.
-        Answers as Peepo's Reclaimer (no characters), smart tier, same meter
-        and privacy rules as /ask."""
+        """MEE6-style chat: an @-mention of the bot with text is a question,
+        and so is replying to one of the bot's messages. Answers as Peepo's
+        Reclaimer (no characters), smart tier, same meter and privacy rules
+        as /ask."""
         if message.author.bot or message.guild is None:
             return
         if message.guild.id not in AI_GUILD_IDS or self.provider is None:
@@ -371,6 +399,9 @@ class AI(commands.Cog):
         if me is None:
             return
         question = strip_bot_mention(message.content, me.id)
+        replied = await self._replied_to_me(message, me)
+        if question is None and replied is not None:
+            question = message.content.strip() or None
         if question is None:
             return
 
@@ -389,20 +420,26 @@ class AI(commands.Cog):
             await message.reply(err, mention_author=False, allowed_mentions=none)
             return
 
+        replied_text = None
+        if replied is not None:  # feed the answer being replied to, sans footer
+            replied_text = "\n".join(
+                l for l in replied.content.splitlines() if not l.startswith("-# ")
+            ).strip() or None
+
         async with message.channel.typing():
             text, footer, err = await self._generate(
                 message.guild, message.channel, message.author,
                 question, "smart", "peepo", bucks_charged,
-                skip_message_id=message.id)
+                skip_message_id=message.id, replied_to=replied_text)
         if err:
             await message.reply(err, mention_author=False, allowed_mentions=none)
             return
 
         async def first_send(content, **kw):
             try:
-                await message.reply(content, mention_author=False, **kw)
+                return await message.reply(content, mention_author=False, **kw)
             except discord.HTTPException:  # trigger deleted mid-generation
-                await message.channel.send(content, **kw)
+                return await message.channel.send(content, **kw)
 
         await self._send_reply(first_send, message.channel, text, footer)
 
