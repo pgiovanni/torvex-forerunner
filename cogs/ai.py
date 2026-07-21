@@ -1,4 +1,9 @@
-"""AI commands for peepos-reclaimer — /ask with metered usage and characters.
+"""AI commands for peepos-reclaimer — /ask + ping-to-chat with metered usage.
+
+Two ways in, same meter: /ask (with optional characters), or simply @-mention
+the bot with a question (MEE6-style — the question stays visible in chat, the
+bot answers as itself). Replies are plain text, never embeds; the /ask reply
+quotes the question since slash invocations hide the arguments from chat.
 
 Provider-agnostic: the model backend is an .env choice (see utils/ai_provider.py)
 — Anthropic or any OpenAI-compatible API (OpenRouter, Groq, Gemini, DeepSeek).
@@ -41,6 +46,9 @@ MODEL_QUICK = os.getenv("AI_MODEL_QUICK", "claude-haiku-4-5")
 MAX_OUT_TOKENS = 1400
 CONTEXT_MESSAGES = 12
 CONTEXT_SNIPPET = 200  # chars per context message
+
+CHAT_COOLDOWN_S = 15.0
+QUOTE_CAP = 500  # chars of the question echoed back in the /ask reply
 
 MONTHLY_BUDGET_USD = float(os.getenv("AI_MONTHLY_BUDGET_USD", "20"))
 AI_GUILD_IDS = {
@@ -86,10 +94,45 @@ PERSONAS = {
 }
 
 
+def split_chunks(body: str, limit: int = 1990):
+    """Split a reply at newlines into Discord-sized (<2000 char) messages."""
+    chunks = []
+    while len(body) > limit:
+        cut = body.rfind("\n", 0, limit)
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(body[:cut])
+        body = body[cut:].lstrip("\n")
+    if body:
+        chunks.append(body)
+    return chunks or ["…"]
+
+
+def strip_bot_mention(content: str, bot_id: int):
+    """Question text of a ping-to-chat message, or None if the bot isn't
+    explicitly @-mentioned in the content (reply-pings carry no markup)."""
+    forms = (f"<@{bot_id}>", f"<@!{bot_id}>")
+    if not any(f in content for f in forms):
+        return None
+    for f in forms:
+        content = content.replace(f, " ")
+    return content.strip() or None
+
+
+def quote_question(display_name: str, question: str) -> str:
+    """One-line blockquote echoing the /ask question (slash args are hidden
+    from chat), newlines collapsed so the quote can't escape the > prefix."""
+    q = " ".join(question.split())
+    if len(q) > QUOTE_CAP:
+        q = q[:QUOTE_CAP] + "…"
+    return f"> **{display_name}:** {q}"
+
+
 class AI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.provider = None  # built in cog_load from .env (see utils/ai_provider)
+        self._chat_last = {}  # user_id -> monotonic ts of last ping-chat (cooldown)
         with self._conn() as c:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS ai_usage (
@@ -177,7 +220,7 @@ class AI(commands.Cog):
 
     # ── context ───────────────────────────────────────────────────────────────
 
-    async def _channel_context(self, channel, guild) -> str:
+    async def _channel_context(self, channel, guild, skip_message_id=None) -> str:
         """Recent messages from the invoking channel, but ONLY if @everyone can
         see it — private/staff channels never feed the prompt."""
         try:
@@ -185,7 +228,7 @@ class AI(commands.Cog):
                 return ""
             lines = []
             async for m in channel.history(limit=CONTEXT_MESSAGES):
-                if m.author.bot or not m.content:
+                if m.author.bot or not m.content or m.id == skip_message_id:
                     continue
                 if str(m.author.id) in self._optout:
                     continue  # user opted out of ever appearing in AI context
@@ -195,6 +238,80 @@ class AI(commands.Cog):
             return "\n".join(lines)
         except discord.HTTPException:
             return ""
+
+    # ── shared request pipeline (used by /ask and ping-to-chat) ──────────────
+
+    async def _precheck(self, user, tier):
+        """Budget + energy gate. Returns (bucks_charged, None) on go,
+        (0, error_message) on stop. Debits bucks up front when past free energy."""
+        if self._month_spent() >= budget_micro(MONTHLY_BUDGET_USD):
+            return 0, "🧯 The AI hit this month's server-wide budget. Back on the 1st!"
+        if remaining_energy(self._user_spent_today(str(user.id))) <= 0:
+            price = BUCKS_PRICE[tier]
+            debited = await self._debit_bucks(user, price)
+            if debited is None:
+                return 0, (
+                    f"⚡ You're out of AI energy for today (resets at midnight UTC).\n"
+                    f"Extra uses cost **{BUCKS_PRICE['smart']} 💰** (or **{BUCKS_PRICE['quick']} 💰** "
+                    f"with `quick: True`) — you don't have enough bucks right now.")
+            return price, None
+        return 0, None
+
+    async def _generate(self, guild, channel, user, question, tier, character,
+                        bucks_charged, skip_message_id=None):
+        """Call the model, meter the cost. Returns (text, footer, None) on
+        success, (None, None, error_message) on failure (bucks refunded)."""
+        model = MODEL_QUICK if tier == "quick" else MODEL_SMART
+        user_id = str(user.id)
+
+        context = await self._channel_context(channel, guild, skip_message_id)
+        user_content = (
+            (f"Recent messages in #{channel.name}:\n{context}\n\n" if context else "")
+            + f"{user.display_name} asks: {question}"
+        )
+        system = PERSONAS.get(character, PERSONAS["peepo"]) + "\n\n" + BASE_RULES
+
+        try:
+            result = await self.provider.chat(
+                model=model, system=system,
+                user_content=user_content, max_tokens=MAX_OUT_TOKENS)
+        except Exception as e:
+            log.error("AI call failed: %s", e)
+            if bucks_charged:
+                await self._refund_bucks(user, bucks_charged)
+            return None, None, (
+                "😵 The AI didn't answer — try again in a minute."
+                + (f" Your {bucks_charged} 💰 was refunded." if bucks_charged else ""))
+
+        micro = cost_micro(model, result.tokens_in, result.tokens_out)
+        self._record(guild.id, user_id, model,
+                     result.tokens_in, result.tokens_out, micro, bucks_charged)
+
+        if result.refusal:
+            return None, None, "🙅 That's not something I'll answer. Try something else."
+
+        text = result.text or "…I've got nothing. Try rephrasing?"
+
+        left_after = remaining_energy(self._user_spent_today(user_id))
+        footer = (f"paid {bucks_charged} 💰" if bucks_charged
+                  else f"⚡ {max(left_after, 0)}/{DAILY_FREE_ENERGY} energy left today")
+        mode = tier + (f" · {character}" if character != "peepo" else "")
+        return text, f"-# {mode} · {footer}", None
+
+    async def _send_reply(self, first_send, channel, body, footer):
+        """Plain-text send: first chunk via first_send (followup / reply),
+        overflow via channel.send, footer subtext on the last chunk.
+        Mentions are always disarmed — echoed questions and model output
+        must never ping anyone."""
+        chunks = split_chunks(body)
+        if len(chunks[-1]) + len(footer) + 1 <= 1998:
+            chunks[-1] += "\n" + footer
+        else:
+            chunks.append(footer)
+        none = discord.AllowedMentions.none()
+        await first_send(chunks[0], allowed_mentions=none)
+        for extra in chunks[1:]:
+            await channel.send(extra, allowed_mentions=none)
 
     # ── /ask ──────────────────────────────────────────────────────────────────
 
@@ -221,76 +338,73 @@ class AI(commands.Cog):
             await interaction.response.send_message("AI isn't configured yet — poke the owner.", ephemeral=True)
             return
 
-        # global monthly kill switch
-        if self._month_spent() >= budget_micro(MONTHLY_BUDGET_USD):
-            await interaction.response.send_message(
-                "🧯 The AI hit this month's server-wide budget. Back on the 1st!", ephemeral=True)
-            return
-
         tier = "quick" if quick else "smart"
-        model = MODEL_QUICK if quick else MODEL_SMART
-        user_id = str(interaction.user.id)
-        energy_left = remaining_energy(self._user_spent_today(user_id))
-
-        # past the free allowance → flat bucks price, debited up front
-        bucks_charged = 0
-        if energy_left <= 0:
-            price = BUCKS_PRICE[tier]
-            debited = await self._debit_bucks(interaction.user, price)
-            if debited is None:
-                await interaction.response.send_message(
-                    f"⚡ You're out of AI energy for today (resets at midnight UTC).\n"
-                    f"Extra uses cost **{BUCKS_PRICE['smart']} 💰** (or **{BUCKS_PRICE['quick']} 💰** "
-                    f"with `quick: True`) — you don't have enough bucks right now.",
-                    ephemeral=True)
-                return
-            bucks_charged = price
+        bucks_charged, err = await self._precheck(interaction.user, tier)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
 
         await interaction.response.defer(thinking=True)
 
-        context = await self._channel_context(interaction.channel, interaction.guild)
-        user_content = (
-            (f"Recent messages in #{interaction.channel.name}:\n{context}\n\n" if context else "")
-            + f"{interaction.user.display_name} asks: {question}"
-        )
-
-        system = PERSONAS.get(character, PERSONAS["peepo"]) + "\n\n" + BASE_RULES
-
-        try:
-            result = await self.provider.chat(
-                model=model, system=system,
-                user_content=user_content, max_tokens=MAX_OUT_TOKENS)
-        except Exception as e:
-            log.error("/ask API call failed: %s", e)
-            if bucks_charged:
-                await self._refund_bucks(interaction.user, bucks_charged)
-            await interaction.followup.send(
-                "😵 The AI didn't answer — try again in a minute."
-                + (f" Your {bucks_charged} 💰 was refunded." if bucks_charged else ""))
+        text, footer, err = await self._generate(
+            interaction.guild, interaction.channel, interaction.user,
+            question, tier, character, bucks_charged)
+        if err:
+            await interaction.followup.send(err)
             return
 
-        micro = cost_micro(model, result.tokens_in, result.tokens_out)
-        self._record(interaction.guild.id, user_id, model,
-                     result.tokens_in, result.tokens_out,
-                     micro, bucks_charged)
+        body = quote_question(interaction.user.display_name, question) + "\n" + text
+        await self._send_reply(interaction.followup.send, interaction.channel, body, footer)
 
-        if result.refusal:
-            await interaction.followup.send("🙅 That's not something I'll answer. Try something else.")
+    # ── ping-to-chat: @Peepo's Reclaimer <question> ──────────────────────────
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """MEE6-style chat: an @-mention of the bot with text is a question.
+        Answers as Peepo's Reclaimer (no characters), smart tier, same meter
+        and privacy rules as /ask."""
+        if message.author.bot or message.guild is None:
+            return
+        if message.guild.id not in AI_GUILD_IDS or self.provider is None:
+            return
+        me = message.guild.me
+        if me is None:
+            return
+        question = strip_bot_mention(message.content, me.id)
+        if question is None:
             return
 
-        text = result.text
-        if not text:
-            text = "…I've got nothing. Try rephrasing?"
-        if len(text) > 4000:
-            text = text[:4000] + "…"
+        none = discord.AllowedMentions.none()
+        now = time.monotonic()
+        if now - self._chat_last.get(message.author.id, 0.0) < CHAT_COOLDOWN_S:
+            try:
+                await message.add_reaction("⏳")
+            except discord.HTTPException:
+                pass
+            return
+        self._chat_last[message.author.id] = now
 
-        left_after = remaining_energy(self._user_spent_today(user_id))
-        footer = (f"paid {bucks_charged} 💰" if bucks_charged
-                  else f"⚡ {max(left_after, 0)}/{DAILY_FREE_ENERGY} energy left today")
-        mode = ("quick" if quick else "smart") + (f" · {character}" if character != "peepo" else "")
-        embed = discord.Embed(description=text, color=0x8FCE00)
-        embed.set_footer(text=f"{mode} · {footer}")
-        await interaction.followup.send(embed=embed)
+        bucks_charged, err = await self._precheck(message.author, "smart")
+        if err:
+            await message.reply(err, mention_author=False, allowed_mentions=none)
+            return
+
+        async with message.channel.typing():
+            text, footer, err = await self._generate(
+                message.guild, message.channel, message.author,
+                question, "smart", "peepo", bucks_charged,
+                skip_message_id=message.id)
+        if err:
+            await message.reply(err, mention_author=False, allowed_mentions=none)
+            return
+
+        async def first_send(content, **kw):
+            try:
+                await message.reply(content, mention_author=False, **kw)
+            except discord.HTTPException:  # trigger deleted mid-generation
+                await message.channel.send(content, **kw)
+
+        await self._send_reply(first_send, message.channel, text, footer)
 
     # ── /ai-usage ────────────────────────────────────────────────────────────
 
