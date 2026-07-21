@@ -1,4 +1,8 @@
-"""AI commands for peepos-reclaimer — /ask with metered usage.
+"""AI commands for peepos-reclaimer — /ask with metered usage and characters.
+
+Provider-agnostic: the model backend is an .env choice (see utils/ai_provider.py)
+— Anthropic or any OpenAI-compatible API (OpenRouter, Groq, Gemini, DeepSeek).
+Swapping providers is a config change plus optionally AI_PRICES for the meter.
 
 Cost model (see utils/ai_meter.py): every request's real microdollar cost is
 recorded in ai_usage.db. Users get DAILY_FREE_ENERGY per day; past that a
@@ -23,16 +27,17 @@ from discord.ext import commands
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.ai_meter import (
-    PRICES, BUCKS_PRICE, DAILY_FREE_ENERGY,
-    cost_micro, energy_for, month_key, budget_micro, remaining_energy,
+    BUCKS_PRICE, DAILY_FREE_ENERGY,
+    cost_micro, month_key, budget_micro, remaining_energy,
 )
+from utils.ai_provider import build_provider
 
 log = logging.getLogger("ai")
 
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ai_usage.db"))
 
-MODEL_SMART = "claude-sonnet-5"
-MODEL_QUICK = "claude-haiku-4-5"
+MODEL_SMART = os.getenv("AI_MODEL_SMART", "claude-sonnet-5")
+MODEL_QUICK = os.getenv("AI_MODEL_QUICK", "claude-haiku-4-5")
 MAX_OUT_TOKENS = 1400
 CONTEXT_MESSAGES = 12
 CONTEXT_SNIPPET = 200  # chars per context message
@@ -42,20 +47,49 @@ AI_GUILD_IDS = {
     int(g) for g in os.getenv("AI_GUILD_IDS", "1215140346800119868").split(",") if g.strip()
 }
 
-SYSTEM_PROMPT = (
-    "You are Peepo's Reclaimer, the resident bot of a Discord server. You are "
-    "helpful, a little playful, and concise. Answer questions directly, help "
-    "with code (use code blocks), and settle chat arguments fairly. Use Discord "
-    "markdown. Keep answers under 300 words unless the question genuinely needs "
-    "more (like a code solution). If recent channel messages are provided, you "
-    "may use them for context, but never invent facts about server members."
+# Rules appended to EVERY persona — the character never overrides these.
+BASE_RULES = (
+    "Hard rules that survive any persona: keep everything PG-13 — server members "
+    "include minors. Be funny at the situation, never genuinely cruel to a member. "
+    "Never invent facts about server members. Answers must still be genuinely "
+    "helpful and correct underneath the character. Use Discord markdown. Keep "
+    "answers under 300 words unless the question truly needs more (like a code "
+    "solution). If recent channel messages are provided, you may use them for "
+    "context."
 )
+
+PERSONAS = {
+    "peepo": (
+        "You are Peepo's Reclaimer, the resident bot of a Discord server. You are "
+        "helpful, a little playful, and concise. Answer questions directly, help "
+        "with code (use code blocks), and settle chat arguments fairly."
+    ),
+    "wizard": (
+        "You are Grimbeard the Unfathomable, an ancient and extremely dramatic "
+        "archmage haunting a Discord server. Everything is portents, forbidden "
+        "tomes, and 'the old magicks' — even mundane questions get a "
+        "prophecy-flavored (but genuinely correct) answer. You address members "
+        "as 'young apprentice' and treat Google as a rival wizard."
+    ),
+    "gremlin": (
+        "You are Grub, the server gremlin: feral, chaotic, types in lowercase "
+        "with barely any punctuation, loves shiny objects and stirring harmless "
+        "chaos. Your answers are still correct — you just deliver them like a "
+        "raccoon that found espresso."
+    ),
+    "butler": (
+        "You are Reginald, an impossibly posh, long-suffering butler who has — "
+        "through circumstances he would rather not discuss — ended up in service "
+        "to an entire Discord server. Address members as 'sir or madam', answer "
+        "with immaculate manners, and let the faintest dry judgment show."
+    ),
+}
 
 
 class AI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.client = None  # AsyncAnthropic, created in cog_load
+        self.provider = None  # built in cog_load from .env (see utils/ai_provider)
         with self._conn() as c:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS ai_usage (
@@ -85,11 +119,7 @@ class AI(commands.Cog):
         return c
 
     async def cog_load(self):
-        if not os.getenv("ANTHROPIC_API_KEY"):
-            log.warning("ANTHROPIC_API_KEY not set — /ask will refuse until it is")
-            return
-        from anthropic import AsyncAnthropic
-        self.client = AsyncAnthropic()
+        self.provider = build_provider()  # None (with a log line) if unconfigured
 
     # ── accounting helpers ────────────────────────────────────────────────────
 
@@ -172,14 +202,22 @@ class AI(commands.Cog):
     @app_commands.describe(
         question="What do you want to know?",
         quick="Quick mode — faster and cheaper, good for simple questions",
+        character="Who answers — the bot, a wizard, a gremlin, or the butler",
     )
+    @app_commands.choices(character=[
+        app_commands.Choice(name="Peepo (default)", value="peepo"),
+        app_commands.Choice(name="Grimbeard the wizard 🧙", value="wizard"),
+        app_commands.Choice(name="Grub the gremlin 🦝", value="gremlin"),
+        app_commands.Choice(name="Reginald the butler 🎩", value="butler"),
+    ])
     @app_commands.checks.cooldown(1, 15.0)
     @app_commands.guild_only()
-    async def ask(self, interaction: discord.Interaction, question: str, quick: bool = False):
+    async def ask(self, interaction: discord.Interaction, question: str,
+                  quick: bool = False, character: str = "peepo"):
         if interaction.guild.id not in AI_GUILD_IDS:
             await interaction.response.send_message("AI isn't enabled in this server.", ephemeral=True)
             return
-        if self.client is None:
+        if self.provider is None:
             await interaction.response.send_message("AI isn't configured yet — poke the owner.", ephemeral=True)
             return
 
@@ -189,6 +227,7 @@ class AI(commands.Cog):
                 "🧯 The AI hit this month's server-wide budget. Back on the 1st!", ephemeral=True)
             return
 
+        tier = "quick" if quick else "smart"
         model = MODEL_QUICK if quick else MODEL_SMART
         user_id = str(interaction.user.id)
         energy_left = remaining_energy(self._user_spent_today(user_id))
@@ -196,12 +235,12 @@ class AI(commands.Cog):
         # past the free allowance → flat bucks price, debited up front
         bucks_charged = 0
         if energy_left <= 0:
-            price = BUCKS_PRICE[model]
+            price = BUCKS_PRICE[tier]
             debited = await self._debit_bucks(interaction.user, price)
             if debited is None:
                 await interaction.response.send_message(
                     f"⚡ You're out of AI energy for today (resets at midnight UTC).\n"
-                    f"Extra uses cost **{BUCKS_PRICE[MODEL_SMART]} 💰** (or **{BUCKS_PRICE[MODEL_QUICK]} 💰** "
+                    f"Extra uses cost **{BUCKS_PRICE['smart']} 💰** (or **{BUCKS_PRICE['quick']} 💰** "
                     f"with `quick: True`) — you don't have enough bucks right now.",
                     ephemeral=True)
                 return
@@ -215,19 +254,12 @@ class AI(commands.Cog):
             + f"{interaction.user.display_name} asks: {question}"
         )
 
-        kwargs = dict(
-            model=model,
-            max_tokens=MAX_OUT_TOKENS,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_content}],
-        )
-        if model == MODEL_SMART:
-            # Sonnet 5 runs adaptive thinking when the param is omitted — turn it
-            # off explicitly: chat answers don't need it and thinking bills as output.
-            kwargs["thinking"] = {"type": "disabled"}
+        system = PERSONAS.get(character, PERSONAS["peepo"]) + "\n\n" + BASE_RULES
 
         try:
-            response = await self.client.messages.create(**kwargs)
+            result = await self.provider.chat(
+                model=model, system=system,
+                user_content=user_content, max_tokens=MAX_OUT_TOKENS)
         except Exception as e:
             log.error("/ask API call failed: %s", e)
             if bucks_charged:
@@ -237,16 +269,16 @@ class AI(commands.Cog):
                 + (f" Your {bucks_charged} 💰 was refunded." if bucks_charged else ""))
             return
 
-        micro = cost_micro(model, response.usage.input_tokens, response.usage.output_tokens)
+        micro = cost_micro(model, result.tokens_in, result.tokens_out)
         self._record(interaction.guild.id, user_id, model,
-                     response.usage.input_tokens, response.usage.output_tokens,
+                     result.tokens_in, result.tokens_out,
                      micro, bucks_charged)
 
-        if response.stop_reason == "refusal":
+        if result.refusal:
             await interaction.followup.send("🙅 That's not something I'll answer. Try something else.")
             return
 
-        text = "".join(b.text for b in response.content if b.type == "text").strip()
+        text = result.text
         if not text:
             text = "…I've got nothing. Try rephrasing?"
         if len(text) > 4000:
@@ -255,8 +287,9 @@ class AI(commands.Cog):
         left_after = remaining_energy(self._user_spent_today(user_id))
         footer = (f"paid {bucks_charged} 💰" if bucks_charged
                   else f"⚡ {max(left_after, 0)}/{DAILY_FREE_ENERGY} energy left today")
+        mode = ("quick" if quick else "smart") + (f" · {character}" if character != "peepo" else "")
         embed = discord.Embed(description=text, color=0x8FCE00)
-        embed.set_footer(text=f"{'quick' if quick else 'smart'} · {footer}")
+        embed.set_footer(text=f"{mode} · {footer}")
         await interaction.followup.send(embed=embed)
 
     # ── /ai-usage ────────────────────────────────────────────────────────────
@@ -273,8 +306,8 @@ class AI(commands.Cog):
             f"⚡ **{max(left, 0)}/{DAILY_FREE_ENERGY}** energy left today (resets midnight UTC)\n"
             f"Questions asked today: **{row[0]}**"
             + (f" · bucks spent: **{row[1]} 💰**" if row[1] else "")
-            + f"\nOut of energy? Extra asks cost **{BUCKS_PRICE[MODEL_SMART]} 💰** "
-              f"(**{BUCKS_PRICE[MODEL_QUICK]} 💰** quick).",
+            + f"\nOut of energy? Extra asks cost **{BUCKS_PRICE['smart']} 💰** "
+              f"(**{BUCKS_PRICE['quick']} 💰** quick).",
             ephemeral=True)
 
     # ── /ai-privacy ──────────────────────────────────────────────────────────
