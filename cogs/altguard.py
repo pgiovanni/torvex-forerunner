@@ -94,6 +94,14 @@ def _age_role_map():
 AGE_ROLE_MAP = _age_role_map()
 ALL_AGE_ROLE_IDS = set(AGE_ROLE_MAP.values())
 
+# Band stamped on ANY release where the member ends up with no age band — a manual
+# /altguard-release, a pass that carried no pick, or the prune's auto-approve. A key
+# from ALTGUARD_AGE_ROLES ("13-15" … "28+"); empty = leave them bandless. Defaulting
+# down is the safe direction: an adult mislabelled has a badge they can fix in
+# #reaction-roles, the reverse leaves a minor labelled as an adult. Never overwrites
+# a real pick or a restored band.
+DEFAULT_AGE = os.environ.get("ALTGUARD_DEFAULT_AGE", "").strip()
+
 # Returning-member role restore NEVER hands back these permissionless-but-sensitive
 # roles (staff/access/quarantine). Permission-bearing roles are already excluded by
 # rejoin_roles' permission filter; this is the belt-and-suspenders list for the ones
@@ -340,19 +348,30 @@ class AltGuard(commands.Cog):
         for r in restore + self._default_roles(member.guild):
             if r not in target:
                 target.append(r)
-        # age band from the verify page: add the picked one, drop every other age
-        # role (also beats a stale stored/restored age role from before the pick)
+        # age band. A pick from the verify page is authoritative: add it and drop
+        # every other age role (that's what beats a stale stored/restored band).
+        # With NO pick we must not run those drops — they'd strip a band the member
+        # legitimately had, which is how a manual /altguard-release used to leave
+        # people with no age role at all. Instead: keep what they have, and stamp
+        # ALTGUARD_DEFAULT_AGE only if they'd otherwise land bandless.
+        aged = None
         grant, drops = self._age_roles(member.guild, res)
-        target = [r for r in target if r not in drops]
-        if grant and grant not in target and not grant.managed and me and grant < me.top_role:
-            target.append(grant)
+        if grant:
+            target = [r for r in target if r not in drops]
+            if grant not in target and not grant.managed and me and grant < me.top_role:
+                target.append(grant)
+        elif DEFAULT_AGE and not any(r.id in ALL_AGE_ROLE_IDS for r in target):
+            dflt = member.guild.get_role(AGE_ROLE_MAP.get(DEFAULT_AGE, 0))
+            if dflt and not dflt.managed and me and dflt < me.top_role:
+                target.append(dflt)
+                aged = DEFAULT_AGE
         try:
             await member.edit(roles=target, reason="AltGuard: quarantine cleared (restore + defaults)")
             # if the prune was holding off on them pending review, that's resolved
             qstore.unspare(member.id)
-            return True, restore
+            return True, restore, aged
         except discord.Forbidden:
-            return False, restore
+            return False, restore, None
 
     async def _ban_status(self, guild: discord.Guild, uid: int) -> str:
         """Classify a non-member matched account: 'banned' | 'left' | 'unknown'."""
@@ -620,7 +639,7 @@ class AltGuard(commands.Cog):
                 # the gate off mid-verification can't strand a passing member.
                 if member and qstore.is_quarantined(member.id) and \
                         "quarantine-on-join" in (qstore.quarantine_reason(member.id) or ""):
-                    ok, restored = await self._release(member, res)
+                    ok, restored, _aged = await self._release(member, res)
                     await self._released_alert(guild, member, res, restored, ok)
                 else:
                     # no lock to lift, but the age pick still applies
@@ -1220,15 +1239,17 @@ class AltGuard(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def release(self, interaction: discord.Interaction, member: discord.Member):
-        ok, restored = await self._release(member)
+        ok, restored, aged = await self._release(member)
         # Mark trusted: their device (if on file) stays a live detector — a NEW
         # account matching it is still quarantined for review — but the alt-cascade
         # will never re-quarantine this member again.
         qstore.clear(member.id, f"released by {interaction.user}")
         if ok:
             roles = ", ".join(r.mention for r in restored) if restored else "no stored roles"
+            age_note = (f"\n-# No age band on file — defaulted to **{aged}**; they can change it themselves."
+                        if aged else "")
             await interaction.response.send_message(
-                f"✅ Cleared quarantine on {member.mention}. Restored: {roles}.\n"
+                f"✅ Cleared quarantine on {member.mention}. Restored: {roles}.{age_note}\n"
                 f"-# Marked trusted — they won't be re-flagged, but anyone matching their device is still held for review.",
                 ephemeral=True,
             )
