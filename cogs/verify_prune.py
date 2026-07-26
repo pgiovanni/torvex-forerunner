@@ -41,6 +41,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import quarantine_store as qstore
+from cogs.altguard import _precap_conn
 
 log = logging.getLogger("verify_prune")
 
@@ -324,6 +325,7 @@ class VerifyPrune(commands.Cog):
         e.add_field(name="🕒 Timing", value=(row.get("timing") or "—")[:64], inline=True)
         e.add_field(name="🧬 Best device match",
                     value=f"{row.get('top_pct', 0)}% (below alt threshold)", inline=True)
+        e.add_field(name="🌐 Connection", value=_precap_conn(row)[:1024], inline=False)
         e.add_field(name="Roles restored", value=roles[:1024], inline=False)
         if aged:
             e.add_field(
@@ -367,6 +369,7 @@ class VerifyPrune(commands.Cog):
         e.add_field(name="⚖️ Replayed verdict",
                     value=f"✅ **PASS** · risk **{risk}**", inline=True)
         e.add_field(name="🕒 Timing confidence", value=(row.get("timing") or "—")[:1024], inline=False)
+        e.add_field(name="🌐 Connection", value=_precap_conn(row)[:1024], inline=False)
         e.add_field(
             name="Your call",
             value=(f"`/altguard-release {member.id}` to let them in, or leave them — "

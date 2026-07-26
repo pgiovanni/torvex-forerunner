@@ -32,6 +32,7 @@ Optional:
 """
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -174,6 +175,80 @@ def _conn_line(res: dict, ip: bool = False) -> str:
     if ip:
         line += f" · `{res.get('ip', '?')}`"
     return line
+
+
+_CONN_CLASS = {
+    "mobile": "📶 mobile carrier",
+    "residential": "🏠 residential ISP",
+    "none": "no rDNS published",
+    "unknown": "unclassified network",
+}
+
+
+def _precap_conn(p: dict, ip: bool = True) -> str:
+    """Connection + network summary for a PRECAPTURE row (a link-open with no
+    OAuth behind it), off the `scored_*` context the gate persists at score time.
+
+    Two lines: where the exit says they are, then who actually owns the address.
+    The second line is the one that settles arguments — `AS328309 Globacom · no
+    rDNS` explains a lost geo-trust that `fraud 82` on its own just looks
+    arbitrary about.
+
+    Rows scored before those columns existed have none of this; they fall back
+    to the plain IP so the field never renders empty.
+    """
+    loc = ", ".join(v for v in (p.get("scored_city"), p.get("scored_region")) if v)
+    trusted = bool(p.get("scored_geo_trust"))
+    if loc and not trusted:
+        loc += " (exit)"
+    head = [x for x in (f"📍 {loc}" if loc else None,
+                        p.get("scored_country"), p.get("scored_isp")) if x]
+    if ip:
+        head.append(f"`{p.get('ip', '?')}`")
+    lines = [" · ".join(head) if head else f"`{p.get('ip', '?')}`"]
+
+    asn, org = p.get("scored_asn"), p.get("scored_org")
+    cls = p.get("scored_conn_class")
+    if asn or org or cls:
+        # IPQS echoes the bare IP in `host` when the range publishes no PTR —
+        # printing that back as rDNS would read like a real hostname. Parsed, not
+        # pattern-matched: an IPv6 address has hex letters and slips a [\d.:] test.
+        host = (p.get("scored_host") or "").strip()
+        try:
+            ipaddress.ip_address(host)
+            host = None
+        except ValueError:
+            host = host or None
+        net = [x for x in (f"AS{asn}" if asn else None, org or None, host,
+                           _CONN_CLASS.get(cls, cls)) if x]
+        fraud = p.get("scored_fraud")
+        if fraud is not None:
+            net.append(f"fraud {fraud}")
+        lines.append(" · ".join(net))
+        flags = (p.get("scored_flags") or "").strip()
+        if flags:
+            lines.append(f"flags: {flags}")
+        # The one case worth calling out: geo was discarded ONLY because nothing
+        # identifies the owner as an eyeball network — no PTR to read, and the AS
+        # isn't in MOBILE_ASNS. That's a coverage gap (Glo, Jio, MTN all land
+        # here), not evidence of a tunnel, and it's the difference between "add
+        # the ASN" and "they really are behind something". Deliberately silent
+        # for a relay, a datacenter, or any range that DOES publish rDNS —
+        # there the lost trust is the system working.
+        # scored_relay only fills when the gate's own Private-Relay downgrade ran,
+        # and that lives on the OAuth path (app.py), not in the precapture replay
+        # — so recognise a relay egress here too rather than mislabel one as a
+        # coverage gap. ASN 54113 = Apple, 13335 = the Cloudflare egress partner.
+        relay = (bool(p.get("scored_relay"))
+                 or p.get("scored_asn") in (54113, 13335)
+                 or "icloud private relay" in (org or "").lower()
+                 or "icloud private relay" in (p.get("scored_isp") or "").lower())
+        if (not trusted and cls == "none" and not relay
+                and "datacenter" not in flags and "Tor" not in flags):
+            lines.append("-# geo dropped only because nothing identifies this AS as a "
+                         "consumer/carrier network — an unlisted carrier looks the same "
+                         "as a tunnel here")
+    return "\n".join(lines)
 
 
 def _hmac_headers() -> dict:
@@ -774,8 +849,8 @@ class AltGuard(commands.Cog):
                 embed.add_field(name="🚨 On your watchlist",
                                 value=", ".join(f"<@{m['uid']}>" for m in watched)[:1024], inline=False)
             embed.add_field(name="🖥️ Device", value=_device_profile(attrs)[:1024], inline=False)
-            conn = f"`{p.get('ip','?')}`" + (f" · JA4 `{p['ja4']}`" if p.get("ja4") else "")
-            embed.add_field(name="Connection", value=conn, inline=False)
+            conn = _precap_conn(p) + (f"\nJA4 `{p['ja4']}`" if p.get("ja4") else "")
+            embed.add_field(name="🌐 Connection", value=conn[:1024], inline=False)
             if p.get("timing"):
                 embed.add_field(name="🕒 Timing confidence", value=p["timing"][:1024], inline=False)
             embed.set_footer(
