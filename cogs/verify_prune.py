@@ -24,13 +24,17 @@ Tunables:
     PRUNE_ACTION (kick)         PRUNE_INTERVAL_MIN (60)
     PRUNE_MAX_PER_CYCLE (25)    PRUNE_WHITELIST ("" — space/comma uids)
     PRUNE_DM (message; {guild} placeholder; empty = skip the DM)
+    PRUNE_SPARE_CLEAN (1)       PRUNE_SPARE_ACTION (review | release)
 """
 import asyncio
+import hashlib
+import hmac
 import logging
 import os
 import time
 from datetime import timedelta
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -50,6 +54,25 @@ def _env_int(name, default=0):
 GUILD_ID = _env_int("ALTGUARD_GUILD_ID")
 QUARANTINE_ROLE_ID = _env_int("ALTGUARD_QUARANTINE_ROLE_ID")
 MODLOG_CHANNEL_ID = _env_int("ALTGUARD_MODLOG_CHANNEL_ID")
+GATE_URL = os.environ.get("ALTGUARD_GATE_URL", "").rstrip("/")
+SECRET = os.environ.get("ALTGUARD_SECRET", "")
+# Honour a clean, high-confidence link-open instead of kicking. 0 disables and
+# the prune goes back to kicking purely on the clock.
+SPARE_CLEAN = os.environ.get("PRUNE_SPARE_CLEAN", "1") != "0"
+# What to do with a spared member at the 72h line:
+#   review  — leave them quarantined, ask a mod (the original behaviour)
+#   release — auto-approve the verification and let them in
+# The owner's call (2026-07-26): a clean-scoring open is real evidence of a real
+# device on a clean network, and the accounts the gate exists to stop (alts,
+# device twins, Tor/VPN exits, evaders) can't reach a clean score in the first
+# place — is_clean_pass() requires no device match, no spoof, clean environment,
+# geo trust, sub-trigger fraud and high timing. Auto-release trades the one thing
+# a precapture can't give us — an OAuth binding proving the opener IS the target —
+# for the ~40% of genuine joiners who stall at Discord's authorize screen.
+# Watchlisted accounts are excluded and always fall back to review: they're the
+# population with both a motive and a history of working the gate sideways, and a
+# forwarded link is the one attack this path is actually open to.
+SPARE_ACTION = os.environ.get("PRUNE_SPARE_ACTION", "review").strip().lower()
 
 ENFORCE = os.environ.get("PRUNE_ENFORCE", "0") != "0"
 HOURS = _env_int("PRUNE_HOURS", 72)
@@ -88,6 +111,39 @@ class VerifyPrune(commands.Cog):
     @property
     def _tag(self) -> str:
         return "🧹 Verify-prune" if ENFORCE else "🧹 Verify-prune (shadow)"
+
+    async def _clean_passes(self) -> dict:
+        """{uid: row} for accounts whose latest HIGH-confidence link-open scored
+        a clean pass at the gate.
+
+        These are people who opened the verify link, let the trust page
+        fingerprint them, and then stopped at the Discord login — usually
+        because "log in with Discord" is exactly what phishing looks like. We
+        hold real evidence about them, and kicking someone we've already scored
+        clean is the one prune outcome that's purely destructive: it burns a
+        genuine member AND throws away the device print.
+
+        Fails CLOSED — if the gate is unreachable we return nothing, and the
+        prune proceeds on the clock as it always did. A gate outage must not
+        silently suspend enforcement.
+        """
+        if not (SPARE_CLEAN and GATE_URL and SECRET):
+            return {}
+        ts = str(time.time())
+        sig = hmac.new(SECRET.encode(), ts.encode(), hashlib.sha256).hexdigest()
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(f"{GATE_URL}/api/clean-passes",
+                                 headers={"X-AltGuard-TS": ts, "X-AltGuard-Auth": sig},
+                                 timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    if r.status != 200:
+                        log.warning("clean-pass lookup failed: HTTP %s", r.status)
+                        return {}
+                    rows = (await r.json()).get("candidates", [])
+        except Exception as e:
+            log.warning("clean-pass lookup failed: %s", e)
+            return {}
+        return {str(x["target_uid"]): x for x in rows}
 
     def _exempt(self, member: discord.Member) -> bool:
         if member.bot or str(member.id) in WHITELIST:
@@ -147,6 +203,25 @@ class VerifyPrune(commands.Cog):
             await self._shadow_report(guild, candidates)
             return
 
+        # Stay of execution: anyone the gate scored clean off a high-confidence
+        # link-open is pulled out of the kick list. With PRUNE_SPARE_ACTION=release
+        # their verification is auto-approved here; otherwise they stay quarantined
+        # and a mod decides. Members with low or no timing confidence (including
+        # everyone who never opened the link) are untouched by this and get kicked
+        # exactly as before.
+        clean = await self._clean_passes()
+        spared = [m for m in candidates if str(m.id) in clean]
+        candidates = [m for m in candidates if str(m.id) not in clean]
+        for m in spared:
+            row = clean[str(m.id)]
+            if SPARE_ACTION == "release" and not qstore.is_watched(m.id):
+                await self._auto_release(guild, m, row)
+                await asyncio.sleep(_PACE)
+                continue
+            first = qstore.record_spared(m.id, row.get("scored_verdict"), row.get("scored_risk"))
+            if first:
+                await self._spared_alert(guild, m, row)
+
         pruned, dm_failed, act_failed = [], 0, []
         for m in candidates[:MAX_PER_CYCLE]:
             # DM first — must happen while we still share the server
@@ -180,7 +255,108 @@ class VerifyPrune(commands.Cog):
         await self.bot.wait_until_ready()
         await asyncio.sleep(45)  # let the member cache chunk before first sweep
 
+    # --------------------------------------------------------- auto-approve
+    async def _auto_release(self, guild, member, row):
+        """Approve the verification at the 72h line off a clean link-open.
+
+        Delegates to the AltGuard cog so a released member goes through the exact
+        same path as `/altguard-release` — stored roles restored, rejoin roles
+        re-applied, defaults granted, quarantine dropped — and gets marked
+        `cleared`, which keeps their device a live detector without ever
+        re-flagging them. No age role is granted (the age pick lives on the
+        verify page they never reached), so they land with the age panel in
+        #roles as their path to one.
+        """
+        ag = self.bot.get_cog("AltGuard")
+        if not ag:
+            log.warning("auto-release: AltGuard cog not loaded, falling back to review")
+            if qstore.record_spared(member.id, row.get("scored_verdict"), row.get("scored_risk")):
+                await self._spared_alert(guild, member, row)
+            return
+        try:
+            ok, restored = await ag._release(member)
+        except discord.HTTPException as e:
+            log.warning("auto-release: %s failed: %s", member.id, e)
+            return
+        qstore.clear(member.id, f"auto-approved: clean link-open at {HOURS}h")
+        qstore.set_status(member.id, "released")
+        if ok:
+            try:
+                await member.send(
+                    f"You're in — verification for **{guild.name}** has been approved. "
+                    f"You never finished the Discord login step, but we could see enough "
+                    f"from your first visit to clear you. Welcome in!"
+                )
+            except discord.HTTPException:
+                pass
+        await self._released_alert(guild, member, row, restored, ok)
+
+    async def _released_alert(self, guild, member, row, restored, ok):
+        ch = self._modlog()
+        if not ch:
+            return
+        roles = ", ".join(r.mention for r in restored) if restored else "no stored roles"
+        e = discord.Embed(
+            title="✅ Auto-approved at the prune line — clean link-open",
+            color=0x3BA55D,
+            description=(
+                f"{member.mention} (`{member.id}`) passed **{HOURS}h** without verifying. Instead of "
+                f"{ACTION}ing them, the gate's score on their link-open was honoured and their "
+                f"verification is **approved**.\n\n"
+                f"They opened the verify link, let the page fingerprint them, and stopped at the "
+                f"Discord login — the step that looks like phishing."
+            ),
+        )
+        e.add_field(name="⚖️ Replayed verdict",
+                    value=f"✅ **PASS** · risk **{row.get('scored_risk', 0)}**", inline=True)
+        e.add_field(name="🕒 Timing", value=(row.get("timing") or "—")[:64], inline=True)
+        e.add_field(name="🧬 Best device match",
+                    value=f"{row.get('top_pct', 0)}% (below alt threshold)", inline=True)
+        e.add_field(name="Roles restored", value=roles[:1024], inline=False)
+        if not ok:
+            e.add_field(name="⚠️ Partial",
+                        value="Couldn't fully restore roles — check my perms/role order.", inline=False)
+        e.add_field(name="Undo",
+                    value=f"`/altguard-check user_id:{member.id} quarantine:True` puts them back.",
+                    inline=False)
+        e.set_footer(text="No OAuth binding — attribution rests on the timing signal, not a login")
+        try:
+            await ch.send(embed=e)
+        except discord.Forbidden:
+            pass
+
     # ------------------------------------------------------------- reporting
+    async def _spared_alert(self, guild, member, row):
+        """Ask a human to finish the job the clock would have finished badly."""
+        ch = self._modlog()
+        if not ch:
+            return
+        risk = row.get("scored_risk", 0)
+        e = discord.Embed(
+            title="🛟 Prune held off — clean link-open on file",
+            color=0x3BA55D,
+            description=(
+                f"{member.mention} (`{member.id}`) passed **{HOURS}h** without verifying, so the "
+                f"prune would normally {ACTION} them. It didn't: they opened their verify link, let "
+                f"the page fingerprint them, and stopped at the Discord login — and the gate scored "
+                f"that open **clean**.\n\n"
+                f"They are **still quarantined**. Nothing was released."
+            ),
+        )
+        e.add_field(name="⚖️ Replayed verdict",
+                    value=f"✅ **PASS** · risk **{risk}**", inline=True)
+        e.add_field(name="🕒 Timing confidence", value=(row.get("timing") or "—")[:1024], inline=False)
+        e.add_field(
+            name="Your call",
+            value=(f"`/altguard-release {member.id}` to let them in, or leave them — "
+                   f"they'll stay quarantined and won't be re-flagged."),
+            inline=False)
+        e.set_footer(text="No OAuth binding — attribution rests on the timing signal, not a login")
+        try:
+            await ch.send(embed=e)
+        except discord.Forbidden:
+            pass
+
     async def _shadow_report(self, guild, candidates):
         ch = self._modlog()
         if not ch:
@@ -247,6 +423,12 @@ class VerifyPrune(commands.Cog):
         e.add_field(name="Action", value=ACTION, inline=True)
         e.add_field(name="Grace", value=f"{HOURS}h", inline=True)
         e.add_field(name="Interval", value=f"{INTERVAL_MIN}m (cap {MAX_PER_CYCLE}/cycle)", inline=True)
+        if SPARE_CLEAN:
+            spare = ("**auto-approve** (clean link-open → released)"
+                     if SPARE_ACTION == "release" else "hold for mod review")
+        else:
+            spare = "off (kick purely on the clock)"
+        e.add_field(name="Clean link-open", value=spare, inline=True)
         e.add_field(name="Last sweep",
                     value=(f"<t:{int(self.last_run)}:R>" if self.last_run else "not yet"), inline=True)
         names = "\n".join(f"• {m.mention} — {self._ago(m)}" for m in candidates[:15]) or "none"

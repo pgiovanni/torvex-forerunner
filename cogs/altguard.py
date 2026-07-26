@@ -341,6 +341,8 @@ class AltGuard(commands.Cog):
             target.append(grant)
         try:
             await member.edit(roles=target, reason="AltGuard: quarantine cleared (restore + defaults)")
+            # if the prune was holding off on them pending review, that's resolved
+            qstore.unspare(member.id)
             return True, restore
         except discord.Forbidden:
             return False, restore
@@ -398,7 +400,11 @@ class AltGuard(commands.Cog):
         try:
             await user.send(embed=embed, view=VerifyView(url))
             return True
-        except discord.Forbidden:
+        except discord.HTTPException as e:
+            # Forbidden (closed DMs) is the usual one, but opening a DM with an
+            # ex-user we share no server with comes back 400/50007, not 403 —
+            # catching only Forbidden let that escape and kill the command.
+            log.info("verify DM to %s failed: %s", user.id, e)
             return False
 
     async def _dm_link(self, member: discord.Member, locked: bool = False) -> bool:
@@ -451,9 +457,14 @@ class AltGuard(commands.Cog):
         dm_failed = "closed" in status
         # visible fallback: ping them in the verify channel so a closed/unseen DM
         # isn't a dead end — they just tap the panel button there.
-        # skip while mid-onboarding: they can't see the verify channel yet, and
-        # _on_onboarding_complete will post the ping once they can — avoids a
-        # duplicate prompt for members who join through Discord onboarding.
+        # skip while mid-onboarding: a member still in Discord's onboarding flow
+        # hasn't landed in the server yet, so _on_onboarding_complete posts the
+        # ping once they have — avoids a duplicate prompt.
+        # NB (2026-07-25): rules screening ALSO sets `pending`, but unlike
+        # onboarding it never hid anything — #verify is view=allow for
+        # @everyone. Screened joiners were skipped here for no good reason.
+        # Moot now that screening is off, but don't trust `pending` to mean
+        # "can't see the server" if it ever comes back.
         if quarantined and VERIFY_CHANNEL_ID and not member.pending:
             vch = member.guild.get_channel(VERIFY_CHANNEL_ID)
             if vch:
@@ -538,15 +549,24 @@ class AltGuard(commands.Cog):
                 except discord.Forbidden:
                     pass
         # if the join-time DM never delivered, try again now that they're settled
+        retried = None
         if not (v and v.get("dm_delivered")):
-            dmed = await self._dm_link(member, locked=True)
-            qstore.record_issue(member.id, member.guild.id, dmed)
+            retried = await self._dm_link(member, locked=True)
+            qstore.record_issue(member.id, member.guild.id, retried)
+        # The join line named them in the mod log seconds ago; a second note
+        # saying the same member is still held is pure duplication. Only speak
+        # up when this pass actually DID something a mod hasn't seen — i.e. we
+        # retried a DM that never landed the first time.
+        if retried is None:
+            return
         ch = member.guild.get_channel(MODLOG_CHANNEL_ID)
         if ch:
+            outcome = ("re-sent the verify DM." if retried else
+                       "DM retry failed (DMs still closed) — pointed at the verify channel instead.")
             try:
                 await ch.send(
                     f"🎬 AltGuard: {member.mention} (`{member.id}`) finished onboarding "
-                    f"while held — re-pointed to verify."
+                    f"while held — {outcome}"
                 )
             except discord.Forbidden:
                 pass
@@ -685,17 +705,45 @@ class AltGuard(commands.Cog):
             match_txt = ", ".join(f"<@{m['uid']}> (`{m['uid']}` · {m['pct']}%)" for m in matches[:6]) or "—"
             loud = bool(watched)
             target = p.get("target_uid")
-            embed = discord.Embed(
-                title="🚨 WATCHED device opened a verify link" if loud
-                      else "👁️ Link-open device matched a known account",
-                color=0x8B0000 if loud else 0xE0A23B,
-                description=(
+            # A row can reach us two ways: it matched a known device (the original
+            # alert), or timing says the clicker IS the target and the gate replayed
+            # a verdict for them (the "bailed at the Discord login" review queue).
+            scored = p.get("scored_verdict")
+            review_only = bool(scored) and not matches
+            if loud:
+                title, color = "🚨 WATCHED device opened a verify link", 0x8B0000
+            elif review_only:
+                title = "🕵️ Opened the link but never finished — scored for review"
+                color = 0x3BA55D if scored == "pass" else 0xE0A23B
+            else:
+                title, color = "👁️ Link-open device matched a known account", 0xE0A23B
+            if review_only:
+                desc = (
+                    f"<@{target}> (`{target}`) opened their verify link and let the page finish, "
+                    f"then stopped at the Discord login. Timing says the clicker **is** them, so the "
+                    f"gate replayed their signals through the normal scorer."
+                )
+            else:
+                desc = (
                     f"A verify link **issued for** <@{target}> (`{target}`) was opened by a device that "
                     f"matches **{len(matches)}** known account(s), up to **{top}%**. Captured on the trust "
                     f"page **before** the Discord login — so this fires even if they never finish verifying."
-                ),
-            )
-            embed.add_field(name="Device matches", value=match_txt[:1024], inline=False)
+                )
+            embed = discord.Embed(title=title, color=color, description=desc)
+            if scored:
+                risk = p.get("scored_risk", 0)
+                try:
+                    why = json.loads(p.get("scored_reasons") or "[]")
+                except (TypeError, ValueError):
+                    why = []
+                verdict_line = ("✅ **PASS**" if scored == "pass" else f"⚠️ **{str(scored).upper()}**")
+                embed.add_field(
+                    name="⚖️ Replayed verdict (review only — nobody was released)",
+                    value=(f"{verdict_line} · risk **{risk}**\n"
+                           + "\n".join(f"• {w}" for w in why[:4]))[:1024],
+                    inline=False)
+            if matches or not review_only:
+                embed.add_field(name="Device matches", value=match_txt[:1024], inline=False)
             if watched:
                 embed.add_field(name="🚨 On your watchlist",
                                 value=", ".join(f"<@{m['uid']}>" for m in watched)[:1024], inline=False)
@@ -704,7 +752,11 @@ class AltGuard(commands.Cog):
             embed.add_field(name="Connection", value=conn, inline=False)
             if p.get("timing"):
                 embed.add_field(name="🕒 Timing confidence", value=p["timing"][:1024], inline=False)
-            embed.set_footer(text="Pre-auth capture · unattributed — the opener may not be the link's target")
+            embed.set_footer(
+                text=("Replayed from stored signals · no OAuth binding, no velocity — "
+                      "release with /altguard-release if you're satisfied"
+                      if review_only else
+                      "Pre-auth capture · unattributed — the opener may not be the link's target"))
             await ch.send(content="@here" if loud else None, embed=embed,
                           allowed_mentions=discord.AllowedMentions(everyone=True))
         try:
@@ -1212,10 +1264,21 @@ class AltGuard(commands.Cog):
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
             msg = "❌ You need the **Administrator** permission to use this."
+        else:
+            # Defining this handler suppresses discord.py's own logging
+            # (tree.on_error stays quiet when a command has any handler), so an
+            # unhandled error used to vanish twice over: no reply and no
+            # traceback — a deferred command just hung as "app didn't respond".
+            cmd = getattr(interaction.command, "name", "?")
+            log.error("unhandled error in /%s", cmd, exc_info=error)
+            msg = f"⚠️ `/{cmd}` errored: `{type(error).__name__}: {error}` — traceback is in the bot log."
+        try:
             if interaction.response.is_done():
                 await interaction.followup.send(msg, ephemeral=True)
             else:
                 await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 async def setup(bot: commands.Bot):
