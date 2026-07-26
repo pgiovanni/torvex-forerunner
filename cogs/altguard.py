@@ -287,6 +287,13 @@ class AltGuard(commands.Cog):
                     drops.append(r)
         return grant, drops
 
+    def _has_age_role(self, member) -> bool:
+        """True if the member already wears an age band — a returning member whose
+        band was restored on release, or anyone who self-picked in #reaction-roles.
+        Callers that apply a DEFAULT band must check this first: a default that
+        stomps a real selection is worse than no default at all."""
+        return any(r.id in ALL_AGE_ROLE_IDS for r in member.roles)
+
     async def _apply_age_role(self, guild, member, res):
         """Grant the picked age band (and drop every other age role) outside the
         release path — used for passes that lift no quarantine (re-verify,

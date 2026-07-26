@@ -25,6 +25,7 @@ Tunables:
     PRUNE_MAX_PER_CYCLE (25)    PRUNE_WHITELIST ("" — space/comma uids)
     PRUNE_DM (message; {guild} placeholder; empty = skip the DM)
     PRUNE_SPARE_CLEAN (1)       PRUNE_SPARE_ACTION (review | release)
+    PRUNE_DEFAULT_AGE ("" — age band stamped on an auto-approved member)
 """
 import asyncio
 import hashlib
@@ -73,6 +74,17 @@ SPARE_CLEAN = os.environ.get("PRUNE_SPARE_CLEAN", "1") != "0"
 # population with both a motive and a history of working the gate sideways, and a
 # forwarded link is the one attack this path is actually open to.
 SPARE_ACTION = os.environ.get("PRUNE_SPARE_ACTION", "review").strip().lower()
+# Age band to stamp on an auto-approved member, who never reached the verify
+# page's age picker and would otherwise land with no band at all. A key from
+# ALTGUARD_AGE_ROLES ("13-15" … "28+"); empty = leave them unlabelled.
+#
+# Defaulting DOWN is the safe direction: the cost of mislabelling an adult as a
+# minor is a wrong badge they can fix themselves, while the cost of the reverse
+# is a minor sitting in the server labelled as an adult. Only applied when the
+# member has no band already — a returning member's restored pick wins.
+DEFAULT_AGE = os.environ.get("PRUNE_DEFAULT_AGE", "").strip()
+# where members can correct the band themselves
+ROLES_CHANNEL_ID = _env_int("ALTGUARD_ROLES_CHANNEL_ID", 1355902892883706066)
 
 ENFORCE = os.environ.get("PRUNE_ENFORCE", "0") != "0"
 HOURS = _env_int("PRUNE_HOURS", 72)
@@ -280,18 +292,27 @@ class VerifyPrune(commands.Cog):
             return
         qstore.clear(member.id, f"auto-approved: clean link-open at {HOURS}h")
         qstore.set_status(member.id, "released")
+        # they never saw the age picker, so stamp the default band — unless a real
+        # one came back with them in the restore
+        aged = None
+        if ok and DEFAULT_AGE and not ag._has_age_role(member):
+            await ag._apply_age_role(guild, member, {"age": DEFAULT_AGE})
+            aged = DEFAULT_AGE
         if ok:
+            fix = (f"\n\nYou've been listed as **{aged}** for now, since you never got to the age "
+                   f"question — if that's not right, set your own in <#{ROLES_CHANNEL_ID}>."
+                   if aged else "")
             try:
                 await member.send(
                     f"You're in — verification for **{guild.name}** has been approved. "
                     f"You never finished the Discord login step, but we could see enough "
-                    f"from your first visit to clear you. Welcome in!"
+                    f"from your first visit to clear you. Welcome in!{fix}"
                 )
             except discord.HTTPException:
                 pass
-        await self._released_alert(guild, member, row, restored, ok)
+        await self._released_alert(guild, member, row, restored, ok, aged)
 
-    async def _released_alert(self, guild, member, row, restored, ok):
+    async def _released_alert(self, guild, member, row, restored, ok, aged=None):
         ch = self._modlog()
         if not ch:
             return
@@ -313,6 +334,15 @@ class VerifyPrune(commands.Cog):
         e.add_field(name="🧬 Best device match",
                     value=f"{row.get('top_pct', 0)}% (below alt threshold)", inline=True)
         e.add_field(name="Roles restored", value=roles[:1024], inline=False)
+        if aged:
+            e.add_field(
+                name="🎂 Age band",
+                value=(f"Defaulted to **{aged}** — they never reached the age picker. "
+                       f"They've been told to correct it in <#{ROLES_CHANNEL_ID}>."),
+                inline=False)
+        elif DEFAULT_AGE:
+            e.add_field(name="🎂 Age band",
+                        value="Kept their existing band (not overwritten).", inline=False)
         if not ok:
             e.add_field(name="⚠️ Partial",
                         value="Couldn't fully restore roles — check my perms/role order.", inline=False)
@@ -426,6 +456,8 @@ class VerifyPrune(commands.Cog):
         if SPARE_CLEAN:
             spare = ("**auto-approve** (clean link-open → released)"
                      if SPARE_ACTION == "release" else "hold for mod review")
+            if SPARE_ACTION == "release" and DEFAULT_AGE:
+                spare += f"\n-# age defaults to **{DEFAULT_AGE}**"
         else:
             spare = "off (kick purely on the clock)"
         e.add_field(name="Clean link-open", value=spare, inline=True)
