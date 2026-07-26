@@ -63,6 +63,42 @@ def init():
                    cleared_at REAL
                )"""
         )
+        # Members the verify-prune declined to kick because the gate holds a
+        # high-confidence, clean-scoring link-open for them (they fingerprinted
+        # and then bailed at the Discord login). They stay QUARANTINED — this is
+        # a stay of execution, not a release — and a mod is asked to decide.
+        # Recorded so the ask goes out ONCE, not every hourly sweep.
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS prune_spared (
+                   uid       TEXT PRIMARY KEY,
+                   verdict   TEXT,
+                   risk      INTEGER,
+                   spared_at REAL
+               )"""
+        )
+
+
+# --- prune stay-of-execution -------------------------------------------------
+def was_spared(uid):
+    with _conn() as c:
+        return c.execute("SELECT 1 FROM prune_spared WHERE uid=?", (str(uid),)).fetchone() is not None
+
+
+def record_spared(uid, verdict, risk):
+    """Note that the prune held off on this member. Returns True the FIRST time
+    (caller should alert), False on every later sweep (stay quiet)."""
+    with _conn() as c:
+        if c.execute("SELECT 1 FROM prune_spared WHERE uid=?", (str(uid),)).fetchone():
+            return False
+        c.execute("INSERT INTO prune_spared(uid, verdict, risk, spared_at) VALUES (?,?,?,?)",
+                  (str(uid), verdict, int(risk or 0), time.time()))
+        return True
+
+
+def unspare(uid):
+    """Drop the stay — on release, or if a mod decides to let the prune run."""
+    with _conn() as c:
+        c.execute("DELETE FROM prune_spared WHERE uid=?", (str(uid),))
 
 
 # --- runtime settings (KV) — toggles that persist across restarts ------------
