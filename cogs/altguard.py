@@ -752,9 +752,11 @@ class AltGuard(commands.Cog):
                 await m.send(
                     f"You opened your verify link for **{guild.name}** and everything we could see "
                     f"looked clean — you just didn't finish the Discord login step.\n\n"
-                    f"You can now **talk in <#{VERIFY_CHANNEL_ID}>** while that's sorted out. Ask us "
-                    f"anything there, including why that login screen looks the way it does. "
-                    f"Finishing verification is still what unlocks the rest of the server."
+                    f"You can now **talk in <#{VERIFY_CHANNEL_ID}>**. Ask us anything there, "
+                    f"including why that login screen looks the way it does — it's the normal "
+                    f"Discord one, and we only ever see your username.\n\n"
+                    f"**You won't be removed for taking your time.** Finishing verification is "
+                    f"what unlocks the rest of the server, whenever you're ready."
                 )
             except discord.HTTPException:
                 pass
@@ -796,7 +798,9 @@ class AltGuard(commands.Cog):
                 f"fingerprint them, and stopped at the Discord authorize screen. The gate scored "
                 f"that open **clean** at **high timing confidence**, so they can now talk in "
                 f"<#{VERIFY_CHANNEL_ID}> — and nowhere else.\n\n"
-                f"They are **still quarantined** and still on the {PRUNE_HOURS_HINT}h prune clock."
+                f"They are **still quarantined**, and they are **off the {PRUNE_HOURS_HINT}h prune "
+                f"clock** for as long as they hold this role — nudge them in <#{VERIFY_CHANNEL_ID}> "
+                f"rather than waiting for a kick. Revoking the role puts them back on the clock."
             ),
         )
         e.add_field(name="🕒 Timing", value=(row.get("timing") or "—")[:256], inline=False)

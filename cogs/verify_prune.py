@@ -41,7 +41,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import quarantine_store as qstore
-from cogs.altguard import _precap_conn
+from cogs.altguard import ALMOST_ROLE_ID, _precap_conn
 
 log = logging.getLogger("verify_prune")
 
@@ -155,6 +155,15 @@ class VerifyPrune(commands.Cog):
 
     def _exempt(self, member: discord.Member) -> bool:
         if member.bot or str(member.id) in WHITELIST:
+            return True
+        # "Almost Verified" holders are OFF the clock entirely (Paul, 2026-07-26).
+        # They opened their link, scored a clean high-timing-confidence pass, and
+        # can talk in #verify — so the answer to "they haven't finished" is to
+        # remind them there, not to remove them. Note this also means the 72h
+        # auto-approve never fires for them: same population, and the point is
+        # that they finish verification rather than be let in without it.
+        # Revoking the role puts them straight back on the clock.
+        if ALMOST_ROLE_ID and any(r.id == ALMOST_ROLE_ID for r in member.roles):
             return True
         if member.guild.owner_id == member.id:
             return True
