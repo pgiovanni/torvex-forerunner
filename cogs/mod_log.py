@@ -102,6 +102,19 @@ def _trunc(s, n=1024):
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def _plain(s):
+    """Render a user-chosen name safely inside an embed field.
+
+    Names are attacker-controlled — a nickname of `@everyone` or one stuffed
+    with markdown must not render as a ping or reformat the log entry. Mentions
+    are defanged and markdown is escaped; the stored ledger keeps the raw value.
+    """
+    if not s:
+        return ""
+    s = str(s).replace("@", "@​")
+    return discord.utils.escape_markdown(s)
+
+
 def safe_filename(name, maxlen=80):
     """Attachment filenames go into filesystem paths — neutralize separators etc."""
     name = os.path.basename(name or "file")
@@ -390,6 +403,7 @@ class ModLog(commands.Cog):
         self._removals = {}             # user_id -> kick/ban audit record (classifies member_remove)
         self._removal_ids_seen = set()  # audit entry ids consumed by the fallback poll
         self._role_changes = {}         # user_id -> member_role_update audit record (attributes role diffs)
+        self._member_updates = {}       # user_id -> member_update audit record (attributes nick + timeout)
         self._rolelog_hits = {}         # user_id -> [timestamps] for role-log rate limiting
         self._rolelog_cd = {}           # user_id -> cooldown-until ts (logs suppressed while spamming)
         self._bytes_since_cap_check = 0  # fresh cache writes since the last size-cap enforcement
@@ -426,6 +440,29 @@ class ModLog(commands.Cog):
                        edited_ts REAL, old_content TEXT, new_content TEXT
                    )""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_edits_msg ON edits(message_id)")
+            # 2026-07-28: identity/lifecycle ledger. Embeds in a log channel are
+            # NOT searchable — a 2025 investigation stalled because the only
+            # record of a deleted account's names and numeric id lived inside
+            # Carl-bot embeds, which no SQL query can see. Everything this cog
+            # logs about a PERSON is mirrored here in plain text, keyed by uid,
+            # so a deleted account's history stays greppable forever.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS identity_events (
+                       ts        REAL,
+                       guild_id  TEXT,
+                       uid       TEXT,
+                       username  TEXT,     -- account name as seen at event time
+                       kind      TEXT,     -- nick|username|global_name|avatar|timeout|
+                                           -- untimeout|join|leave|kick|ban|unban|roles
+                       before    TEXT,
+                       after     TEXT,
+                       by_uid    TEXT,
+                       by_name   TEXT,
+                       reason    TEXT
+                   )""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_ident_uid ON identity_events(uid, ts)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_ident_kind ON identity_events(guild_id, kind, ts)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_ident_after ON identity_events(after)")
 
     def _conn(self):
         c = sqlite3.connect(DB_PATH, timeout=30)
@@ -1119,6 +1156,10 @@ class ModLog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         guild = member.guild
+        # Ledger first, unconditionally: the name↔uid pair at join time is the
+        # single most valuable row we can hold on an account that later deletes.
+        self._record_identity(guild.id, member, "join",
+                              after=member.global_name or member.name)
         log_ch, _ = self._members_log_channel(guild)
         if log_ch is None:
             return
@@ -1146,6 +1187,11 @@ class ModLog(commands.Cog):
         A = discord.AuditLogAction
         if entry.action is A.member_role_update:
             self._note_role_change(entry)
+            return
+        if entry.action is A.member_update:
+            # nickname edits AND timeouts both land here; on_member_update reads
+            # this cache to name the actor
+            self._note_member_update(entry)
             return
         if entry.action in (A.role_create, A.role_delete, A.role_update):
             await self._log_guild_role_event(entry)
@@ -1177,6 +1223,10 @@ class ModLog(commands.Cog):
         if log_ch is None:
             return
         banned = entry.action is A.ban
+        self._record_identity(guild.id, entry.target or target_id,
+                              "ban" if banned else "unban",
+                              by_uid=rec["by_id"], by_name=rec["by_name"],
+                              reason=rec["reason"])
         embed = discord.Embed(
             title="🔨 Member banned" if banned else "♻️ Member unbanned",
             color=COLOR_BAN if banned else COLOR_JOIN,
@@ -1185,6 +1235,69 @@ class ModLog(commands.Cog):
         embed.add_field(name="Reason", value=_trunc(rec["reason"] or "No reason provided"), inline=False)
         embed.set_footer(text=f"User ID {target_id}")
         await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    def _record_identity(self, guild_id, user, kind, before=None, after=None,
+                         by_uid=None, by_name=None, reason=None):
+        """Mirror one person-event into identity_events (plain text, uid-keyed).
+
+        Deliberately best-effort and swallowing: the ledger must never be able
+        to break the embed that the mods actually see.
+        """
+        try:
+            uid = getattr(user, "id", user)
+            uname = getattr(user, "name", None) or str(user)
+            with self._conn() as c:
+                c.execute(
+                    "INSERT INTO identity_events"
+                    " (ts, guild_id, uid, username, kind, before, after, by_uid, by_name, reason)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (time.time(), str(guild_id), str(uid), uname, kind,
+                     None if before is None else str(before),
+                     None if after is None else str(after),
+                     None if by_uid is None else str(by_uid), by_name, reason))
+        except Exception:
+            pass
+
+    def _note_member_update(self, entry):
+        """Cache a member_update audit record so on_member_update can say WHO.
+
+        Covers BOTH nickname edits and timeouts — Discord files them under the
+        same action, so one cache serves both.
+        """
+        target_id = getattr(entry.target, "id", None)
+        if target_id is None:
+            return
+        now = time.time()
+        self._member_updates = {k: v for k, v in self._member_updates.items()
+                                if now - v["ts"] < 300}
+        self._member_updates[target_id] = {
+            "by_id": entry.user_id,
+            "by_name": str(entry.user) if entry.user else None,
+            "reason": entry.reason, "ts": now}
+
+    async def _who_changed_member(self, guild, member_id):
+        """Actor behind a nick/timeout change: realtime cache first, then a
+        one-shot audit poll (aggregated entries don't re-dispatch the gateway
+        event — same gap the role logger handles)."""
+        rec = None
+        for attempt in range(3):
+            if attempt:
+                await asyncio.sleep(0.8)
+            r = self._member_updates.get(member_id)
+            if r and time.time() - r["ts"] < 30:
+                return r
+        try:
+            async for e in guild.audit_logs(limit=8, action=discord.AuditLogAction.member_update):
+                if getattr(e.target, "id", None) != member_id:
+                    continue
+                if time.time() - e.created_at.timestamp() < AUDIT_FRESH_WINDOW:
+                    rec = {"by_id": e.user.id if e.user else None,
+                           "by_name": str(e.user) if e.user else None,
+                           "reason": e.reason}
+                    break
+        except discord.Forbidden:
+            pass
+        return rec
 
     def _note_role_change(self, entry):
         """Cache a member_role_update audit record so on_member_update can say WHO."""
@@ -1204,6 +1317,13 @@ class ModLog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
+        # Nickname + timeout ride the same gateway event as role changes but are
+        # logged independently (own config key, no rate limiter — a nick edit is
+        # never a flood vector the way reaction-role toggles are).
+        if before.nick != after.nick:
+            await self._log_name_event(after, "nick", before.nick, after.nick)
+        if getattr(before, "timed_out_until", None) != getattr(after, "timed_out_until", None):
+            await self._log_timeout_event(before, after)
         if before.roles == after.roles:
             return
         guild = after.guild
@@ -1307,6 +1427,115 @@ class ModLog(commands.Cog):
             embed.add_field(name="Reason", value=_trunc(rec["reason"]), inline=False)
         embed.set_footer(text=f"User ID {after.id}")
         await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    async def _log_name_event(self, member, kind, old, new):
+        """Nickname / username / global-name change → embed + ledger row.
+
+        The ledger row is the point: a name is the only handle you have on an
+        account that later deletes itself, and 'Before → After' in plain text is
+        what makes the chain reconstructable years later.
+        """
+        guild = member.guild
+        if not is_enabled(guild.id, "msglog"):
+            return
+        cfg = get_config(guild.id)
+        if not cfg.get("msglog_names", 1):
+            return
+        if member.bot and not cfg.get("msglog_log_bots", 0):
+            return
+        rec = None
+        if kind == "nick":
+            rec = await self._who_changed_member(guild, member.id)
+            # A member editing their own nick is self-service, not moderation;
+            # only surface WHO when somebody else did it.
+            if rec and rec.get("by_id") == member.id:
+                rec = None
+        self._record_identity(guild.id, member, kind, old, new,
+                              by_uid=(rec or {}).get("by_id"),
+                              by_name=(rec or {}).get("by_name"),
+                              reason=(rec or {}).get("reason"))
+        log_ch = self._log_channel(guild, cfg)
+        if log_ch is None:
+            return
+        title = {"nick": "🏷️ Nickname changed",
+                 "username": "🪪 Username changed",
+                 "global_name": "🪪 Display name changed"}.get(kind, "🪪 Name changed")
+        embed = discord.Embed(title=title, color=COLOR_ROLE,
+                              description=self._member_line(member))
+        embed.add_field(name="Before", value=_trunc(_plain(old) or "*(none)*"), inline=True)
+        embed.add_field(name="After", value=_trunc(_plain(new) or "*(none)*"), inline=True)
+        if rec:
+            embed.add_field(name="By", value=self._mod_line(rec), inline=False)
+            if rec.get("reason"):
+                embed.add_field(name="Reason", value=_trunc(rec["reason"]), inline=False)
+        embed.set_footer(text=f"User ID {member.id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    async def _log_timeout_event(self, before, after):
+        """Timeout applied / lifted. Previously invisible entirely — a mod
+        timing someone out left no trace in our logs at all."""
+        guild = after.guild
+        if not is_enabled(guild.id, "msglog"):
+            return
+        cfg = get_config(guild.id)
+        if not cfg.get("msglog_names", 1):
+            return
+        until = getattr(after, "timed_out_until", None)
+        was = getattr(before, "timed_out_until", None)
+        # Discord expires a timeout by leaving the (now past) stamp in place, so
+        # "removed" means cleared or moved into the past.
+        applied = until is not None and until.timestamp() > time.time()
+        if not applied and was is not None and was.timestamp() <= time.time():
+            return  # natural expiry, not a mod action — don't log noise
+        rec = await self._who_changed_member(guild, after.id)
+        self._record_identity(
+            guild.id, after, "timeout" if applied else "untimeout",
+            before=was.isoformat() if was else None,
+            after=until.isoformat() if until else None,
+            by_uid=(rec or {}).get("by_id"), by_name=(rec or {}).get("by_name"),
+            reason=(rec or {}).get("reason"))
+        log_ch = self._log_channel(guild, cfg)
+        if log_ch is None:
+            return
+        embed = discord.Embed(
+            title="⏳ Member timed out" if applied else "⏱️ Timeout removed",
+            color=COLOR_BAN if applied else COLOR_JOIN,
+            description=self._member_line(after))
+        if applied:
+            embed.add_field(name="Until",
+                            value=f"<t:{int(until.timestamp())}:F> (<t:{int(until.timestamp())}:R>)",
+                            inline=False)
+        embed.add_field(name="By", value=self._mod_line(rec) if rec else "? (no audit entry found)",
+                        inline=True)
+        if rec and rec.get("reason"):
+            embed.add_field(name="Reason", value=_trunc(rec["reason"]), inline=False)
+        embed.set_footer(text=f"User ID {after.id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    @commands.Cog.listener()
+    async def on_user_update(self, before: discord.User, after: discord.User):
+        """Account-level username / display-name changes.
+
+        Fires once globally, so fan out to every guild that has us enabled and
+        actually contains the user — this is the event that would have caught
+        an adversary renaming an account mid-incident.
+        """
+        changes = []
+        if before.name != after.name:
+            changes.append(("username", before.name, after.name))
+        if getattr(before, "global_name", None) != getattr(after, "global_name", None):
+            changes.append(("global_name", before.global_name, after.global_name))
+        if not changes:
+            return
+        for guild in self.bot.guilds:
+            member = guild.get_member(after.id)
+            if member is None:
+                continue
+            for kind, old, new in changes:
+                try:
+                    await self._log_name_event(member, kind, old, new)
+                except Exception:
+                    pass
 
     async def _quarantine_role_spammer(self, member, log_ch, count):
         """Massive self-inflicted reaction-role churn = griefing. Reuse anti-nuke's
@@ -1555,6 +1784,13 @@ class ModLog(commands.Cog):
                         break
                 if rec:
                     break
+        self._record_identity(
+            guild.id, member,
+            "kick" if rec and rec["action"] is discord.AuditLogAction.kick
+            else ("ban" if rec and rec["action"] is discord.AuditLogAction.ban else "leave"),
+            before=member.nick, after=member.global_name or member.name,
+            by_uid=(rec or {}).get("by_id"), by_name=(rec or {}).get("by_name"),
+            reason=(rec or {}).get("reason"))
         if rec and rec["action"] is discord.AuditLogAction.ban:
             return  # the ban embed (with reason) is posted from the audit event
         joined = f"<t:{int(member.joined_at.timestamp())}:R>" if member.joined_at else "?"
@@ -1687,6 +1923,52 @@ class ModLog(commands.Cog):
                if enabled else "voice movement is no longer logged."),
             ephemeral=True)
 
+    @msglog.command(name="names", description="Toggle nickname/username/timeout logging on or off.")
+    @app_commands.describe(enabled="On = log nickname, username and timeout changes")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def names_cmd(self, interaction: discord.Interaction, enabled: bool):
+        set_config(interaction.guild.id, msglog_names=1 if enabled else 0)
+        await interaction.response.send_message(
+            f"🪪 Name/timeout logging **{'on' if enabled else 'off'}** — "
+            + ("nickname, username and timeout changes post to the mod-log."
+               if enabled else "these changes are no longer posted."
+                               " (The identity ledger keeps recording regardless.)"),
+            ephemeral=True)
+
+    @msglog.command(name="history", description="Every recorded name, timeout and lifecycle event for a user ID.")
+    @app_commands.describe(user_id="Numeric user ID — works for users who already left or deleted their account")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def history_cmd(self, interaction: discord.Interaction, user_id: str):
+        uid = "".join(ch for ch in user_id if ch.isdigit())
+        if not uid:
+            await interaction.response.send_message("Give me a numeric user ID.", ephemeral=True)
+            return
+        with self._conn() as c:
+            rows = list(c.execute(
+                "SELECT ts, kind, username, before, after, by_name, reason FROM identity_events"
+                " WHERE uid=? AND guild_id=? ORDER BY ts DESC LIMIT 40",
+                (uid, str(interaction.guild.id))))
+        if not rows:
+            await interaction.response.send_message(
+                f"No identity events recorded for `{uid}`.", ephemeral=True)
+            return
+        lines = []
+        for r in rows:
+            when = f"<t:{int(r['ts'])}:f>"
+            bit = f"{when} · **{r['kind']}**"
+            if r["before"] or r["after"]:
+                bit += f" · {_plain(r['before']) or '∅'} → {_plain(r['after']) or '∅'}"
+            if r["by_name"]:
+                bit += f" · by {_plain(r['by_name'])}"
+            if r["reason"]:
+                bit += f" · _{_plain(r['reason'])[:60]}_"
+            lines.append(bit)
+        embed = discord.Embed(
+            title=f"🪪 Identity history — {rows[0]['username'] or uid}",
+            color=COLOR_ROLE, description=_trunc("\n".join(lines), 4000))
+        embed.set_footer(text=f"User ID {uid} · {len(rows)} event(s)")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @msglog.command(name="roles", description="Toggle role-change logging on or off.")
     @app_commands.describe(enabled="On = log member role add/remove + role create/delete/edit")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -1760,6 +2042,7 @@ class ModLog(commands.Cog):
             f"Members: {'🟢' if cfg.get('msglog_members', 1) else '🔴'} · "
             f"Voice: {'🟢' if cfg.get('msglog_voice', 1) else '🔴'} · "
             f"Roles: {'🟢' if cfg.get('msglog_roles', 1) else '🔴'} · "
+            f"Names/timeouts: {'🟢' if cfg.get('msglog_names', 1) else '🔴'} · "
             f"Channels: {'🟢' if cfg.get('msglog_channels', 1) else '🔴'} · "
             f"Expressions: {'🟢' if cfg.get('msglog_expressions', 1) else '🔴'}",
         ]
