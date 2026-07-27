@@ -30,6 +30,7 @@ Optional:
     ALTGUARD_DM_ON_JOIN (default 1)
     ALTGUARD_QUARANTINE_ON_JOIN (default 0)
 """
+import asyncio
 import hashlib
 import hmac
 import ipaddress
@@ -64,6 +65,17 @@ QUARANTINE_ROLE_ID = _env_int("ALTGUARD_QUARANTINE_ROLE_ID")
 MODLOG_CHANNEL_ID = _env_int("ALTGUARD_MODLOG_CHANNEL_ID")
 VERIFY_CHANNEL_ID = _env_int("ALTGUARD_VERIFY_CHANNEL_ID")
 MIN_ACCOUNT_AGE_DAYS = _env_int("ALTGUARD_MIN_ACCOUNT_AGE_DAYS", 7)
+# "Almost Verified": a member who opened their verify link and scored a CLEAN,
+# HIGH-TIMING-CONFIDENCE pass, but stopped at the Discord authorize screen. The
+# role carries ZERO server permissions — its only effect is an allow-send
+# overwrite on #verify, so they can ask a human why the login step looks like
+# phishing instead of sitting mute until the 72h prune. Everything else stays
+# locked: they keep the quarantine role and every anti-nuke / LinkGuard rule
+# applies to them unchanged (antinuke._exempt is uid-based — owner, bot and the
+# guild whitelist — so no role can buy an exemption). 0 = feature off.
+ALMOST_ROLE_ID = _env_int("ALTGUARD_ALMOST_ROLE_ID")
+ALMOST_SYNC_MIN = _env_int("ALTGUARD_ALMOST_SYNC_MIN", 5)
+PRUNE_HOURS_HINT = _env_int("PRUNE_HOURS", 72)  # display only; verify_prune owns the clock
 # opt-out default roles auto-granted when a member gains access (at join if not
 # gating, or on release after they verify). Replaces MEE6 autorole. Members can
 # remove any they don't want.
@@ -300,9 +312,13 @@ class AltGuard(commands.Cog):
         self.session = aiohttp.ClientSession()
         self.bot.add_view(VerifyPanel())  # persistent verify button — works after restarts
         self.poll_results.start()
+        if ALMOST_ROLE_ID:
+            self.sync_almost_verified.start()
 
     async def cog_unload(self):
         self.poll_results.cancel()
+        if ALMOST_ROLE_ID:
+            self.sync_almost_verified.cancel()
         if self.session:
             await self.session.close()
 
@@ -313,7 +329,11 @@ class AltGuard(commands.Cog):
         me = member.guild.me
         out = []
         for r in member.roles:
-            if r.is_default() or r.id == QUARANTINE_ROLE_ID or r.managed:
+            # ALMOST_ROLE_ID is excluded for the same reason the quarantine role
+            # is: we grant it TO quarantined members on purpose, and
+            # on_member_update re-strips anything a quarantined member gains.
+            # Without this it would be handed out and torn off every sync tick.
+            if r.is_default() or r.id in (QUARANTINE_ROLE_ID, ALMOST_ROLE_ID) or r.managed:
                 continue
             if me and r >= me.top_role:
                 continue  # can't touch roles at/above the bot
@@ -419,7 +439,11 @@ class AltGuard(commands.Cog):
             if r not in restore:
                 restore.append(r)
         # final set: current roles, minus quarantine, plus restored, plus defaults
-        target = [r for r in member.roles if not r.is_default() and r != qrole]
+        # "Almost Verified" is mid-gate access only — it must never outlive the
+        # quarantine it was granted alongside, so it goes in the same bulk edit
+        # rather than waiting for the next sync tick to notice.
+        target = [r for r in member.roles
+                  if not r.is_default() and r != qrole and r.id != ALMOST_ROLE_ID]
         for r in restore + self._default_roles(member.guild):
             if r not in target:
                 target.append(r)
@@ -673,6 +697,116 @@ class AltGuard(commands.Cog):
                 pass
 
     # ------------------------------------------------------------------ poller
+    @tasks.loop(minutes=ALMOST_SYNC_MIN)
+    async def sync_almost_verified(self):
+        """Hand the 'Almost Verified' role to quarantined members whose link-open
+        scored a clean, high-timing-confidence pass — and take it back when they
+        stop being quarantined.
+
+        The bar is deliberately the SAME one auto-approve uses: the gate's
+        /api/clean-passes list, i.e. score_precapture.is_clean_pass — verdict
+        pass, not via the operator downgrade, clean environment, no spoof, full
+        confidence, corroborated geo, device match under the alt threshold,
+        fraud under the review trigger, IPQS-sourced intel, and HIGH timing
+        confidence. A merely-opened link earns nothing.
+
+        Watchlisted uids are skipped, matching auto-approve. Chat in one channel
+        is far weaker than a release, but a precapture has no OAuth binding, and
+        the watchlist is where the motivated accounts are.
+
+        Fails closed: gate unreachable -> nobody is granted anything.
+        """
+        if not (ALMOST_ROLE_ID and self.session and GATE_URL and SECRET):
+            return
+        guild = self.bot.get_guild(GUILD_ID)
+        role = guild.get_role(ALMOST_ROLE_ID) if guild else None
+        qrole = guild.get_role(QUARANTINE_ROLE_ID) if guild else None
+        if not role or not qrole:
+            return
+        try:
+            async with self.session.get(f"{GATE_URL}/api/clean-passes",
+                                        headers=_hmac_headers(), timeout=10) as r:
+                if r.status != 200:
+                    log.warning("almost-verified sync: gate HTTP %s", r.status)
+                    return
+                rows = (await r.json()).get("candidates", [])
+        except Exception as e:
+            log.debug("almost-verified sync failed: %s", e)
+            return
+        clean = {str(x["target_uid"]) for x in rows}
+
+        granted = 0
+        for m in qrole.members:
+            if m.bot or role in m.roles or str(m.id) not in clean:
+                continue
+            if qstore.is_watched(m.id):
+                continue
+            try:
+                await m.add_roles(role, reason="AltGuard: clean high-confidence link-open — #verify chat access")
+            except discord.HTTPException as e:
+                log.warning("almost-verified: couldn't grant to %s: %s", m.id, e)
+                continue
+            granted += 1
+            await self._almost_alert(guild, m, next((x for x in rows if str(x["target_uid"]) == str(m.id)), {}))
+            try:
+                await m.send(
+                    f"You opened your verify link for **{guild.name}** and everything we could see "
+                    f"looked clean — you just didn't finish the Discord login step.\n\n"
+                    f"You can now **talk in <#{VERIFY_CHANNEL_ID}>** while that's sorted out. Ask us "
+                    f"anything there, including why that login screen looks the way it does. "
+                    f"Finishing verification is still what unlocks the rest of the server."
+                )
+            except discord.HTTPException:
+                pass
+            await asyncio.sleep(2)
+
+        # take it back the moment they stop being quarantined (verified, released
+        # or re-quarantined elsewhere) — the role only ever means "mid-gate"
+        revoked = 0
+        for m in list(role.members):
+            if qrole in m.roles:
+                continue
+            try:
+                await m.remove_roles(role, reason="AltGuard: no longer mid-verification")
+                revoked += 1
+            except discord.HTTPException:
+                pass
+            await asyncio.sleep(2)
+        # print, not log.info: cog loggers have no handler attached in this bot,
+        # so log.info goes nowhere — which is why this loop looked dead while it
+        # was in fact working. Only speaks when something actually changed.
+        if granted or revoked:
+            print("[almost-verified] granted %d, revoked %d (of %d clean-pass uids)"
+                  % (granted, revoked, len(clean)), flush=True)
+
+    @sync_almost_verified.before_loop
+    async def _before_almost(self):
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(60)  # let the member cache chunk first
+
+    async def _almost_alert(self, guild, member, row):
+        ch = self.bot.get_channel(MODLOG_CHANNEL_ID)
+        if not ch:
+            return
+        e = discord.Embed(
+            title="🗣️ Almost Verified — chat unlocked in #verify",
+            color=0xE0A23B,
+            description=(
+                f"{member.mention} (`{member.id}`) opened their verify link, let the page "
+                f"fingerprint them, and stopped at the Discord authorize screen. The gate scored "
+                f"that open **clean** at **high timing confidence**, so they can now talk in "
+                f"<#{VERIFY_CHANNEL_ID}> — and nowhere else.\n\n"
+                f"They are **still quarantined** and still on the {PRUNE_HOURS_HINT}h prune clock."
+            ),
+        )
+        e.add_field(name="🕒 Timing", value=(row.get("timing") or "—")[:256], inline=False)
+        e.add_field(name="🌐 Connection", value=_precap_conn(row)[:1024], inline=False)
+        e.set_footer(text="No OAuth binding — anti-nuke, LinkGuard and every other rule still apply")
+        try:
+            await ch.send(embed=e)
+        except discord.HTTPException:
+            pass
+
     @tasks.loop(seconds=10)
     async def poll_results(self):
         if not self.session or not GATE_URL:
