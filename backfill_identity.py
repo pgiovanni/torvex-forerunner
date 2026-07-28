@@ -133,6 +133,47 @@ def parse_before_after(desc):
     return clean(m.group(1)), clean(m.group(2))
 
 
+# MEE6 writes no embed title — the event is a bolded sentence in the
+# description, and the footer says "User ID: …" rather than "ID: …".
+MEE6_DESC = (
+    ("joined the server", "join"),
+    ("left the server", "leave"),
+    ("has been banned", "ban"),
+    ("has been unbanned", "unban"),
+    ("was kicked", "kick"),
+    ("has been muted", "timeout"),
+    ("has been unmuted", "untimeout"),
+    ("updated their profile", "profile"),
+)
+# MEE6 mirrors the previous avatar onto its OWN CDN, so those links can outlive
+# the Discord account entirely — the single best source of historical faces.
+MD_LINK = re.compile(r"\[\[?(before|after)\]?\]\((https?://[^\s)]+)\)", re.I)
+
+
+def parse_mee6_profile(fields):
+    """A MEE6 'updated their profile!' embed carries one field per changed
+    attribute (Avatar / Nickname / Username), each holding before/after links
+    or plain values. Returns [(kind, before, after, before_url, after_url)]."""
+    out = []
+    for fl in fields or ():
+        name = (fl.get("name") or "").strip().lower()
+        val = fl.get("value") or ""
+        kind = {"avatar": "avatar", "nickname": "nick", "nick": "nick",
+                "username": "username", "display name": "global_name",
+                "global name": "global_name"}.get(name)
+        if kind is None:
+            continue
+        links = {m.group(1).lower(): m.group(2) for m in MD_LINK.finditer(val)}
+        if links:
+            out.append((kind, None, None, links.get("before"), links.get("after")))
+        else:
+            parts = [p.strip() for p in re.split(r"\s*(?:→|->|/)\s*", val) if p.strip()]
+            b = parts[0] if len(parts) > 1 else None
+            a = parts[-1] if parts else None
+            out.append((kind, b, a, None, None))
+    return out
+
+
 def rows_from_message(msg):
     """Yield ledger rows for one log message, whichever bot wrote it."""
     ts = ts_of(msg["id"])
@@ -166,6 +207,20 @@ def rows_from_message(msg):
             if key in title:
                 kind = k
                 break
+        if kind is None and not title:
+            # MEE6 shape: the sentence lives in the description
+            low = desc.lower()
+            for key, k in MEE6_DESC:
+                if key in low:
+                    kind = k
+                    break
+            if kind == "profile":
+                for pk, pb, pa, burl, aurl in parse_mee6_profile(e.get("fields")):
+                    out.append(dict(ts=ts, uid=uid, username=author, kind=pk,
+                                    before=pb, after=pa, by_uid=None, by_name=None,
+                                    reason="backfill:mee6",
+                                    before_url=burl, after_url=aurl))
+                continue
         if kind is None and title.startswith("ban"):
             kind = "ban"          # Carl case embeds: "ban | case 9"
         if kind is None and title.startswith("unban"):
@@ -201,12 +256,48 @@ def rows_from_message(msg):
         out.append(dict(ts=ts, uid=uid, username=author, kind=kind,
                         before=before, after=after, by_uid=None,
                         by_name=by_name,
-                        reason=(reason or "") + " [backfill]" if reason else "backfill"))
+                        reason=(reason or "") + " [backfill]" if reason else "backfill",
+                        before_url=None, after_url=None))
     return out
 
 
 # --------------------------------------------------------------------------- db
+def fetch_avatar(url, tok, conn, uid, max_kb=1024):
+    """Pull a historical avatar into avatar_blobs, keyed by the last path
+    segment (MEE6's CDN filename / Discord's asset hash). Returns that key."""
+    if not url:
+        return None
+    key = url.rstrip("/").split("/")[-1].split("?")[0].split(".")[0]
+    if not key:
+        return None
+    if conn.execute("SELECT 1 FROM avatar_blobs WHERE hash=?", (key,)).fetchone():
+        return key
+    headers = {"User-Agent": UA}
+    if "discord" in url:
+        headers["Authorization"] = "Bot " + tok
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=20) as f:
+            data = f.read(max_kb * 1024 + 1)
+    except Exception:
+        return key
+    if not data or len(data) > max_kb * 1024:
+        return key
+    ctype = "image/gif" if data[:6] in (b"GIF87a", b"GIF89a") else "image/png"
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO avatar_blobs (hash, uid, first_seen, content_type, size, data)"
+            " VALUES (?,?,?,?,?,?)", (key, uid, time.time(), ctype, len(data), data))
+    except Exception:
+        pass
+    return key
+
+
 def ensure_schema(conn):
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS avatar_blobs (
+               hash TEXT PRIMARY KEY, uid TEXT, first_seen REAL,
+               content_type TEXT, size INTEGER, data BLOB)""")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS identity_events (
                ts REAL, guild_id TEXT, uid TEXT, username TEXT, kind TEXT,
@@ -230,6 +321,9 @@ def main():
     ap.add_argument("--since", help="YYYY-MM-DD; skip older messages")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--sleep", type=float, default=0.35, help="pause between pages")
+    ap.add_argument("--avatars", action="store_true",
+                    help="also download historical avatar images into avatar_blobs")
+    ap.add_argument("--avatar-max-kb", type=int, default=1024)
     args = ap.parse_args()
 
     tok = token()
@@ -275,6 +369,12 @@ def main():
                         continue
                     if already_have(conn, r, args.guild):
                         continue
+                    if args.avatars and r["kind"] == "avatar":
+                        # historical faces: MEE6's CDN copy can outlive the account
+                        r["before"] = fetch_avatar(r.get("before_url"), tok, conn,
+                                                   r["uid"], args.avatar_max_kb) or r["before"]
+                        r["after"] = fetch_avatar(r.get("after_url"), tok, conn,
+                                                  r["uid"], args.avatar_max_kb) or r["after"]
                     conn.execute(
                         "INSERT INTO identity_events (ts,guild_id,uid,username,kind,before,after,by_uid,by_name,reason)"
                         " VALUES (?,?,?,?,?,?,?,?,?,?)",

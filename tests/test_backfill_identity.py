@@ -142,5 +142,51 @@ class SnowflakeTests(unittest.TestCase):
         self.assertAlmostEqual(ts_of(str(snowflake_for(dt))), dt.timestamp(), delta=1)
 
 
+class MEE6ShapeTests(unittest.TestCase):
+    """MEE6 writes no embed title — the event is a sentence in the description
+    and the footer reads 'User ID: …'. Missing this cost the first backfill run
+    18,003 messages for zero rows."""
+
+    def test_profile_avatar_update_yields_avatar_row_with_urls(self):
+        rows = rows_from_message(msg(embeds=[embed(
+            desc="**<@787473529922781245> updated their profile!**",
+            footer="User ID: 787473529922781245", author="xrdon",
+            fields=[("Avatar", "[[before]](https://cdn.mee6.xyz/moderator-logs/1/abc.png)")])]))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["kind"], "avatar")
+        self.assertEqual(rows[0]["uid"], "787473529922781245")
+        self.assertEqual(rows[0]["before_url"],
+                         "https://cdn.mee6.xyz/moderator-logs/1/abc.png")
+
+    def test_profile_nickname_update(self):
+        rows = rows_from_message(msg(embeds=[embed(
+            desc="**<@1377060168243609653> updated their profile!**", footer="User ID: 1377060168243609653",
+            fields=[("Nickname", "oldnick → newnick")])]))
+        self.assertEqual(rows[0]["kind"], "nick")
+        self.assertEqual(rows[0]["before"], "oldnick")
+        self.assertEqual(rows[0]["after"], "newnick")
+
+    def test_join_and_leave_sentences(self):
+        for sentence, kind in (("**📥 <@1311408487451988018> joined the server**", "join"),
+                               ("**📤 <@1311408487451988018> left the server**", "leave")):
+            rows = rows_from_message(msg(embeds=[embed(
+                desc=sentence, footer="User ID: 1311408487451988018", author="somebody")]))
+            self.assertEqual(rows[0]["kind"], kind, sentence)
+            self.assertEqual(rows[0]["uid"], "1311408487451988018")
+
+    def test_role_churn_is_ignored(self):
+        """Level-role spam is the bulk of that channel and is worthless here."""
+        rows = rows_from_message(msg(embeds=[embed(
+            desc="**⚔️ <@1311408487451988018> roles have changed**", footer="User ID: 1311408487451988018",
+            fields=[("✅ Added roles", "Level 1+")])]))
+        self.assertEqual(rows, [])
+
+    def test_user_id_footer_prefix_parsed(self):
+        rows = rows_from_message(msg(embeds=[embed(
+            desc="**📥 <@1234567890123456789> joined the server**",
+            footer="User ID: 1234567890123456789", author="n")]))
+        self.assertEqual(rows[0]["uid"], "1234567890123456789")
+
+
 if __name__ == "__main__":
     unittest.main()
