@@ -188,5 +188,64 @@ class MEE6ShapeTests(unittest.TestCase):
         self.assertEqual(rows[0]["uid"], "1234567890123456789")
 
 
+class OwnFormatTests(unittest.TestCase):
+    """Our own outputs are also historical sources: #leaves carries a plain-text
+    id+name pair, and mod_log has been posting embeds into the Quark channel
+    since 2025-07 — both were skipped by the first two backfill runs."""
+
+    def test_goodbye_line_yields_id_and_name(self):
+        rows = rows_from_message(msg(
+            content="<@891354525938647071> goodbye unlxced"))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["kind"], "leave")
+        self.assertEqual(rows[0]["uid"], "891354525938647071")
+        self.assertEqual(rows[0]["after"], "unlxced")
+
+    def test_own_display_name_embed_reads_fields(self):
+        rows = rows_from_message(msg(embeds=[embed(
+            title="🪪 Display name changed",
+            desc="**muxvior** — <@820399129481052182> (`820399129481052182`)",
+            footer="User ID 820399129481052182",
+            fields=[("Before", "kokichi"), ("After", "nagito")])]))
+        self.assertEqual(rows[0]["kind"], "global_name")
+        self.assertEqual(rows[0]["uid"], "820399129481052182")
+        self.assertEqual(rows[0]["before"], "kokichi")
+        self.assertEqual(rows[0]["after"], "nagito")
+
+    def test_own_avatar_embed_strips_backticks(self):
+        rows = rows_from_message(msg(embeds=[embed(
+            title="🖼️ Avatar changed",
+            desc="**muxvior** — <@820399129481052182> (`820399129481052182`)",
+            footer="User ID 820399129481052182",
+            fields=[("Before", "`b9a21982bafa97da9953b29888d8b3d8`"),
+                    ("After", "`2551d985667b5829cfb693ce77c66a1a`")])]))
+        self.assertEqual(rows[0]["kind"], "avatar")
+        self.assertEqual(rows[0]["before"], "b9a21982bafa97da9953b29888d8b3d8")
+
+    def test_footer_without_colon_still_yields_uid(self):
+        """Carl writes 'ID: 123'; we write 'User ID 123' with no colon."""
+        rows = rows_from_message(msg(embeds=[embed(
+            title="🏷️ Nickname changed", desc="**someone**",
+            footer="User ID 1311408487451988018",
+            fields=[("Before", "a"), ("After", "b")])]))
+        self.assertEqual(rows[0]["uid"], "1311408487451988018")
+
+    def test_username_pulled_from_bolded_description(self):
+        rows = rows_from_message(msg(embeds=[embed(
+            title="🏷️ Nickname changed",
+            desc="**muxvior** — <@820399129481052182>",
+            footer="User ID 820399129481052182",
+            fields=[("Before", "a"), ("After", "b")])]))
+        self.assertEqual(rows[0]["username"], "muxvior")
+
+    def test_default_avatar_placeholder_normalised(self):
+        rows = rows_from_message(msg(embeds=[embed(
+            title="🖼️ Avatar changed", desc="**x** <@1311408487451988018>",
+            footer="User ID 1311408487451988018",
+            fields=[("Before", "default"), ("After", "abc123")])]))
+        self.assertIsNone(rows[0]["before"])
+        self.assertEqual(rows[0]["after"], "abc123")
+
+
 if __name__ == "__main__":
     unittest.main()

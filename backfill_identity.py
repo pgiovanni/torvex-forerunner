@@ -94,7 +94,7 @@ def api_get(url, tok, tries=6):
 
 
 # --------------------------------------------------------------------------- parsing
-FOOTER_ID = re.compile(r"ID:\s*(\d{15,25})")
+FOOTER_ID = re.compile(r"ID:?\s*(\d{15,25})")
 MENTION_ID = re.compile(r"<@!?(\d{15,25})>")
 MEE6_LEFT = re.compile(r"\*\*(.+?)\*\*\s+just left the server")
 
@@ -113,7 +113,17 @@ CARL_TITLES = {
     "member timed out": "timeout",
     "member timeout removed": "untimeout",
     "avatar change": "avatar",
+    # our own mod_log embeds (posted into the Quark channel since 2025-07)
+    "display name changed": "global_name",
+    "avatar changed": "avatar",
+    "server avatar changed": "guild_avatar",
+    "timeout removed": "untimeout",
+    "username changed": "username",
 }
+
+# Our own goodbye line in #leaves — plain text carrying BOTH id and name, which
+# is exactly the pairing that survives an account deletion.
+GOODBYE = re.compile(r"<@!?(\d{15,25})>\s+goodbye\s+(\S+)")
 
 BEFORE_AFTER = re.compile(
     r"\*\*Before:\*\*\s*(.*?)\s*(?:/|\n)\s*\*?\*?\+?\*?\*?After:\*\*\s*(.*)",
@@ -181,11 +191,19 @@ def rows_from_message(msg):
 
     # MEE6's leave notices are plain text — the only name↔event link that
     # survives for the pre-embed era.
-    m = MEE6_LEFT.search(msg.get("content") or "")
+    content = msg.get("content") or ""
+    m = MEE6_LEFT.search(content)
     if m:
         out.append(dict(ts=ts, uid=None, username=m.group(1), kind="leave",
                         before=None, after=m.group(1), by_uid=None,
-                        by_name=None, reason="backfill:mee6-leaves"))
+                        by_name=None, reason="backfill:mee6-leaves",
+                        before_url=None, after_url=None))
+    g = GOODBYE.search(content)
+    if g:
+        out.append(dict(ts=ts, uid=g.group(1), username=g.group(2), kind="leave",
+                        before=None, after=g.group(2), by_uid=None,
+                        by_name=None, reason="backfill:goodbye",
+                        before_url=None, after_url=None))
 
     for e in msg.get("embeds", []):
         title = (e.get("title") or "").strip().lower()
@@ -203,7 +221,9 @@ def rows_from_message(msg):
                 uid = mm.group(1)
 
         kind = None
-        for key, k in CARL_TITLES.items():
+        # longest key first: "display name changed" must not be swallowed by
+        # the shorter "name change", which would mislabel it as a username edit
+        for key, k in sorted(CARL_TITLES.items(), key=lambda kv: -len(kv[0])):
             if key in title:
                 kind = k
                 break
@@ -230,6 +250,10 @@ def rows_from_message(msg):
         if kind is None:
             continue
 
+        if author is None:
+            am = re.match(r"\s*\*\*(.+?)\*\*", desc)
+            if am:
+                author = am.group(1).strip()
         before, after = parse_before_after(desc)
         if after is None and kind in ("join", "leave", "ban", "unban", "kick"):
             after = author
@@ -243,6 +267,15 @@ def rows_from_message(msg):
                 by_name = v
             elif "reason" in n:
                 reason = v
+            # our own embeds put the diff in fields rather than the description
+            elif n == "before" and before is None:
+                before = v.strip("`") or None
+            elif n == "after" and after is None:
+                after = v.strip("`") or None
+        if before in ("*(none)*", "default"):
+            before = None
+        if after in ("*(none)*", "default"):
+            after = None
         # Carl case embeds put everything in the description instead of fields
         if by_name is None:
             bm = re.search(r"\*\*Responsible moderator:\*\*\s*([^/\n]+)", desc)
