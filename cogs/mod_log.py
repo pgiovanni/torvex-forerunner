@@ -460,6 +460,21 @@ class ModLog(commands.Cog):
                        by_name   TEXT,
                        reason    TEXT
                    )""")
+            # Avatar bytes, deduped by Discord's asset hash. Stored as a BLOB
+            # rather than base64 — SQLite handles small blobs faster than the
+            # filesystem and base64 would inflate every row by a third for
+            # nothing. The point is that a CDN avatar URL dies with the account:
+            # if we only kept the hash, a deleted adversary's picture is gone.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS avatar_blobs (
+                       hash        TEXT PRIMARY KEY,
+                       uid         TEXT,
+                       first_seen  REAL,
+                       content_type TEXT,
+                       size        INTEGER,
+                       data        BLOB
+                   )""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_avatar_uid ON avatar_blobs(uid)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ident_uid ON identity_events(uid, ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ident_kind ON identity_events(guild_id, kind, ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ident_after ON identity_events(after)")
@@ -1160,6 +1175,11 @@ class ModLog(commands.Cog):
         # single most valuable row we can hold on an account that later deletes.
         self._record_identity(guild.id, member, "join",
                               after=member.global_name or member.name)
+        try:  # baseline the avatar at join so a later change has a "before"
+            if member.avatar is not None:
+                await self._store_avatar(member, member.avatar)
+        except Exception:
+            pass
         log_ch, _ = self._members_log_channel(guild)
         if log_ch is None:
             return
@@ -1322,6 +1342,9 @@ class ModLog(commands.Cog):
         # never a flood vector the way reaction-role toggles are).
         if before.nick != after.nick:
             await self._log_name_event(after, "nick", before.nick, after.nick)
+        if getattr(before, "guild_avatar", None) != getattr(after, "guild_avatar", None):
+            await self._log_avatar_event(after, before.guild_avatar, after.guild_avatar,
+                                         kind="guild_avatar")
         if getattr(before, "timed_out_until", None) != getattr(after, "timed_out_until", None):
             await self._log_timeout_event(before, after)
         if before.roles == after.roles:
@@ -1471,6 +1494,70 @@ class ModLog(commands.Cog):
         embed.set_footer(text=f"User ID {member.id}")
         await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
+    async def _store_avatar(self, user, asset):
+        """Persist an avatar's bytes once, keyed by Discord's asset hash.
+
+        Returns the hash (stored or not) so the event row always records WHICH
+        picture it was, even when byte storage is off or the fetch fails.
+        """
+        if asset is None:
+            return None
+        ahash = getattr(asset, "key", None) or str(asset)
+        cfg = get_config(getattr(getattr(user, "guild", None), "id", 0) or 0)
+        if not cfg.get("msglog_avatar_bytes", 1):
+            return ahash
+        try:
+            with self._conn() as c:
+                if c.execute("SELECT 1 FROM avatar_blobs WHERE hash=?", (ahash,)).fetchone():
+                    return ahash  # deduped — same picture, already held
+        except Exception:
+            return ahash
+        max_kb = int(cfg.get("msglog_avatar_max_kb", 1024))
+        try:
+            data = await asset.read()
+        except Exception:
+            return ahash
+        if not data or len(data) > max_kb * 1024:
+            return ahash
+        ctype = "image/gif" if bytes(data[:6]) in (b"GIF87a", b"GIF89a") else "image/png"
+        try:
+            with self._conn() as c:
+                c.execute(
+                    "INSERT OR IGNORE INTO avatar_blobs"
+                    " (hash, uid, first_seen, content_type, size, data) VALUES (?,?,?,?,?,?)",
+                    (ahash, str(getattr(user, "id", "")), time.time(), ctype, len(data), data))
+        except Exception:
+            pass
+        return ahash
+
+    async def _log_avatar_event(self, member, old_asset, new_asset, kind="avatar"):
+        """Profile-picture change. The new picture's bytes are captured because
+        a reused avatar is one of the strongest cheap alt signals there is, and
+        the CDN copy vanishes the moment the account does."""
+        guild = member.guild
+        if not is_enabled(guild.id, "msglog"):
+            return
+        cfg = get_config(guild.id)
+        if not cfg.get("msglog_names", 1):
+            return
+        if member.bot and not cfg.get("msglog_log_bots", 0):
+            return
+        old_hash = getattr(old_asset, "key", None) if old_asset else None
+        new_hash = await self._store_avatar(member, new_asset)
+        self._record_identity(guild.id, member, kind, old_hash, new_hash)
+        log_ch = self._log_channel(guild, cfg)
+        if log_ch is None:
+            return
+        embed = discord.Embed(
+            title="🖼️ Avatar changed" if kind == "avatar" else "🖼️ Server avatar changed",
+            color=COLOR_ROLE, description=self._member_line(member))
+        embed.add_field(name="Before", value=f"`{old_hash or 'default'}`", inline=True)
+        embed.add_field(name="After", value=f"`{new_hash or 'default'}`", inline=True)
+        if new_asset is not None:
+            embed.set_thumbnail(url=new_asset.url)
+        embed.set_footer(text=f"User ID {member.id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
     async def _log_timeout_event(self, before, after):
         """Timeout applied / lifted. Previously invisible entirely — a mod
         timing someone out left no trace in our logs at all."""
@@ -1525,7 +1612,8 @@ class ModLog(commands.Cog):
             changes.append(("username", before.name, after.name))
         if getattr(before, "global_name", None) != getattr(after, "global_name", None):
             changes.append(("global_name", before.global_name, after.global_name))
-        if not changes:
+        avatar_changed = before.avatar != after.avatar
+        if not changes and not avatar_changed:
             return
         for guild in self.bot.guilds:
             member = guild.get_member(after.id)
@@ -1534,6 +1622,11 @@ class ModLog(commands.Cog):
             for kind, old, new in changes:
                 try:
                     await self._log_name_event(member, kind, old, new)
+                except Exception:
+                    pass
+            if avatar_changed:
+                try:
+                    await self._log_avatar_event(member, before.avatar, after.avatar)
                 except Exception:
                     pass
 
@@ -1968,6 +2061,29 @@ class ModLog(commands.Cog):
             color=COLOR_ROLE, description=_trunc("\n".join(lines), 4000))
         embed.set_footer(text=f"User ID {uid} · {len(rows)} event(s)")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @msglog.command(name="forget", description="Erase all identity records + stored avatars for a user ID.")
+    @app_commands.describe(user_id="Numeric user ID to erase from the identity ledger")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def forget_cmd(self, interaction: discord.Interaction, user_id: str):
+        """Right-to-erasure path. The ledger holds names and profile PICTURES,
+        and this server skews young — an under-age purge (or any 'delete my
+        data' request) has to be one command, not a hand-written DELETE."""
+        uid = "".join(ch for ch in user_id if ch.isdigit())
+        if not uid:
+            await interaction.response.send_message("Give me a numeric user ID.", ephemeral=True)
+            return
+        with self._conn() as c:
+            ev = c.execute("DELETE FROM identity_events WHERE uid=?", (uid,)).rowcount
+            # only drop blobs this uid alone owns — a shared/default asset hash
+            # could belong to someone else's history too
+            av = c.execute(
+                "DELETE FROM avatar_blobs WHERE uid=? AND hash NOT IN"
+                " (SELECT after FROM identity_events WHERE after IS NOT NULL)", (uid,)).rowcount
+        await interaction.response.send_message(
+            f"🧹 Erased **{ev}** identity event(s) and **{av}** stored avatar(s) for `{uid}`.\n"
+            "Message archive and other tables are untouched — purge those separately if needed.",
+            ephemeral=True)
 
     @msglog.command(name="roles", description="Toggle role-change logging on or off.")
     @app_commands.describe(enabled="On = log member role add/remove + role create/delete/edit")
