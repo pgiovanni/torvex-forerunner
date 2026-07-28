@@ -732,8 +732,21 @@ class ModLog(commands.Cog):
         if self._skip_logging(cfg, payload.channel_id, log_ch):
             return
 
+        # A message the author nukes within seconds is the strongest cheap
+        # "they knew that was bad" signal there is, and the mass-scrub tripwire
+        # can't see it — that needs 8 deletes in 5 minutes, and this is one.
+        # bacon hair's slur (2026-07-11) lived 5.5s: archived, but nobody was
+        # told, and it surfaced only in an unrelated investigation months later.
+        fast = None
+        if kind == "self" and row and not row.get("bot") and row.get("created_ts"):
+            alive = time.time() - row["created_ts"]
+            if 0 <= alive <= float(cfg.get("msglog_fastdel_secs", 20)):
+                fast = alive
+
         if hit:
             title, color = "🛡️ Message deleted by moderator", COLOR_MOD_DELETE
+        elif fast is not None:
+            title, color = f"⚡ Deleted {fast:.0f}s after posting", COLOR_MOD_DELETE
         else:
             title, color = "🗑️ Message deleted", COLOR_SELF_DELETE
         embed = discord.Embed(title=title, color=color)
@@ -816,9 +829,17 @@ class ModLog(commands.Cog):
         elif files:
             embed.add_field(name="🖼️ Deleted media re-posted below", value="​", inline=False)
         embed.set_footer(text=f"Message ID {payload.message_id}")
-        await log_ch.send(embed=embed,
-                          files=discord.utils.MISSING if route_media else (files or discord.utils.MISSING),
-                          allowed_mentions=discord.AllowedMentions.none())
+        ping = None
+        if fast is not None and cfg.get("msglog_fastdel_ping", 1):
+            # deliberately pings: the whole failure mode was a log entry nobody
+            # read until months later
+            who = cfg.get("msglog_alert_ping", guild.owner_id)
+            if who:
+                ping = f"<@&{who}>" if str(who) in {str(r.id) for r in guild.roles} else f"<@{who}>"
+        await log_ch.send(
+            content=ping, embed=embed,
+            files=discord.utils.MISSING if route_media else (files or discord.utils.MISSING),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=True))
         if route_media:
             ref = discord.Embed(title="🖼️ Deleted media", color=color)
             ref.description = (f"From message `{payload.message_id}` in <#{payload.channel_id}>"
@@ -1208,6 +1229,14 @@ class ModLog(commands.Cog):
         if entry.action is A.member_role_update:
             self._note_role_change(entry)
             return
+        automod_actions = tuple(
+            getattr(A, n) for n in ("automod_rule_create", "automod_rule_update",
+                                    "automod_rule_delete") if hasattr(A, n))
+        if automod_actions and entry.action in automod_actions:
+            # Disabling the slur filter is a silent, high-impact change: the
+            # protection just stops existing and nothing else says so.
+            await self._log_automod_rule_event(entry)
+            return
         if entry.action is A.member_update:
             # nickname edits AND timeouts both land here; on_member_update reads
             # this cache to name the actor
@@ -1254,6 +1283,41 @@ class ModLog(commands.Cog):
         embed.add_field(name="By", value=self._mod_line(rec), inline=True)
         embed.add_field(name="Reason", value=_trunc(rec["reason"] or "No reason provided"), inline=False)
         embed.set_footer(text=f"User ID {target_id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    async def _log_automod_rule_event(self, entry):
+        """AutoMod rule created / edited / deleted, with the diff."""
+        guild = entry.guild
+        cfg = get_config(guild.id)
+        if not cfg.get("msglog_automod", 1):
+            return
+        log_ch = self._log_channel(guild, cfg)
+        if log_ch is None:
+            return
+        A = discord.AuditLogAction
+        if entry.action == getattr(A, "automod_rule_create", None):
+            title, color = "🆕 AutoMod rule created", COLOR_JOIN
+        elif entry.action == getattr(A, "automod_rule_delete", None):
+            title, color = "🗑️ AutoMod rule deleted", COLOR_MOD_DELETE
+        else:
+            title, color = "⚙️ AutoMod rule changed", COLOR_ROLE
+        name = getattr(entry.target, "name", None) or str(getattr(entry.target, "id", "?"))
+        lines = [f"**{_plain(name)}**"]
+        for change in (entry.changes or []):
+            key = getattr(change, "key", "?")
+            b, a = getattr(change, "before", None), getattr(change, "after", None)
+            if key == "enabled":
+                lines.append(f"• **enabled**: {b} → {a}"
+                             + ("  ⚠️ **protection turned OFF**" if a is False else ""))
+            else:
+                lines.append(f"• `{key}`: {_trunc(_plain(str(b)), 120)} → "
+                             f"{_trunc(_plain(str(a)), 120)}")
+        embed = discord.Embed(title=title, color=color, description=_trunc("\n".join(lines), 3000))
+        embed.add_field(name="By", value=self._mod_line(
+            {"by_id": entry.user_id, "by_name": str(entry.user) if entry.user else None}),
+            inline=True)
+        if entry.reason:
+            embed.add_field(name="Reason", value=_trunc(entry.reason), inline=False)
         await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     def _record_identity(self, guild_id, user, kind, before=None, after=None,
@@ -1597,6 +1661,49 @@ class ModLog(commands.Cog):
         if rec and rec.get("reason"):
             embed.add_field(name="Reason", value=_trunc(rec["reason"]), inline=False)
         embed.set_footer(text=f"User ID {after.id}")
+        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    @commands.Cog.listener()
+    async def on_automod_action(self, execution: discord.AutoModAction):
+        """AutoMod-blocked content is the ONE thing the archive can never hold.
+
+        A blocked message is never created, so on_message never fires and no
+        row is ever written — meaning the single worst thing anyone tried to
+        say is precisely what we have no record of. Discord hands us the
+        rejected text here and nowhere else, so this is the only chance to keep
+        it. Also records a ledger row: repeat attempts are a pattern.
+        """
+        guild = self.bot.get_guild(execution.guild_id)
+        if guild is None or not is_enabled(guild.id, "msglog"):
+            return
+        cfg = get_config(guild.id)
+        if not cfg.get("msglog_automod", 1):
+            return
+        log_ch = self._log_channel(guild, cfg)
+        if log_ch is None:
+            return
+        member = guild.get_member(execution.user_id)
+        action = getattr(getattr(execution, "action", None), "type", None)
+        blocked = getattr(execution, "content", None) or getattr(execution, "matched_content", None)
+        self._record_identity(
+            guild.id, member or execution.user_id, "automod",
+            before=getattr(execution, "matched_keyword", None),
+            after=_trunc(blocked or "", 400),
+            reason=f"rule:{execution.rule_id} action:{getattr(action, 'name', action)}")
+        embed = discord.Embed(
+            title="🛡️ AutoMod blocked a message", color=COLOR_MOD_DELETE,
+            description=(self._member_line(member) if member
+                         else f"<@{execution.user_id}> (`{execution.user_id}`)"))
+        if execution.channel_id:
+            embed.add_field(name="Channel", value=f"<#{execution.channel_id}>", inline=True)
+        embed.add_field(name="Action", value=str(getattr(action, "name", action)), inline=True)
+        if getattr(execution, "matched_keyword", None):
+            embed.add_field(name="Matched", value=_trunc(_plain(execution.matched_keyword), 200),
+                            inline=True)
+        if blocked:
+            # the payload Discord refused to deliver — kept verbatim, escaped
+            embed.add_field(name="Blocked content", value=_trunc(_plain(blocked)), inline=False)
+        embed.set_footer(text=f"User ID {execution.user_id} · rule {execution.rule_id}")
         await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @commands.Cog.listener()
@@ -2062,6 +2169,18 @@ class ModLog(commands.Cog):
         embed.set_footer(text=f"User ID {uid} · {len(rows)} event(s)")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @msglog.command(name="automod", description="Toggle AutoMod block + rule-change logging.")
+    @app_commands.describe(enabled="On = log what AutoMod blocks and any rule changes")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def automod_cmd(self, interaction: discord.Interaction, enabled: bool):
+        set_config(interaction.guild.id, msglog_automod=1 if enabled else 0)
+        await interaction.response.send_message(
+            f"🛡️ AutoMod logging **{'on' if enabled else 'off'}** — "
+            + ("blocked content and rule changes post to the mod-log. Blocked messages "
+               "exist nowhere else: they are never created, so the archive never sees them."
+               if enabled else "AutoMod activity is no longer logged."),
+            ephemeral=True)
+
     @msglog.command(name="forget", description="Erase all identity records + stored avatars for a user ID.")
     @app_commands.describe(user_id="Numeric user ID to erase from the identity ledger")
     @app_commands.checks.has_permissions(administrator=True)
@@ -2159,6 +2278,7 @@ class ModLog(commands.Cog):
             f"Voice: {'🟢' if cfg.get('msglog_voice', 1) else '🔴'} · "
             f"Roles: {'🟢' if cfg.get('msglog_roles', 1) else '🔴'} · "
             f"Names/timeouts: {'🟢' if cfg.get('msglog_names', 1) else '🔴'} · "
+            f"AutoMod: {'🟢' if cfg.get('msglog_automod', 1) else '🔴'} · "
             f"Channels: {'🟢' if cfg.get('msglog_channels', 1) else '🔴'} · "
             f"Expressions: {'🟢' if cfg.get('msglog_expressions', 1) else '🔴'}",
         ]

@@ -173,5 +173,42 @@ class TimeoutClassificationTests(unittest.TestCase):
         self.assertEqual(self.classify(1500, 3000, 1000), "timeout")
 
 
+class FastDeleteTests(unittest.TestCase):
+    """A message the author nukes within seconds is the strongest cheap
+    "they knew that was bad" signal. bacon hair's slur lived 5.5s (2026-07-11):
+    archived correctly, but the mass-scrub tripwire needs 8 deletes in 5 min,
+    so a single message tripped nothing and it surfaced months later only by
+    accident, during an unrelated investigation."""
+
+    @staticmethod
+    def is_fast(created_ts, now, kind="self", is_bot=False, threshold=20):
+        if kind != "self" or is_bot or not created_ts:
+            return None
+        alive = now - created_ts
+        return alive if 0 <= alive <= threshold else None
+
+    def test_bacon_hair_case_would_fire(self):
+        self.assertAlmostEqual(self.is_fast(1000.0, 1005.5), 5.5, places=1)
+
+    def test_slow_delete_does_not_fire(self):
+        self.assertIsNone(self.is_fast(1000.0, 1000.0 + 3600))
+
+    def test_boundary_is_inclusive(self):
+        self.assertIsNotNone(self.is_fast(1000.0, 1020.0))
+        self.assertIsNone(self.is_fast(1000.0, 1020.1))
+
+    def test_mod_delete_is_not_a_self_scrub(self):
+        self.assertIsNone(self.is_fast(1000.0, 1002.0, kind="mod"))
+
+    def test_bots_excluded(self):
+        self.assertIsNone(self.is_fast(1000.0, 1002.0, is_bot=True))
+
+    def test_missing_timestamp_is_safe(self):
+        self.assertIsNone(self.is_fast(None, 1002.0))
+
+    def test_clock_skew_negative_alive_ignored(self):
+        self.assertIsNone(self.is_fast(2000.0, 1000.0))
+
+
 if __name__ == "__main__":
     unittest.main()
