@@ -594,17 +594,23 @@ class Economy(commands.Cog):
 
     # ── /levels ───────────────────────────────────────────────────────────────
     @app_commands.command(name="chat-levels", description="Top 10 members by chat level, Peepo Bucks, and Regular Bucks.")
-    @app_commands.describe(scope="global = all servers, local = this server only (default)")
+    @app_commands.describe(scope="global = all servers, local = this server only (default)",
+                           sort="rank by experience (default) or Peepo Bucks")
     @app_commands.choices(scope=[
         app_commands.Choice(name="local (this server)", value="local"),
         app_commands.Choice(name="global (all servers)", value="global"),
+    ], sort=[
+        app_commands.Choice(name="experience level", value="xp"),
+        app_commands.Choice(name="peepo bucks", value="bucks"),
     ])
-    async def levels(self, interaction: discord.Interaction, scope: str = "local"):
+    async def levels(self, interaction: discord.Interaction, scope: str = "local", sort: str = "xp"):
         medals = ["🥇", "🥈", "🥉"]
+        by_bucks = sort == "bucks"
 
         if scope == "global":
+            order = "peepo_bucks" if by_bucks else "xp"
             rows = await self.pool.fetch(
-                "SELECT discord_id, level, peepo_bucks, regular_bucks FROM discord_users ORDER BY xp DESC LIMIT 10"
+                f"SELECT discord_id, level, peepo_bucks, regular_bucks FROM discord_users ORDER BY {order} DESC LIMIT 10"
             )
             title = "⭐ Leaderboard — Global"
             lines = [
@@ -614,21 +620,26 @@ class Economy(commands.Cog):
         else:
             guild_id = str(interaction.guild_id)
             member_ids = [str(m.id) for m in interaction.guild.members if not m.bot]
-            # Pull bucks from discord_users, levels from guild_xp
-            rows = await self.pool.fetch("""
+            # Pull bucks from discord_users, levels from guild_xp. Peepo Bucks are
+            # a global balance, so the bucks sort ranks the same numbers here —
+            # just restricted to this server's members.
+            order = "peepo_bucks" if by_bucks else "g.xp"
+            rows = await self.pool.fetch(f"""
                 SELECT g.discord_id, g.level, g.xp,
                        COALESCE(u.peepo_bucks, 0)  AS peepo_bucks,
                        COALESCE(g.regular_bucks, 0) AS regular_bucks
                 FROM guild_xp g
                 LEFT JOIN discord_users u ON u.discord_id = g.discord_id
                 WHERE g.guild_id = $1 AND g.discord_id = ANY($2)
-                ORDER BY g.xp DESC LIMIT 10
+                ORDER BY {order} DESC LIMIT 10
             """, guild_id, member_ids)
             title = f"⭐ Leaderboard — {interaction.guild.name}"
             lines = [
                 f"{medals[i] if i < 3 else f'{i+1}.'} <@{r['discord_id']}> — Lv.{r['level']} | {r['peepo_bucks']:,} 💰 | {r['regular_bucks']:,} 💵"
                 for i, r in enumerate(rows)
             ]
+        if by_bucks:
+            title += " · by Peepo Bucks 💰"
         embed = discord.Embed(title=title, description="\n".join(lines) or "No data yet.", color=0x7289DA)
         await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
