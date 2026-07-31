@@ -37,6 +37,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import time
 
 import aiohttp
@@ -139,6 +140,9 @@ QUARANTINE_ON_JOIN = os.environ.get("ALTGUARD_QUARANTINE_ON_JOIN", "0") != "0"
 AUTOBAN_EVASION = os.environ.get("ALTGUARD_AUTOBAN_EVASION", "0") != "0"
 # Spoof score (0-100) at/above which a member is auto-BANNED. 0 disables.
 SPOOF_BAN_THRESHOLD = _env_int("ALTGUARD_SPOOF_BAN", 60)
+# Device-match % at/above which accounts count as one confirmed-alt GROUP for
+# /altguard-release cascading. Mirror of the gate's MATCH_THRESHOLD verdict bar.
+RELEASE_MATCH_PCT = _env_int("ALTGUARD_RELEASE_MATCH_PCT", 85)
 
 
 def _verify_link(uid: int, gid: int) -> str:
@@ -1448,29 +1452,136 @@ class AltGuard(commands.Cog):
             embed.set_footer(text="No similar devices on file — stands alone.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="altguard-release", description="Clear a quarantine and restore removed roles")
+    async def _alt_group(self, uid: int, cap: int = 12) -> set:
+        """The confirmed-alt GROUP for uid: gate device matches at/above the
+        detection bar (RELEASE_MATCH_PCT), followed transitively so A-B-C twins
+        resolve even when A only matched B. Plus reason-links from the store
+        ("alt of X" in either direction) as a net for fingerprint drift. Never
+        raises — a dead gate just shrinks the group to the reason-links."""
+        seen, frontier, looked = {uid}, [uid], 0
+        while frontier and looked < cap:
+            cur = frontier.pop(0)
+            looked += 1
+            try:
+                async with self.session.get(
+                    f"{GATE_URL}/api/lookup", params={"uid": str(cur)},
+                    headers=_hmac_headers(), timeout=10,
+                ) as r:
+                    data = await r.json()
+            except Exception as e:
+                log.warning("alt-group lookup failed for %s: %s", cur, e)
+                continue
+            for m in data.get("matches", []):
+                try:
+                    aid, pct = int(m["uid"]), int(m.get("pct", 0))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if pct >= RELEASE_MATCH_PCT and aid not in seen:
+                    seen.add(aid)
+                    frontier.append(aid)
+        # reason-links: members cascade-quarantined FROM anyone in the group,
+        # and whoever a group member was itself cascaded from.
+        for gid_ in list(seen):
+            for aid in qstore.quarantined_alts_of(gid_):
+                seen.add(int(aid))
+            mt = re.search(r"alt of (\d+)", qstore.quarantine_reason(gid_) or "")
+            if mt:
+                seen.add(int(mt.group(1)))
+        return seen
+
+    @app_commands.command(
+        name="altguard-release",
+        description="Clear a quarantine and restore removed roles — releases the whole matched-alt group",
+    )
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def release(self, interaction: discord.Interaction, member: discord.Member):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = interaction.guild
+        qrole = guild.get_role(QUARANTINE_ROLE_ID)
+
+        # Releasing one confirmed alt vouches for the whole group: find every
+        # fingerprint-linked account BEFORE releasing (release pops stored rows).
+        group = await self._alt_group(member.id)
+
         ok, restored, aged = await self._release(member)
         # Mark trusted: their device (if on file) stays a live detector — a NEW
         # account matching it is still quarantined for review — but the alt-cascade
         # will never re-quarantine this member again.
         qstore.clear(member.id, f"released by {interaction.user}")
+
+        # Cascade-release: every in-server member of the group still held goes
+        # out with them. This does NOT whitelist the device — a future alt still
+        # gets quarantined on join and stays held on a fail verdict.
+        also, failed = [], []
+        for aid in group:
+            if aid == member.id:
+                continue
+            alt = guild.get_member(aid)
+            if not alt:
+                continue
+            held = qstore.is_quarantined(aid) or (qrole and qrole in alt.roles)
+            if not held:
+                continue
+            a_ok, _, _ = await self._release(alt)
+            qstore.clear(aid, f"released by {interaction.user} (group release with {member.id})")
+            (also if a_ok else failed).append(alt)
+
+        if also or failed:
+            await self._group_release_note(guild, interaction.user, member, also, failed)
+
+        roles = ", ".join(r.mention for r in restored) if restored else "no stored roles"
+        age_note = (f"\n-# No age band on file — defaulted to **{aged}**; they can change it themselves."
+                    if aged else "")
+        group_note = ""
+        if also:
+            group_note = ("\n🔗 Group release — also cleared: "
+                          + ", ".join(a.mention for a in also))
+        if failed:
+            group_note += ("\n⚠️ Couldn't restore (permissions/hierarchy): "
+                           + ", ".join(a.mention for a in failed))
         if ok:
-            roles = ", ".join(r.mention for r in restored) if restored else "no stored roles"
-            age_note = (f"\n-# No age band on file — defaulted to **{aged}**; they can change it themselves."
-                        if aged else "")
-            await interaction.response.send_message(
-                f"✅ Cleared quarantine on {member.mention}. Restored: {roles}.{age_note}\n"
-                f"-# Marked trusted — they won't be re-flagged, but anyone matching their device is still held for review.",
+            await interaction.followup.send(
+                f"✅ Cleared quarantine on {member.mention}. Restored: {roles}.{age_note}{group_note}\n"
+                f"-# Marked trusted — they won't be re-flagged, but any NEW account matching their device is still held for review.",
                 ephemeral=True,
             )
         else:
-            await interaction.response.send_message(
-                f"⚠️ Couldn't fully restore {member.mention} — check my permissions/role hierarchy.",
+            await interaction.followup.send(
+                f"⚠️ Couldn't fully restore {member.mention} — check my permissions/role hierarchy.{group_note}",
                 ephemeral=True,
             )
+
+    async def _group_release_note(self, guild, mod, member, also, failed):
+        """Durable mod-log record of a cascade release — who vouched, for whom."""
+        ch = guild.get_channel(MODLOG_CHANNEL_ID)
+        if not ch:
+            return
+        embed = discord.Embed(
+            title="🔗 Alt-group released",
+            description=(
+                f"{mod.mention} released {member.mention} — the linked accounts below "
+                f"were cleared with them as one confirmed-alt group."
+            ),
+            color=0x57F287,
+        )
+        if also:
+            embed.add_field(
+                name="Also released",
+                value=", ".join(f"{a.mention} (`{a.id}`)" for a in also)[:1024],
+                inline=False,
+            )
+        if failed:
+            embed.add_field(
+                name="⚠️ Release failed (permissions/hierarchy)",
+                value=", ".join(f"{a.mention} (`{a.id}`)" for a in failed)[:1024],
+                inline=False,
+            )
+        embed.set_footer(text="Device stays a live detector — new matching accounts are still held on join.")
+        try:
+            await ch.send(embed=embed)
+        except discord.Forbidden:
+            pass
 
     @app_commands.command(
         name="altguard-watch",

@@ -254,6 +254,18 @@ def quarantine_reason(uid):
     return row["reason"] if row else None
 
 
+def quarantined_alts_of(uid):
+    """uids whose quarantine reason marks them as a cascade of `uid`
+    ("alt of <uid> (same device)"). The trailing space in the pattern keeps
+    uid 123 from matching 'alt of 1234'."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT uid FROM quarantined WHERE reason LIKE ?",
+            (f"%alt of {uid} %",),
+        ).fetchall()
+    return [r["uid"] for r in rows]
+
+
 def quarantined_since(uid):
     """Epoch seconds when the quarantine role was applied (the verify clock
     start). None if not on record."""
