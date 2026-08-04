@@ -17,7 +17,11 @@ import json
 import time
 import sqlite3
 
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "security_config.db"))
+# Relocatable so the web dashboard (separate user/service) can share this file
+# without being granted write access to the bot directory. Falls back to the
+# in-repo path when the env var is unset.
+DB_PATH = os.environ.get("TORVEX_SECURITY_DB") or os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "security_config.db"))
 
 # Default config — everything OFF / safe. A guild only departs from these once an
 # admin explicitly enables a feature.
