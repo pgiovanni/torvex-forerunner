@@ -19,6 +19,7 @@ os.environ["TORVEX_SECURITY_DB"] = os.path.join(_TMP, "security_config.db")
 os.environ.setdefault("ALTGUARD_GUILD_ID", "111")
 
 import discord  # noqa: E402
+import quarantine_store as qstore  # noqa: E402
 from utils import security_config as sc  # noqa: E402
 from utils import quarantine as qt  # noqa: E402
 
@@ -218,6 +219,95 @@ class QuarantineHelperTests(unittest.TestCase):
         qrole = FakeRole(500, "Q", position=9)
         self.assertTrue(qt.is_held(FakeMember(9, g, [EVERYONE, qrole])))
         self.assertFalse(qt.is_held(FakeMember(9, g, [EVERYONE])))
+
+
+class EditableMember(FakeMember):
+    """FakeMember that records the single bulk role edit apply/lift performs."""
+
+    def __init__(self, uid, guild, roles=(), raises=None):
+        super().__init__(uid, guild, roles)
+        self.edits = []
+        self.raises = raises
+
+    async def edit(self, roles=None, reason=None):
+        if self.raises:
+            raise self.raises
+        self.edits.append(list(roles))
+        self.roles = [EVERYONE] + list(roles)
+
+
+class ApplyLiftTests(unittest.IsolatedAsyncioTestCase):
+    """The round trip that matters: what they lose going in is exactly what they
+    get back coming out."""
+
+    def setUp(self):
+        sc._cache.clear()
+        qstore.init()
+        for uid in (7001, 7002, 7003, 7004):
+            qstore.pop(uid)
+
+    async def test_round_trip_restores_exactly(self):
+        sc.set_config(4001, quarantine_role_id=500)
+        sc._cache.clear()
+        g = _guild(4001, bot_pos=10)
+        qrole = FakeRole(500, "Q", position=9)
+        g._roles[500] = qrole
+        mod, colour = FakeRole(601, "Mod", position=5), FakeRole(602, "Blue", position=2)
+        g._roles.update({601: mod, 602: colour})
+        m = EditableMember(7001, g, [EVERYONE, mod, colour])
+
+        ok, removed, err = await qt.apply(m, "testing")
+        self.assertTrue(ok, err)
+        self.assertEqual({r.id for r in removed}, {601, 602})
+        self.assertIn(qrole, m.roles)
+        self.assertNotIn(mod, m.roles)
+
+        ok, restored, err = await qt.lift(m, "testing")
+        self.assertTrue(ok, err)
+        self.assertEqual({r.id for r in restored}, {601, 602})
+        self.assertNotIn(qrole, m.roles)
+        self.assertIn(mod, m.roles)
+
+    async def test_roles_are_stored_before_they_are_removed(self):
+        """If the role edit fails, the snapshot must still exist — otherwise a
+        half-applied quarantine loses roles with no way back."""
+        sc.set_config(4002, quarantine_role_id=500)
+        sc._cache.clear()
+        g = _guild(4002)
+        g._roles[500] = FakeRole(500, "Q", position=9)
+        mod = FakeRole(603, "Mod", position=5)
+        g._roles[603] = mod
+        m = EditableMember(7002, g, [EVERYONE, mod], raises=discord.Forbidden.__new__(discord.Forbidden))
+
+        ok, removed, err = await qt.apply(m, "testing")
+        self.assertFalse(ok)
+        self.assertIsNotNone(err)
+        self.assertEqual(qstore.get(7002), [603])   # recoverable
+
+    async def test_lift_in_another_guild_does_not_eat_the_snapshot(self):
+        """Held in server A, someone runs /unquarantine in server B. B must not
+        consume A's saved roles — A could then never restore them."""
+        qstore.save(7003, 4003, [701, 702], "held in A")
+        sc.set_config(4004, quarantine_role_id=500)
+        sc._cache.clear()
+        g_b = _guild(4004)
+        g_b._roles[500] = FakeRole(500, "Q", position=9)
+        m = EditableMember(7003, g_b, [EVERYONE, g_b._roles[500]])
+
+        ok, restored, err = await qt.lift(m, "wrong server")
+        self.assertTrue(ok, err)
+        self.assertEqual(restored, [])
+        self.assertEqual(qstore.get(7003), [701, 702])   # server A's roles survive
+
+    async def test_apply_refuses_without_a_role(self):
+        """Better to say so than to report a quarantine that never happened."""
+        sc.set_config(4005, quarantine_role_id=None)
+        sc._cache.clear()
+        m = EditableMember(7004, _guild(4005), [EVERYONE])
+        ok, removed, err = await qt.apply(m, "testing")
+        self.assertFalse(ok)
+        self.assertIn("quarantine role", err)
+        self.assertEqual(m.edits, [])
 
 
 if __name__ == "__main__":
