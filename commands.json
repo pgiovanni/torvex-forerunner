@@ -95,6 +95,11 @@
       "cooldown_seconds": 0
     },
     {
+      "name": "dashboard",
+      "description": "Open the web dashboard to configure the bot.",
+      "cog": "help"
+    },
+    {
       "name": "add-bot",
       "description": "Add Peepo's Reclaimer to your server.",
       "cog": "help",

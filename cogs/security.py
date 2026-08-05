@@ -7,6 +7,7 @@ from discord.ext import commands
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.security_config import get_config, set_config
+from utils.links import config_view
 
 SEV_CRITICAL, SEV_HIGH, SEV_MEDIUM = 0, 1, 2
 SEV_EMOJI = {SEV_CRITICAL: "🟥", SEV_HIGH: "🟧", SEV_MEDIUM: "🟨"}
@@ -281,8 +282,9 @@ class Security(commands.Cog):
             name="Verify channel",
             value=(_chan(vc) if vc else "⚠️ *none — held members see nothing*"), inline=True)
         embed.add_field(name="Whitelist", value=f"{len(cfg.get('whitelist') or [])} id(s)", inline=True)
-        embed.set_footer(text="/security setup to enable · /security enforce to act · AltGuard gate ships with the dashboard")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        embed.set_footer(text="/security setup to enable · /security enforce to act")
+        await interaction.response.send_message(
+            embed=embed, view=config_view(interaction.guild.id), ephemeral=True)
 
     async def _provision_quarantine_role(self, guild, role=None):
         """Create (if needed) and correctly place the quarantine role.

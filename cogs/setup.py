@@ -3,6 +3,10 @@ from discord import app_commands
 from discord.ext import commands
 import aiohttp
 import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils.links import config_view, dashboard_url  # noqa: E402
 
 TORVEX_API_URL = os.getenv("TORVEX_API_URL", "http://localhost:5000")
 TORVEX_BOT_KEY = os.getenv("TORVEX_BOT_KEY", "")
@@ -50,7 +54,15 @@ class Setup(commands.Cog):
                 ephemeral=True
             )
         else:
-            await interaction.response.send_message(f"❌ Failed to save: {data.get('error', 'Unknown error')}", ephemeral=True)
+            # This is the known dead end for a brand-new server: the web API
+            # 500s on a guild it has no config row for. Never leave an admin
+            # holding just an error code — hand them the surface that works.
+            err = data.get("error") or f"HTTP {status}" if status else "couldn't reach the API"
+            await interaction.response.send_message(
+                f"❌ Couldn't save that here ({err}).\n"
+                f"⚙️ Use the dashboard instead — it configures the same settings: "
+                f"{dashboard_url(interaction.guild.id)}",
+                view=config_view(interaction.guild.id), ephemeral=True)
 
     @setup.command(name="view", description="View current channel configuration for this server.")
     @app_commands.checks.has_permissions(administrator=True)
@@ -74,7 +86,12 @@ class Setup(commands.Cog):
         embed.add_field(name="👋 Welcome Channel",     value=ch(config.get("welcomeChannelId")),     inline=False)
         embed.add_field(name="🫡 Leaves Channel",       value=ch(os.getenv("GOODBYE_CHANNEL_ID")),    inline=False)
         embed.add_field(name="🔨 Mod Log Channel",     value=ch(config.get("modLogChannelId")),      inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        if not config:
+            embed.description = ("⚠️ Couldn't read this server's config from the web API. "
+                                 "The dashboard below configures the same settings.")
+        embed.set_footer(text="Security, mod logs and more: /help")
+        await interaction.response.send_message(
+            embed=embed, view=config_view(interaction.guild.id), ephemeral=True)
 
     @setup.command(name="status-channel", description="Channel for bot online/offline notices.")
     @app_commands.describe(channel="The channel to post bot status updates")
