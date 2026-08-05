@@ -48,6 +48,36 @@ from utils.security_config import get_config, set_config, is_enabled, all_enable
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 DB_PATH = os.path.join(ROOT, "messages.db")
 MEDIA_DIR = os.path.join(ROOT, "media_cache")
+
+# ── RETENTION IS OPERATOR-SCOPED ────────────────────────────────────────────
+# This bot is public: anyone can add it. Enabling msglog must therefore never
+# make the OPERATOR the custodian of another server's message content or their
+# members' deleted images — that is their data, on our disk, under our legal
+# exposure, for communities we don't moderate.
+#
+# The line: the bot LOGS for everyone, but only REMEMBERS for the operator.
+#   * allowlisted guilds  -> full archive + media cache (unchanged behaviour)
+#   * everyone else       -> live log embeds only. Deletes still resolve their
+#                            content from discord.py's in-memory gateway cache,
+#                            so their mod log stays useful; nothing is persisted.
+# Defaults to the operator's own guild so an existing deployment is unchanged
+# and a fresh one is safe out of the box.
+ARCHIVE_GUILDS = {g.strip() for g in os.environ.get(
+    "MSGLOG_ARCHIVE_GUILDS",
+    os.environ.get("ALTGUARD_GUILD_ID", "")).split(",") if g.strip()}
+
+# Whole-cache disk limits come from the OPERATOR's environment only. They used
+# to be max()'d across every msglog-enabled guild, which let any remote admin
+# raise a shared global cap — and, because the cache is one flat LRU directory,
+# let a busy remote server evict the operator's own moderation evidence.
+MEDIA_CAP_GB = max(1, int(os.environ.get("MSGLOG_MEDIA_CAP_GB") or 5))
+MEDIA_DAYS = max(1, int(os.environ.get("MSGLOG_MEDIA_DAYS") or 30))
+
+
+def archives_content(guild_id) -> bool:
+    """Whether we RETAIN message content / media / identity history for a guild.
+    Logging is unaffected — this governs persistence only."""
+    return str(guild_id) in ARCHIVE_GUILDS
 FLUSH_SECONDS = 30
 RECENT_CAP = 4000           # in-memory rows for instant delete/edit lookups
 AUDIT_WAIT = 1.3            # audit entries lag the gateway event slightly
@@ -569,6 +599,10 @@ class ModLog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.guild is None or not is_enabled(message.guild.id, "msglog"):
             return
+        # Non-operator guilds: log, don't remember. Their deletes still render
+        # from the gateway cache; we simply never write their content to disk.
+        if not archives_content(message.guild.id):
+            return
         atts = [{"filename": a.filename, "url": a.url, "size": a.size,
                  "content_type": a.content_type} for a in message.attachments]
         fwd = forward_meta(message)
@@ -591,6 +625,10 @@ class ModLog(commands.Cog):
             await self._cache_media(message)
 
     async def _cache_media(self, message):
+        # Defence in depth: on_message already returns early for non-operator
+        # guilds, but nothing else may ever write a stranger's media to our disk.
+        if not archives_content(message.guild.id):
+            return
         cfg = get_config(message.guild.id)
         if not cfg.get("msglog_media"):
             return
@@ -1060,9 +1098,11 @@ class ModLog(commands.Cog):
     # ------------------------------------------------------------- media pruning
     @tasks.loop(hours=12)
     async def media_pruner(self):
-        days = 30
-        for gid in all_enabled("msglog"):
-            days = max(days, int(get_config(gid).get("msglog_media_days", 30)))
+        # Operator-scoped: only guilds allowed to WRITE media may influence how
+        # long it is kept. A remote tenant must not extend retention on our disk.
+        days = MEDIA_DAYS
+        for gid in ARCHIVE_GUILDS:
+            days = max(days, int(get_config(gid).get("msglog_media_days", MEDIA_DAYS)))
         cutoff = time.time() - days * 86400
         try:
             entries = [(e.path, e.stat().st_mtime) for e in os.scandir(MEDIA_DIR) if e.is_file()]
@@ -1079,9 +1119,9 @@ class ModLog(commands.Cog):
         """Hard whole-cache size cap, oldest evicted first. Age retention alone
         leaves a disk-fill DoS open (a Nitro account can post ~250MB/message);
         this turns the worst case into 'attacker evicts old memes'."""
-        cap_gb = 5
-        for gid in all_enabled("msglog"):
-            cap_gb = max(cap_gb, int(get_config(gid).get("msglog_media_max_gb", 5)))
+        cap_gb = MEDIA_CAP_GB
+        for gid in ARCHIVE_GUILDS:
+            cap_gb = max(cap_gb, int(get_config(gid).get("msglog_media_max_gb", MEDIA_CAP_GB)))
         try:
             entries = [(e.path, e.stat().st_mtime, e.stat().st_size)
                        for e in os.scandir(MEDIA_DIR) if e.is_file()]
@@ -1326,7 +1366,13 @@ class ModLog(commands.Cog):
 
         Deliberately best-effort and swallowing: the ledger must never be able
         to break the embed that the mods actually see.
+
+        Operator-scoped like the message archive: a remote guild's mods still get
+        every join/leave/ban/rename embed live, but we keep no lasting history of
+        their members. The embed is the product; the ledger is ours.
         """
+        if not archives_content(guild_id):
+            return
         try:
             uid = getattr(user, "id", user)
             uname = getattr(user, "name", None) or str(user)
