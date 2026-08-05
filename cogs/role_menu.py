@@ -28,13 +28,24 @@ import logging
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.role_templates import TEMPLATES, template_choices  # noqa: E402
 
 log = logging.getLogger("role_menu")
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "role_menus.db"))
+# Relocatable like security_config: the web dashboard edits panels, and it runs
+# as its own user that deliberately cannot read the bot directory. Env wins; the
+# in-repo path stays as the fallback so an un-migrated deployment still works.
+DB_PATH = os.environ.get("TORVEX_ROLEMENUS_DB") or os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "role_menus.db"))
+
+# How the dashboard hands work back to us. It only ever writes rows — every
+# Discord call still happens here, through the same _render() the commands use,
+# so there is exactly one place that posts a panel.
+#   'dirty'  -> (re)post or edit the message, then re-register its buttons
+#   'delete' -> remove the message and the rows
+SYNC_SECONDS = 8
 
 # One-shot migration map: the current MEE6 reaction-roles set, by category.
 # (role_id, label, emoji|None). Bootstrap resolves each id in the live guild and
@@ -143,6 +154,9 @@ def _init():
         cols = {r[1] for r in c.execute("PRAGMA table_info(panels)")}
         if "exclusive" not in cols:
             c.execute("ALTER TABLE panels ADD COLUMN exclusive INTEGER DEFAULT 0")
+        if "state" not in cols:
+            # work queue for panels edited outside the bot (the dashboard)
+            c.execute("ALTER TABLE panels ADD COLUMN state TEXT")
 
 
 _init()
@@ -279,6 +293,77 @@ class RoleMenu(commands.Cog):
                     self.bot.add_view(_build_view(p["panel_id"], roles))
                     n += 1
         print(f"role menus: registered {n} persistent panels")
+        self.panel_sync.start()
+
+    async def cog_unload(self):
+        self.panel_sync.cancel()
+
+    @tasks.loop(seconds=SYNC_SECONDS)
+    async def panel_sync(self):
+        """Publish panels the dashboard has edited.
+
+        A row written by the dashboard is invisible to Discord until the bot
+        posts the message AND registers a persistent view for it — without the
+        view, every click dies as "This interaction failed" (the bug that killed
+        panels across restarts in July). So the dashboard only ever marks work,
+        and all Discord writes stay here.
+        """
+        try:
+            with _conn() as c:
+                todo = c.execute(
+                    "SELECT panel_id, guild_id, channel_id, message_id, state FROM panels "
+                    "WHERE state IN ('dirty','delete')").fetchall()
+        except sqlite3.Error:
+            return
+        for p in todo:
+            guild = self.bot.get_guild(int(p["guild_id"])) if p["guild_id"] else None
+            if guild is None:
+                continue          # not our guild / not cached yet — try again next tick
+            try:
+                if p["state"] == "delete":
+                    await self._delete_panel(guild, p)
+                else:
+                    await self._publish_panel(guild, p["panel_id"])
+            except discord.Forbidden:
+                log.warning("panel %s: missing permissions in %s", p["panel_id"], guild.id)
+                self._clear_state(p["panel_id"])      # don't spin on a permission problem
+            except discord.HTTPException as e:
+                log.warning("panel %s: %s", p["panel_id"], e)
+
+    @panel_sync.before_loop
+    async def _before_sync(self):
+        await self.bot.wait_until_ready()
+
+    def _clear_state(self, panel_id):
+        with _conn() as c:
+            c.execute("UPDATE panels SET state=NULL WHERE panel_id=?", (panel_id,))
+
+    async def _publish_panel(self, guild, panel_id):
+        """Render, then refresh the button registration.
+
+        _render only registers on a fresh post; an EDIT that changed the roles
+        would otherwise leave the old buttons bound, so re-register explicitly.
+        """
+        await self._render(guild, panel_id, lambda m: None)
+        with _conn() as c:
+            p = c.execute("SELECT message_id FROM panels WHERE panel_id=?", (panel_id,)).fetchone()
+            roles = c.execute("SELECT * FROM panel_roles WHERE panel_id=? ORDER BY pos",
+                              (panel_id,)).fetchall()
+        if p and p["message_id"] and roles:
+            self.bot.add_view(_build_view(panel_id, roles), message_id=int(p["message_id"]))
+        self._clear_state(panel_id)
+
+    async def _delete_panel(self, guild, p):
+        channel = guild.get_channel(int(p["channel_id"])) if p["channel_id"] else None
+        if channel is not None and p["message_id"]:
+            try:
+                msg = await channel.fetch_message(int(p["message_id"]))
+                await msg.delete()
+            except discord.HTTPException:
+                pass          # already gone by hand — the rows still need clearing
+        with _conn() as c:
+            c.execute("DELETE FROM panel_roles WHERE panel_id=?", (p["panel_id"],))
+            c.execute("DELETE FROM panels WHERE panel_id=?", (p["panel_id"],))
 
     async def _render(self, guild, panel_id, notify):
         """(Re)post or edit a panel's message. `notify` is a coroutine factory for
