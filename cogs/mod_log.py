@@ -1002,9 +1002,10 @@ class ModLog(commands.Cog):
             embed.add_field(name="🖼️ Deleted media re-posted below", value="​", inline=False)
         embed.set_footer(text=f"Message ID {payload.message_id}")
         ping = None
-        if fast is not None and cfg.get("msglog_fastdel_ping", 1):
-            # deliberately pings: the whole failure mode was a log entry nobody
-            # read until months later
+        if fast is not None and cfg.get("msglog_fastdel_ping", 0):
+            # OFF by default: the retitled embed already carries the signal, and
+            # an @ on every fast delete is noise on a busy server. Turn it on
+            # where the failure mode matters more than the interruptions.
             who = cfg.get("msglog_alert_ping", guild.owner_id)
             if who:
                 ping = f"<@&{who}>" if str(who) in {str(r.id) for r in guild.roles} else f"<@{who}>"

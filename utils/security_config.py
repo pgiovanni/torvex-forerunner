@@ -102,6 +102,10 @@ DEFAULTS = {
     "msglog_ignore_channels": [],    # channels never LOGGED (still archived)
     "msglog_members": 1,             # member lifecycle: join (w/ invite used), leave, kick/ban/unban w/ WHO+reason
     "msglog_roles": 1,               # member role add/remove (w/ WHO) + role create/delete/edit; own-bot changes never logged
+    "msglog_fastdel_secs": 20,       # self-delete within N seconds = "they knew that was bad"
+    "msglog_fastdel_ping": 0,        # ...but DON'T @ the owner for it by default. The embed still
+                                     # says "⚡ Deleted Ns after posting", so the signal is kept;
+                                     # a ping on every fast delete is just noise on a busy server.
     # ── moderation (/ban /kick /timeout /prune-messages) ──────────────────────
     "mod_enabled": 0,                # master opt-in for the CONFIG below; the
                                      # commands themselves are always available
