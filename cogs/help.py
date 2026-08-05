@@ -61,6 +61,21 @@ class Help(commands.Cog):
             inline=False
         )
         embed.add_field(
+            name="🎭 Reaction Roles — `/rolemenu` *(Manage Roles)*",
+            value="Button panels members click to give themselves roles.\n"
+                  "**`/rolemenu template`** builds a whole set in one go — pronouns, age, "
+                  "regions, colours, notifications, platforms, DM preference — and creates any "
+                  "roles you don't have yet. Any emoji works, including your own.",
+            inline=False
+        )
+        embed.add_field(
+            name="⚙️ Automation — `/automation` *(Admin)*",
+            value="Roles granted automatically on join, plus welcome and goodbye messages. "
+                  "Separate from reaction roles: this is what the bot does *to* a member, "
+                  "not what they pick for themselves.",
+            inline=False
+        )
+        embed.add_field(
             name="⚔️ RPG — `/rpg`",
             value="Fight monsters, level up, earn orbs, craft gear, fish, mine, and more. "
                   "Full Torvex Lescala RPG experience.",

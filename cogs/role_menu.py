@@ -1,16 +1,27 @@
-"""Self-assign role panels for peepos-reclaimer — replaces MEE6 / carl-bot
-reaction roles with persistent BUTTON panels.
+"""Reaction roles for peepos-reclaimer — persistent BUTTON panels that replace
+MEE6 / carl-bot reaction roles.
 
-An admin creates a panel and adds role-buttons (or runs /rolemenu bootstrap to
-recreate the whole reaction-roles set at once); members click a button to toggle
-the role on themselves. Buttons survive restarts: on ready we re-register a
-persistent View for every stored panel (custom_id = "rm:<panel>:<role>").
+Its own feature, deliberately separate from the automation cog: automation is
+what the bot does TO a member (roles on join, welcome messages), this is what a
+member picks FOR THEMSELVES. They share nothing but the word "role".
+
+An admin builds a panel three ways — `/rolemenu template` for a ready-made set
+(and it creates any missing roles), `/rolemenu create` + `addrole` to hand-build
+one, or `/rolemenu bootstrap` for this guild's legacy MEE6 migration. Members
+click a button to toggle the role. Buttons survive restarts: at load we
+re-register a persistent View for every stored panel (custom_id "rm:<panel>:<role>").
+
+Panels can be pick-one (`exclusive`), which is how age bands and name colours
+stay mutually exclusive in ANY guild — that used to be a hardcoded list of this
+server's role ids.
 
 Why buttons over reactions: they don't get lost on bot downtime, need no Manage
 Emoji, and the grant is done by THIS bot — which anti-nuke exempts — so a burst
 of members self-assigning never trips the nuke detector (the carl-bot problem).
 """
+import asyncio
 import os
+import re
 import sys
 import sqlite3
 import logging
@@ -20,6 +31,7 @@ from discord import app_commands
 from discord.ext import commands
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils.role_templates import TEMPLATES, template_choices  # noqa: E402
 
 log = logging.getLogger("role_menu")
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "role_menus.db"))
@@ -124,9 +136,89 @@ def _init():
                        title      TEXT, description TEXT)""")
         c.execute("""CREATE TABLE IF NOT EXISTS panel_roles(
                        panel_id INTEGER, role_id TEXT, label TEXT, emoji TEXT, pos INTEGER)""")
+        # Exclusivity used to be a hardcoded set of THIS guild's age-role ids, so
+        # no other server could have a pick-one panel. It's a per-panel property
+        # now; the legacy id set below still runs so existing members keep
+        # shedding the old binary 18+/under-18 roles.
+        cols = {r[1] for r in c.execute("PRAGMA table_info(panels)")}
+        if "exclusive" not in cols:
+            c.execute("ALTER TABLE panels ADD COLUMN exclusive INTEGER DEFAULT 0")
 
 
 _init()
+
+
+def parse_emoji(raw, resolve):
+    """Normalise whatever an admin typed into something a Button can render.
+
+    Returns (value, error). `value` is the string we store — None means "no
+    emoji", which is always valid. `resolve` takes a custom-emoji id and returns
+    the emoji if this bot can actually use it.
+
+    Any standard emoji works. A CUSTOM emoji only renders if the bot shares a
+    server with it, and Discord rejects the whole message component when it
+    doesn't — meaning one bad emoji takes down the entire panel, not just its
+    button. So it's checked here, at the point somebody can still fix it.
+    """
+    if raw is None:
+        return None, None
+    raw = raw.strip()
+    if not raw:
+        return None, None
+
+    # <:name:id> / <a:name:id>, or a bare id pasted from Discord's dev mode
+    m = re.fullmatch(r"<(a?):([A-Za-z0-9_]{2,32}):(\d{15,25})>", raw)
+    eid = m.group(3) if m else (raw if raw.isdigit() and 15 <= len(raw) <= 25 else None)
+    if eid:
+        emoji = resolve(int(eid))
+        if emoji is None:
+            return None, ("I can't use that custom emoji — I'm not in the server it comes from. "
+                          "Use a standard emoji, or upload the image to THIS server with "
+                          "`/steal-emoji` and then use it here.")
+        return str(emoji), None
+
+    if raw.startswith("<") or raw.startswith(":"):
+        return None, ("That doesn't look like an emoji I can read. Paste the emoji itself, "
+                      "or its `<:name:id>` form.")
+    # Anything else: a real emoji character (possibly multi-codepoint, e.g. a
+    # flag or a skin-tone sequence). Reject long text so a typo isn't stored as
+    # an "emoji" that fails at render time.
+    if len(raw) > 16 or raw.isascii():
+        return None, ("That doesn't look like an emoji. Paste the emoji itself, or upload an "
+                      "image with `/steal-emoji` to make it a server emoji first.")
+    return raw, None
+
+
+def plan_template_role(existing, bot_top):
+    """What to do with one template entry: 'create', 'reuse' or 'blocked'.
+
+    A role that already exists but sits at or above the bot's top role is the
+    trap worth naming: Discord lets us put it on a panel but never lets us
+    assign it, so including it would ship a button that always errors.
+    """
+    if existing is None:
+        return "create"
+    if existing >= bot_top:
+        return "blocked"
+    return "reuse"
+
+
+def _panel_exclusive_roles(panel_id):
+    """Every role on `panel_id` if that panel is pick-one, else empty.
+
+    Read at click time rather than baked into the button: an admin can flip a
+    panel to exclusive, or add a role to it, without the live buttons going
+    stale (they're persistent views that outlive restarts).
+    """
+    try:
+        with _conn() as c:
+            p = c.execute("SELECT exclusive FROM panels WHERE panel_id=?", (panel_id,)).fetchone()
+            if not p or not p["exclusive"]:
+                return set()
+            return {int(r["role_id"]) for r in
+                    c.execute("SELECT role_id FROM panel_roles WHERE panel_id=?", (panel_id,))}
+    except sqlite3.Error:
+        return set()   # never block a click on a config read
 
 
 class RoleButton(discord.ui.Button):
@@ -134,6 +226,7 @@ class RoleButton(discord.ui.Button):
         super().__init__(style=discord.ButtonStyle.secondary, label=label or None,
                          emoji=emoji or None, custom_id=f"rm:{panel_id}:{role_id}")
         self.role_id = int(role_id)
+        self.panel_id = int(panel_id)
 
     async def callback(self, interaction: discord.Interaction):
         guild = interaction.guild
@@ -147,12 +240,14 @@ class RoleButton(discord.ui.Button):
                 await member.remove_roles(role, reason="self-assign role menu")
                 await interaction.response.send_message(f"Removed {role.mention}.", ephemeral=True)
             else:
-                # mutually-exclusive group (e.g. age band): drop the others first
-                group = _exclusive_group(self.role_id)
-                if group:
-                    others = [r for r in member.roles if r.id in group and r.id != self.role_id]
-                    if others:
-                        await member.remove_roles(*others, reason="self-assign role menu (exclusive)")
+                # mutually-exclusive: drop whatever else they hold from the same
+                # group. Two sources — this panel being pick-one (any guild), and
+                # the legacy hardcoded age-band ids (this guild's old roles).
+                drop = set(_exclusive_group(self.role_id) or ())
+                drop |= _panel_exclusive_roles(self.panel_id)
+                others = [r for r in member.roles if r.id in drop and r.id != self.role_id]
+                if others:
+                    await member.remove_roles(*others, reason="self-assign role menu (exclusive)")
                 await member.add_roles(role, reason="self-assign role menu")
                 await interaction.response.send_message(f"Added {role.mention}.", ephemeral=True)
         except discord.Forbidden:
@@ -236,10 +331,16 @@ class RoleMenu(commands.Cog):
             f"`/rolemenu addrole panel:{pid} role:@Role` — it posts once it has one.", ephemeral=True)
 
     @group.command(name="addrole", description="Add a role button to a panel")
-    @app_commands.describe(panel="panel number", role="role to hand out", label="button text (defaults to role name)", emoji="optional emoji")
+    @app_commands.describe(panel="panel number", role="role to hand out",
+                           label="button text (defaults to role name)",
+                           emoji="any emoji — standard, or a custom one from a server I'm in")
     async def addrole(self, interaction: discord.Interaction, panel: int, role: discord.Role,
                       label: str = None, emoji: str = None):
         await interaction.response.defer(ephemeral=True)
+        emoji, err = parse_emoji(emoji, self.bot.get_emoji)
+        if err:
+            await interaction.followup.send(f"❌ {err}", ephemeral=True)
+            return
         with _conn() as c:
             p = c.execute("SELECT 1 FROM panels WHERE panel_id=? AND guild_id=?", (panel, str(interaction.guild.id))).fetchone()
             if not p:
@@ -303,6 +404,118 @@ class RoleMenu(commands.Cog):
             c.execute("DELETE FROM panel_roles WHERE panel_id=?", (panel,))
             c.execute("DELETE FROM panels WHERE panel_id=?", (panel,))
         await interaction.followup.send(f"🗑️ Panel #{panel} deleted.", ephemeral=True)
+
+    @group.command(name="set-emoji", description="Change (or clear) the emoji on a role button")
+    @app_commands.describe(panel="panel number", role="which button",
+                           emoji="any emoji, or leave blank to remove it",
+                           label="optional: also change the button text")
+    async def set_emoji(self, interaction: discord.Interaction, panel: int, role: discord.Role,
+                        emoji: str = None, label: str = None):
+        await interaction.response.defer(ephemeral=True)
+        value, err = parse_emoji(emoji, self.bot.get_emoji)
+        if err:
+            await interaction.followup.send(f"❌ {err}", ephemeral=True)
+            return
+        with _conn() as c:
+            owned = c.execute("SELECT 1 FROM panels WHERE panel_id=? AND guild_id=?",
+                              (panel, str(interaction.guild.id))).fetchone()
+            if not owned:
+                await interaction.followup.send(f"No panel #{panel} here.", ephemeral=True)
+                return
+            fields, args = ["emoji=?"], [value]
+            if label:
+                fields.append("label=?")
+                args.append(label)
+            args += [panel, str(role.id)]
+            changed = c.execute(f"UPDATE panel_roles SET {', '.join(fields)} "
+                                "WHERE panel_id=? AND role_id=?", args).rowcount
+        if not changed:
+            await interaction.followup.send(
+                f"{role.mention} isn't on panel #{panel} — add it with `/rolemenu addrole`.",
+                ephemeral=True)
+            return
+        await self._render(interaction.guild, panel,
+                           lambda m: interaction.followup.send(
+                               (f"✅ {role.mention} now shows {value}" if value
+                                else f"✅ Emoji removed from {role.mention}") + f" · {m}",
+                               ephemeral=True))
+
+    @group.command(name="template",
+                   description="Post a ready-made role panel — creates any roles you don't have yet")
+    @app_commands.describe(template="Which set to build", channel="Where to post the panel")
+    @app_commands.choices(template=[
+        app_commands.Choice(name=title, value=key) for key, title in template_choices()])
+    async def template_cmd(self, interaction: discord.Interaction,
+                           template: app_commands.Choice[str],
+                           channel: discord.TextChannel):
+        await interaction.response.defer(ephemeral=True)
+        guild, spec = interaction.guild, TEMPLATES[template.value]
+
+        me = guild.me
+        if not me.guild_permissions.manage_roles:
+            await interaction.followup.send(
+                "❌ I need **Manage Roles** to create and hand out these roles.", ephemeral=True)
+            return
+
+        by_name = {r.name.casefold(): r for r in guild.roles}
+        entries, created, reused, blocked = [], [], [], []
+        for name, emoji, colour in spec["roles"]:
+            role = by_name.get(name.casefold())
+            action = plan_template_role(role, me.top_role)
+            if action == "blocked":
+                blocked.append(f"{name} (sits above my role)")
+                continue
+            if action == "create":
+                try:
+                    role = await guild.create_role(
+                        name=name, colour=discord.Colour(colour),
+                        permissions=discord.Permissions.none(),
+                        hoist=False, mentionable=False,
+                        reason=f"role menu template: {template.value}")
+                    created.append(role)
+                    await asyncio.sleep(0.4)   # role creation is a tight bucket
+                except discord.Forbidden:
+                    blocked.append(f"{name} (no permission to create)")
+                    continue
+                except discord.HTTPException as e:
+                    # 30005 = max roles reached; anything else is transient
+                    why = ("this server is at Discord's 250-role limit"
+                           if getattr(e, "code", 0) == 30005 else "creation failed")
+                    blocked.append(f"{name} ({why})")
+                    continue
+            else:
+                reused.append(role)
+            entries.append((role, name, emoji))
+
+        if not entries:
+            await interaction.followup.send(
+                "❌ Couldn't set up any of those roles.\n" + "\n".join(f"• {b}" for b in blocked[:10]),
+                ephemeral=True)
+            return
+
+        with _conn() as c:
+            pid = c.execute(
+                "INSERT INTO panels(guild_id,channel_id,message_id,title,description,exclusive) "
+                "VALUES(?,?,?,?,?,?)",
+                (str(guild.id), str(channel.id), None, spec["title"], spec["blurb"],
+                 1 if spec["exclusive"] else 0)).lastrowid
+            for pos, (role, label, emoji) in enumerate(entries):
+                c.execute("INSERT INTO panel_roles(panel_id,role_id,label,emoji,pos) VALUES(?,?,?,?,?)",
+                          (pid, str(role.id), label, emoji, pos))
+        await self._render(guild, pid, lambda m: None)
+
+        lines = [f"✅ **{spec['title']}** posted in {channel.mention} as panel **#{pid}**"
+                 + (" · members can pick **one**." if spec["exclusive"] else ".")]
+        if created:
+            lines.append(f"🆕 Created {len(created)} role(s): " + ", ".join(r.mention for r in created))
+        if reused:
+            lines.append(f"♻️ Reused {len(reused)} existing role(s): " + ", ".join(r.mention for r in reused))
+        if blocked:
+            lines.append("⚠️ Skipped: " + ", ".join(blocked))
+        if created:
+            lines.append("-# New roles have no permissions and sit at the bottom — "
+                         "move them where you like, just keep them below my role.")
+        await interaction.followup.send("\n".join(lines)[:1900], ephemeral=True)
 
     @group.command(name="bootstrap", description="Recreate the full MEE6 reaction-roles set as panels in a channel")
     @app_commands.describe(channel="channel to post the panels in (e.g. #reaction-roles)")
