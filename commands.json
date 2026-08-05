@@ -136,6 +136,22 @@
       ]
     },
     {
+      "name": "quarantine",
+      "description": "Hold a member — strip roles and lock them out, whatever their verification status",
+      "cog": "security",
+      "required_permissions": [
+        "manage_roles"
+      ]
+    },
+    {
+      "name": "unquarantine",
+      "description": "Lift a hold and restore every role that was stripped",
+      "cog": "security",
+      "required_permissions": [
+        "manage_roles"
+      ]
+    },
+    {
       "name": "verify",
       "description": "Get your AltGuard verification link",
       "cog": "altguard",
@@ -408,6 +424,14 @@
     {
       "name": "prune-run",
       "description": "Run the verify-prune sweep now (admin)",
+      "cog": "verify_prune",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "prune-config",
+      "description": "Set the verify deadline, kick/ban, or turn auto-removal off (admin)",
       "cog": "verify_prune",
       "required_permissions": [
         "administrator"

@@ -67,6 +67,21 @@ DEFAULTS = {
     "spoof_ban_threshold": 60,
     "default_role_ids": [],
     "verify_channel_id": None,
+    # ── verify-prune: what happens to someone who never finishes verifying ────
+    # A held member who just sits there forever is a foothold, so there's a
+    # clock. Every part of it is a server's own call — including turning the
+    # removal off entirely and letting them sit, which is what prune_enabled=0
+    # means. Nothing here ever touches a member who doesn't hold the quarantine
+    # role, so it can't sweep an existing server.
+    "prune_enabled": 0,             # master: off = nobody is ever auto-removed
+    "prune_enforce": 0,             # 0 = shadow (name them in the log, act on nobody)
+    "prune_hours": 72,              # clock starts when they're HELD, not when they join
+    "prune_action": "kick",         # kick (they can rejoin) | ban
+    "prune_max_per_cycle": 25,      # removals per sweep — a cap on any single mistake
+    "prune_spare_clean": 1,         # honour a clean link-open instead of removing
+    "prune_spare_action": "review",  # review (stay held, ask a mod) | release (auto-approve)
+    "prune_dm": "",                 # "" = the built-in wording (verify_prune.DM_DEFAULT)
+    "prune_seeded": 0,              # legacy PRUNE_* env → config migration marker
     # quarantine-lock: channel ids to leave visible (e.g. a #verify channel)
     "lockdown_exempt": [],
     # link-guard (canary-token / IP-grabber link detection)

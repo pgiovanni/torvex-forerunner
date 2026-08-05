@@ -3,29 +3,32 @@
 A standing quarantine is a held door: an account that joins, gets quarantined-
 on-join, and then just *sits* there forever is the cheapest way to keep a
 foothold (and to wear down whoever's watching the gate). This closes that —
-after a grace window (default 72h) an unverified member is DM'd a heads-up and
-then removed.
+after a grace window an unverified member is DM'd a heads-up and then removed.
 
-Scope is deliberately narrow: ONLY members who currently hold the AltGuard
+Every part of that is the server's own call, set on the dashboard (AltGuard →
+"If they never verify") or with `/prune-config`:
+
+    prune_enabled       off = nobody is ever auto-removed; held members just sit
+    prune_hours         the clock, in hours — 2 or 72 or 720, whatever suits
+    prune_action        kick (they can rejoin and try again) or ban
+    prune_enforce       off = name them in the log and act on nobody
+    prune_spare_clean   honour a clean link-open instead of removing
+    prune_spare_action  review (stay held, ask a mod) or release (auto-approve)
+    prune_dm            what they're told; blank uses the built-in wording
+    prune_max_per_cycle removals per sweep — a ceiling on any single mistake
+
+Scope is deliberately narrow: ONLY members who currently hold that server's
 quarantine role. Members who verified (role removed) or who predate the gate
-(never had the role) are never touched — so this can't mass-prune the existing
-server.
+(never had the role) are never touched — so this can't mass-prune an existing
+server, however the settings are turned.
 
-Action is a KICK by default (reversible — they can rejoin and verify); set
-PRUNE_ACTION=ban for a hard removal. DM is always attempted *before* removal,
-since once they're gone there's no shared server to DM through.
+The clock starts when they were HELD, not when they joined, so a long-standing
+member quarantined today gets the full window rather than an instant kick.
 
-Shadow-first like the rest of the suite: with PRUNE_ENFORCE=0 it only posts the
-candidate list to #modlog and takes no action. PRUNE_ENFORCE=1 acts.
-
-Reuses ALTGUARD_GUILD_ID / ALTGUARD_QUARANTINE_ROLE_ID / ALTGUARD_MODLOG_CHANNEL_ID.
-Tunables:
-    PRUNE_ENFORCE (0)            PRUNE_HOURS (72)
-    PRUNE_ACTION (kick)         PRUNE_INTERVAL_MIN (60)
-    PRUNE_MAX_PER_CYCLE (25)    PRUNE_WHITELIST ("" — space/comma uids)
-    PRUNE_DM (message; {guild} placeholder; empty = skip the DM)
-    PRUNE_SPARE_CLEAN (1)       PRUNE_SPARE_ACTION (review | release)
-Age band for a release that lands with no band: ALTGUARD_DEFAULT_AGE (AltGuard cog).
+Global (stay in env — shared gate infrastructure, not per-server policy):
+    ALTGUARD_GATE_URL / ALTGUARD_SECRET      the clean-pass lookup
+    PRUNE_INTERVAL_MIN (60)                  how often the sweep runs
+    PRUNE_WHITELIST ("")                     uids never pruned in any server
 """
 import asyncio
 import hashlib
@@ -33,7 +36,6 @@ import hmac
 import logging
 import os
 import time
-from datetime import timedelta
 
 import aiohttp
 import discord
@@ -41,6 +43,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import quarantine_store as qstore
+from utils import quarantine as qt
+from utils.security_config import get_config, set_config
 from cogs.altguard import ALMOST_ROLE_ID, _precap_conn
 
 log = logging.getLogger("verify_prune")
@@ -53,50 +57,80 @@ def _env_int(name, default=0):
         return default
 
 
+def _int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+# Legacy single-guild wiring — now only used to seed that guild's config once
+# (see _seed_legacy) and to decide where the AltGuard cog's release path works.
 GUILD_ID = _env_int("ALTGUARD_GUILD_ID")
-QUARANTINE_ROLE_ID = _env_int("ALTGUARD_QUARANTINE_ROLE_ID")
-MODLOG_CHANNEL_ID = _env_int("ALTGUARD_MODLOG_CHANNEL_ID")
 GATE_URL = os.environ.get("ALTGUARD_GATE_URL", "").rstrip("/")
 SECRET = os.environ.get("ALTGUARD_SECRET", "")
-# Honour a clean, high-confidence link-open instead of kicking. 0 disables and
-# the prune goes back to kicking purely on the clock.
-SPARE_CLEAN = os.environ.get("PRUNE_SPARE_CLEAN", "1") != "0"
-# What to do with a spared member at the 72h line:
-#   review  — leave them quarantined, ask a mod (the original behaviour)
-#   release — auto-approve the verification and let them in
-# The owner's call (2026-07-26): a clean-scoring open is real evidence of a real
-# device on a clean network, and the accounts the gate exists to stop (alts,
-# device twins, Tor/VPN exits, evaders) can't reach a clean score in the first
-# place — is_clean_pass() requires no device match, no spoof, clean environment,
-# geo trust, sub-trigger fraud and high timing. Auto-release trades the one thing
-# a precapture can't give us — an OAuth binding proving the opener IS the target —
-# for the ~40% of genuine joiners who stall at Discord's authorize screen.
-# Watchlisted accounts are excluded and always fall back to review: they're the
-# population with both a motive and a history of working the gate sideways, and a
-# forwarded link is the one attack this path is actually open to.
-SPARE_ACTION = os.environ.get("PRUNE_SPARE_ACTION", "review").strip().lower()
-# Read-only mirror of the AltGuard cog's setting — the stamping itself lives in
-# AltGuard._release so every release path behaves the same. Here purely so
-# /prune-status and the auto-approve embed can say what will happen.
 DEFAULT_AGE = os.environ.get("ALTGUARD_DEFAULT_AGE", "").strip()
-# where members can correct the band themselves
 ROLES_CHANNEL_ID = _env_int("ALTGUARD_ROLES_CHANNEL_ID", 1355902892883706066)
 
-ENFORCE = os.environ.get("PRUNE_ENFORCE", "0") != "0"
-HOURS = _env_int("PRUNE_HOURS", 72)
-ACTION = os.environ.get("PRUNE_ACTION", "kick").strip().lower()
 INTERVAL_MIN = max(5, _env_int("PRUNE_INTERVAL_MIN", 60))
-MAX_PER_CYCLE = _env_int("PRUNE_MAX_PER_CYCLE", 25)
 WHITELIST = {x for x in os.environ.get("PRUNE_WHITELIST", "").replace(",", " ").split() if x.strip()}
 DM_DEFAULT = (
     "Hey — you've been removed from **{guild}** because verification wasn't "
     "completed in time (sorry, you took too long!). No hard feelings: you're "
     "welcome to rejoin and verify whenever you're ready."
 )
-DM_TEXT = os.environ.get("PRUNE_DM", DM_DEFAULT)
 # seconds between removals — keeps us under rate limits and well clear of any
 # mass-action heuristic (the bot is self-exempt from anti-nuke, but be tidy)
 _PACE = 2.0
+# Sanity rails on whatever a server types in. The floor exists because a window
+# under an hour would remove people who are simply asleep, or who opened the
+# link and walked away mid-check.
+MIN_HOURS, MAX_HOURS = 1, 8760
+
+
+class Settings:
+    """One server's prune policy, resolved from its config."""
+
+    __slots__ = ("enabled", "altguard_on", "enforce", "hours", "action", "max_per_cycle",
+                 "spare_clean", "spare_action", "dm", "qrole_id", "modlog_id",
+                 "whitelist")
+
+    def __init__(self, guild):
+        cfg = get_config(guild.id)
+        self.enabled = bool(cfg.get("prune_enabled"))
+        # The prune is the VERIFICATION clock. With AltGuard off there is no
+        # verification to fail — but LinkGuard and anti-nuke still put people in
+        # the same quarantine role, and removing one of those for "not verifying"
+        # would be flatly wrong. So the gate has to be on for the clock to run.
+        self.altguard_on = bool(cfg.get("altguard_enabled"))
+        self.enforce = bool(cfg.get("prune_enforce"))
+        self.hours = max(MIN_HOURS, min(MAX_HOURS, _int(cfg.get("prune_hours"), 72)))
+        self.action = "ban" if str(cfg.get("prune_action") or "").lower() == "ban" else "kick"
+        self.max_per_cycle = max(1, _int(cfg.get("prune_max_per_cycle"), 25))
+        self.spare_clean = bool(cfg.get("prune_spare_clean"))
+        # Auto-release runs through the AltGuard cog, which is still wired to the
+        # one legacy guild. Anywhere else the honest answer is "hold for review"
+        # rather than a release that would half-happen.
+        want = str(cfg.get("prune_spare_action") or "review").lower()
+        self.spare_action = "release" if (want == "release" and guild.id == GUILD_ID) else "review"
+        self.dm = (cfg.get("prune_dm") or "").strip() or DM_DEFAULT
+        self.qrole_id = qt.role_id_for(guild)
+        self.modlog_id = _int(cfg.get("modlog_channel_id"), 0)
+        self.whitelist = WHITELIST | {str(x) for x in (cfg.get("whitelist") or [])}
+
+    @property
+    def runnable(self) -> bool:
+        """Enabled AND actually pointed at something. A prune with no quarantine
+        role would iterate an empty set forever; better to skip it outright."""
+        return self.enabled and self.altguard_on and bool(self.qrole_id)
+
+    def render_dm(self, guild) -> str:
+        """A server writes this text, so a stray {brace} must not break the DM
+        (and silently turn a warned kick into an unwarned one)."""
+        try:
+            return self.dm.format(guild=guild.name, hours=self.hours)
+        except (KeyError, IndexError, ValueError):
+            return self.dm
 
 
 class VerifyPrune(commands.Cog):
@@ -106,19 +140,46 @@ class VerifyPrune(commands.Cog):
         self.last_pruned = 0
 
     async def cog_load(self):
-        if GUILD_ID and QUARANTINE_ROLE_ID:
-            self.sweep.start()
+        self.sweep.start()
 
     async def cog_unload(self):
         self.sweep.cancel()
 
-    # ------------------------------------------------------------- helpers
-    def _modlog(self):
-        return self.bot.get_channel(MODLOG_CHANNEL_ID)
+    # ------------------------------------------------------------- migration
+    @staticmethod
+    def _seed_legacy():
+        """One-time PRUNE_* env → config copy for the original guild.
 
-    @property
-    def _tag(self) -> str:
-        return "🧹 Verify-prune" if ENFORCE else "🧹 Verify-prune (shadow)"
+        Without this the refactor would silently switch that server's prune off
+        (config default is disabled), which is a protection gap dressed up as a
+        no-op. Runs once; after that the dashboard is the only authority.
+        """
+        if not GUILD_ID:
+            return
+        cfg = get_config(GUILD_ID)
+        if cfg.get("prune_seeded"):
+            return
+        hours = max(MIN_HOURS, min(MAX_HOURS, _env_int("PRUNE_HOURS", 72)))
+        action = "ban" if os.environ.get("PRUNE_ACTION", "kick").strip().lower() == "ban" else "kick"
+        spare = "release" if os.environ.get("PRUNE_SPARE_ACTION", "review").strip().lower() == "release" else "review"
+        set_config(
+            GUILD_ID,
+            prune_seeded=1,
+            # it was running before this change iff the env had it wired up
+            prune_enabled=1 if _env_int("ALTGUARD_QUARANTINE_ROLE_ID") else 0,
+            prune_enforce=1 if os.environ.get("PRUNE_ENFORCE", "0") != "0" else 0,
+            prune_hours=hours,
+            prune_action=action,
+            prune_max_per_cycle=_env_int("PRUNE_MAX_PER_CYCLE", 25),
+            prune_spare_clean=0 if os.environ.get("PRUNE_SPARE_CLEAN", "1") == "0" else 1,
+            prune_spare_action=spare,
+            prune_dm=os.environ.get("PRUNE_DM", "") or "",
+        )
+        log.info("verify-prune: seeded guild %s from legacy PRUNE_* env", GUILD_ID)
+
+    # ------------------------------------------------------------- helpers
+    def _modlog(self, guild, st):
+        return guild.get_channel(st.modlog_id) if st.modlog_id else None
 
     async def _clean_passes(self) -> dict:
         """{uid: row} for accounts whose latest HIGH-confidence link-open scored
@@ -135,7 +196,7 @@ class VerifyPrune(commands.Cog):
         prune proceeds on the clock as it always did. A gate outage must not
         silently suspend enforcement.
         """
-        if not (SPARE_CLEAN and GATE_URL and SECRET):
+        if not (GATE_URL and SECRET):
             return {}
         ts = str(time.time())
         sig = hmac.new(SECRET.encode(), ts.encode(), hashlib.sha256).hexdigest()
@@ -153,13 +214,13 @@ class VerifyPrune(commands.Cog):
             return {}
         return {str(x["target_uid"]): x for x in rows}
 
-    def _exempt(self, member: discord.Member) -> bool:
-        if member.bot or str(member.id) in WHITELIST:
+    def _exempt(self, member: discord.Member, st: Settings) -> bool:
+        if member.bot or str(member.id) in st.whitelist:
             return True
         # "Almost Verified" holders are OFF the clock entirely (Paul, 2026-07-26).
         # They opened their link, scored a clean high-timing-confidence pass, and
         # can talk in #verify — so the answer to "they haven't finished" is to
-        # remind them there, not to remove them. Note this also means the 72h
+        # remind them there, not to remove them. Note this also means the
         # auto-approve never fires for them: same population, and the point is
         # that they finish verification rather than be let in without it.
         # Revoking the role puts them straight back on the clock.
@@ -172,21 +233,21 @@ class VerifyPrune(commands.Cog):
             return True
         return False
 
-    def _candidates(self, guild: discord.Guild):
-        """Members holding the quarantine role who joined > HOURS ago and have
-        not passed verification. joined_at is authoritative (live gateway)."""
-        qrole = guild.get_role(QUARANTINE_ROLE_ID)
+    def _candidates(self, guild: discord.Guild, st: Settings):
+        """Members holding the quarantine role whose clock ran out and who have
+        not passed verification."""
+        qrole = guild.get_role(st.qrole_id) if st.qrole_id else None
         if not qrole:
             return []
-        cutoff = time.time() - HOURS * 3600
+        cutoff = time.time() - st.hours * 3600
         out = []
         for m in qrole.members:
-            if self._exempt(m):
+            if self._exempt(m, st):
                 continue
             started = self._held_since(m)
             if started is None or started > cutoff:
                 continue  # clock starts at QUARANTINE time, not join — a long-time
-                          # member quarantined today gets a fresh 72h, not an instant kick
+                          # member quarantined today gets a fresh window, not an instant kick
             v = qstore.verification(m.id)
             if v and v.get("status") == "passed":
                 continue  # passed but role lingered — never prune a verified member
@@ -208,48 +269,62 @@ class VerifyPrune(commands.Cog):
     # ------------------------------------------------------------- the sweep
     @tasks.loop(minutes=INTERVAL_MIN)
     async def sweep(self):
-        guild = self.bot.get_guild(GUILD_ID)
-        if not guild:
-            return
         self.last_run = time.time()
-        candidates = self._candidates(guild)
-        if not candidates:
-            return
+        total = 0
+        # Only fetched if a guild actually needs it — one gate call per sweep,
+        # shared across servers, and skipped entirely when nobody is overdue.
+        clean = None
+        for guild in list(self.bot.guilds):
+            try:
+                st = Settings(guild)
+                if not st.runnable:
+                    continue
+                candidates = self._candidates(guild, st)
+                if not candidates:
+                    continue
+                if not st.enforce:
+                    await self._shadow_report(guild, st, candidates)
+                    continue
+                guild_clean = {}
+                if st.spare_clean:
+                    if clean is None:          # fetched at most once per sweep
+                        clean = await self._clean_passes()
+                    guild_clean = clean
+                total += await self._enforce(guild, st, candidates, guild_clean)
+            except Exception:
+                log.exception("verify-prune sweep failed for guild %s", guild.id)
+        self.last_pruned = total
 
-        if not ENFORCE:
-            await self._shadow_report(guild, candidates)
-            return
-
+    async def _enforce(self, guild, st, candidates, clean):
         # Stay of execution: anyone the gate scored clean off a high-confidence
-        # link-open is pulled out of the kick list. With PRUNE_SPARE_ACTION=release
+        # link-open is pulled out of the kick list. With prune_spare_action=release
         # their verification is auto-approved here; otherwise they stay quarantined
         # and a mod decides. Members with low or no timing confidence (including
-        # everyone who never opened the link) are untouched by this and get kicked
+        # everyone who never opened the link) are untouched by this and get removed
         # exactly as before.
-        clean = await self._clean_passes()
         spared = [m for m in candidates if str(m.id) in clean]
         candidates = [m for m in candidates if str(m.id) not in clean]
         for m in spared:
             row = clean[str(m.id)]
-            if SPARE_ACTION == "release" and not qstore.is_watched(m.id):
-                await self._auto_release(guild, m, row)
+            if st.spare_action == "release" and not qstore.is_watched(m.id):
+                await self._auto_release(guild, st, m, row)
                 await asyncio.sleep(_PACE)
                 continue
-            first = qstore.record_spared(m.id, row.get("scored_verdict"), row.get("scored_risk"))
-            if first:
-                await self._spared_alert(guild, m, row)
+            if qstore.record_spared(m.id, row.get("scored_verdict"), row.get("scored_risk")):
+                await self._spared_alert(guild, st, m, row)
 
+        dm_text = st.render_dm(guild)
         pruned, dm_failed, act_failed = [], 0, []
-        for m in candidates[:MAX_PER_CYCLE]:
+        for m in candidates[:st.max_per_cycle]:
             # DM first — must happen while we still share the server
-            if DM_TEXT:
+            if dm_text:
                 try:
-                    await m.send(DM_TEXT.format(guild=guild.name))
+                    await m.send(dm_text)
                 except discord.HTTPException:
                     dm_failed += 1
-            reason = f"AltGuard: did not verify within {HOURS}h"
+            reason = f"AltGuard: did not verify within {st.hours}h"
             try:
-                if ACTION == "ban":
+                if st.action == "ban":
                     await m.ban(reason=reason, delete_message_seconds=0)
                     qstore.set_status(m.id, "banned")
                 else:
@@ -258,23 +333,27 @@ class VerifyPrune(commands.Cog):
                 pruned.append(m)
             except discord.Forbidden:
                 act_failed.append(m)
-                log.warning("prune: lack permission to %s %s", ACTION, m.id)
+                log.warning("prune: lack permission to %s %s", st.action, m.id)
             except discord.HTTPException as e:
                 act_failed.append(m)
-                log.warning("prune: %s %s failed: %s", ACTION, m.id, e)
+                log.warning("prune: %s %s failed: %s", st.action, m.id, e)
             await asyncio.sleep(_PACE)
 
-        self.last_pruned = len(pruned)
-        await self._enforce_report(guild, candidates, pruned, dm_failed, act_failed)
+        await self._enforce_report(guild, st, candidates, pruned, dm_failed, act_failed)
+        return len(pruned)
 
     @sweep.before_loop
     async def _before(self):
         await self.bot.wait_until_ready()
+        try:
+            self._seed_legacy()
+        except Exception:
+            log.exception("verify-prune: legacy seed failed")
         await asyncio.sleep(45)  # let the member cache chunk before first sweep
 
     # --------------------------------------------------------- auto-approve
-    async def _auto_release(self, guild, member, row):
-        """Approve the verification at the 72h line off a clean link-open.
+    async def _auto_release(self, guild, st, member, row):
+        """Approve the verification at the prune line off a clean link-open.
 
         Delegates to the AltGuard cog so a released member goes through the exact
         same path as `/altguard-release` — stored roles restored, rejoin roles
@@ -288,7 +367,7 @@ class VerifyPrune(commands.Cog):
         if not ag:
             log.warning("auto-release: AltGuard cog not loaded, falling back to review")
             if qstore.record_spared(member.id, row.get("scored_verdict"), row.get("scored_risk")):
-                await self._spared_alert(guild, member, row)
+                await self._spared_alert(guild, st, member, row)
             return
         try:
             # _release owns the age default now (ALTGUARD_DEFAULT_AGE) so every
@@ -297,7 +376,7 @@ class VerifyPrune(commands.Cog):
         except discord.HTTPException as e:
             log.warning("auto-release: %s failed: %s", member.id, e)
             return
-        qstore.clear(member.id, f"auto-approved: clean link-open at {HOURS}h")
+        qstore.clear(member.id, f"auto-approved: clean link-open at {st.hours}h")
         qstore.set_status(member.id, "released")
         if ok:
             fix = (f"\n\nYou've been listed as **{aged}** for now, since you never got to the age "
@@ -311,10 +390,10 @@ class VerifyPrune(commands.Cog):
                 )
             except discord.HTTPException:
                 pass
-        await self._released_alert(guild, member, row, restored, ok, aged)
+        await self._released_alert(guild, st, member, row, restored, ok, aged)
 
-    async def _released_alert(self, guild, member, row, restored, ok, aged=None):
-        ch = self._modlog()
+    async def _released_alert(self, guild, st, member, row, restored, ok, aged=None):
+        ch = self._modlog(guild, st)
         if not ch:
             return
         roles = ", ".join(r.mention for r in restored) if restored else "no stored roles"
@@ -322,8 +401,8 @@ class VerifyPrune(commands.Cog):
             title="✅ Auto-approved at the prune line — clean link-open",
             color=0x3BA55D,
             description=(
-                f"{member.mention} (`{member.id}`) passed **{HOURS}h** without verifying. Instead of "
-                f"{ACTION}ing them, the gate's score on their link-open was honoured and their "
+                f"{member.mention} (`{member.id}`) passed **{st.hours}h** without verifying. Instead of "
+                f"{st.action}ing them, the gate's score on their link-open was honoured and their "
                 f"verification is **approved**.\n\n"
                 f"They opened the verify link, let the page fingerprint them, and stopped at the "
                 f"Discord login — the step that looks like phishing."
@@ -358,9 +437,9 @@ class VerifyPrune(commands.Cog):
             pass
 
     # ------------------------------------------------------------- reporting
-    async def _spared_alert(self, guild, member, row):
+    async def _spared_alert(self, guild, st, member, row):
         """Ask a human to finish the job the clock would have finished badly."""
-        ch = self._modlog()
+        ch = self._modlog(guild, st)
         if not ch:
             return
         risk = row.get("scored_risk", 0)
@@ -368,8 +447,8 @@ class VerifyPrune(commands.Cog):
             title="🛟 Prune held off — clean link-open on file",
             color=0x3BA55D,
             description=(
-                f"{member.mention} (`{member.id}`) passed **{HOURS}h** without verifying, so the "
-                f"prune would normally {ACTION} them. It didn't: they opened their verify link, let "
+                f"{member.mention} (`{member.id}`) passed **{st.hours}h** without verifying, so the "
+                f"prune would normally {st.action} them. It didn't: they opened their verify link, let "
                 f"the page fingerprint them, and stopped at the Discord login — and the gate scored "
                 f"that open **clean**.\n\n"
                 f"They are **still quarantined**. Nothing was released."
@@ -390,36 +469,36 @@ class VerifyPrune(commands.Cog):
         except discord.Forbidden:
             pass
 
-    async def _shadow_report(self, guild, candidates):
-        ch = self._modlog()
+    async def _shadow_report(self, guild, st, candidates):
+        ch = self._modlog(guild, st)
         if not ch:
             return
         names = "\n".join(f"• {m.mention} `{m.id}` — {self._ago(m)}" for m in candidates[:25])
         extra = f"\n…and {len(candidates) - 25} more" if len(candidates) > 25 else ""
         e = discord.Embed(
-            title=f"{self._tag} — {len(candidates)} would be {ACTION}ed",
+            title=f"🧹 Verify-prune (shadow) — {len(candidates)} would be {st.action}ed",
             description=(
-                f"These hold the quarantine role and joined over **{HOURS}h** ago "
+                f"These hold the quarantine role and were held over **{st.hours}h** ago "
                 f"without verifying. **No action taken** (shadow mode).\n\n{names}{extra}"
             ),
             color=0xFFB020,
         )
-        e.set_footer(text="Set PRUNE_ENFORCE=1 to act.")
+        e.set_footer(text="Turn on 'Actually remove them' in the dashboard to act.")
         try:
             await ch.send(embed=e)
         except discord.HTTPException:
             pass
 
-    async def _enforce_report(self, guild, candidates, pruned, dm_failed, act_failed):
-        ch = self._modlog()
+    async def _enforce_report(self, guild, st, candidates, pruned, dm_failed, act_failed):
+        ch = self._modlog(guild, st)
         if not ch:
             return
-        verb = "Banned" if ACTION == "ban" else "Kicked"
+        verb = "Banned" if st.action == "ban" else "Kicked"
         lines = "\n".join(f"• {m} `{m.id}`" for m in pruned[:25]) or "—"
         e = discord.Embed(
             title=f"🧹 Verify-prune — {verb.lower()} {len(pruned)} unverified",
             description=(
-                f"Held the quarantine role and joined over **{HOURS}h** ago without "
+                f"Held the quarantine role for over **{st.hours}h** without "
                 f"verifying.\n\n**{verb}:**\n{lines}"
             ),
             color=0xE03B3B,
@@ -430,7 +509,7 @@ class VerifyPrune(commands.Cog):
             e.add_field(name="⚠️ Failed", value=f"{len(act_failed)} (check my perms/role order)", inline=True)
         remaining = len(candidates) - len(pruned) - len(act_failed)
         if remaining > 0:
-            e.add_field(name="Deferred", value=f"{remaining} (cycle cap {MAX_PER_CYCLE})", inline=True)
+            e.add_field(name="Deferred", value=f"{remaining} (cycle cap {st.max_per_cycle})", inline=True)
         try:
             await ch.send(embed=e)
         except discord.HTTPException:
@@ -449,40 +528,142 @@ class VerifyPrune(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def prune_status(self, interaction: discord.Interaction):
-        guild = self.bot.get_guild(GUILD_ID)
-        candidates = self._candidates(guild) if guild else []
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        st = Settings(guild)
+        candidates = self._candidates(guild, st) if st.qrole_id else []
         e = discord.Embed(title="🧹 Verify-prune", color=0x5B8CFF)
-        e.add_field(name="Mode", value="**ENFORCE**" if ENFORCE else "**shadow** (alert-only)", inline=True)
-        e.add_field(name="Action", value=ACTION, inline=True)
-        e.add_field(name="Grace", value=f"{HOURS}h", inline=True)
-        e.add_field(name="Interval", value=f"{INTERVAL_MIN}m (cap {MAX_PER_CYCLE}/cycle)", inline=True)
-        if SPARE_CLEAN:
+        if not st.enabled:
+            e.description = ("⚪ **Off** — held members are never auto-removed. They stay "
+                             "quarantined until someone deals with them.")
+        elif not st.altguard_on:
+            e.description = ("⚪ **Not running** — it's switched on, but AltGuard is off here, "
+                             "so there's no verification to fail. Anyone in the quarantine role "
+                             "right now was put there by LinkGuard or anti-nuke, and removing "
+                             "them for 'not verifying' would be wrong.")
+        e.add_field(name="Mode",
+                    value=("**ENFORCE**" if st.enforce else "**shadow** (alert-only)")
+                    if st.runnable else "off", inline=True)
+        e.add_field(name="Action", value=st.action, inline=True)
+        e.add_field(name="Grace", value=f"{st.hours}h", inline=True)
+        e.add_field(name="Sweep", value=f"every {INTERVAL_MIN}m (cap {st.max_per_cycle}/cycle)", inline=True)
+        if st.spare_clean:
             spare = ("**auto-approve** (clean link-open → released)"
-                     if SPARE_ACTION == "release" else "hold for mod review")
-            if SPARE_ACTION == "release" and DEFAULT_AGE:
+                     if st.spare_action == "release" else "hold for mod review")
+            if st.spare_action == "release" and DEFAULT_AGE:
                 spare += f"\n-# age defaults to **{DEFAULT_AGE}**"
         else:
-            spare = "off (kick purely on the clock)"
+            spare = "off (remove purely on the clock)"
         e.add_field(name="Clean link-open", value=spare, inline=True)
         e.add_field(name="Last sweep",
                     value=(f"<t:{int(self.last_run)}:R>" if self.last_run else "not yet"), inline=True)
+        if not st.qrole_id:
+            e.add_field(name="⚠️ Not set up",
+                        value="No quarantine role here — run `/security setup`.", inline=False)
         names = "\n".join(f"• {m.mention} — {self._ago(m)}" for m in candidates[:15]) or "none"
         extra = f"\n…and {len(candidates) - 15} more" if len(candidates) > 15 else ""
         e.add_field(name=f"Overdue now ({len(candidates)})", value=names + extra, inline=False)
+        e.set_footer(text="/prune-config to change it, or the AltGuard page on the dashboard")
         await interaction.response.send_message(embed=e, ephemeral=True)
+
+    @app_commands.command(name="prune-config",
+                          description="Set what happens to members who never verify (admin).")
+    @app_commands.describe(
+        enabled="Off = nobody is ever auto-removed; held members just stay held",
+        hours="How long they get, in hours, from the moment they're held (1–8760)",
+        action="Kick lets them rejoin and try again; ban doesn't",
+        enforce="Off = only name them in the mod-log, remove nobody",
+        spare_clean="Spare anyone the gate already scored clean off their link-open",
+    )
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Kick — they can rejoin and verify", value="kick"),
+        app_commands.Choice(name="Ban — permanent", value="ban"),
+    ])
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def prune_config(self, interaction: discord.Interaction,
+                           enabled: bool = None, hours: int = None,
+                           action: app_commands.Choice[str] = None,
+                           enforce: bool = None, spare_clean: bool = None):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        changes = {}
+        if enabled is not None:
+            changes["prune_enabled"] = 1 if enabled else 0
+        if hours is not None:
+            if not MIN_HOURS <= hours <= MAX_HOURS:
+                await interaction.response.send_message(
+                    f"❌ Give a window between **{MIN_HOURS}** and **{MAX_HOURS}** hours. "
+                    f"Anything under an hour removes people who are simply asleep.", ephemeral=True)
+                return
+            changes["prune_hours"] = hours
+        if action is not None:
+            changes["prune_action"] = action.value
+        if enforce is not None:
+            changes["prune_enforce"] = 1 if enforce else 0
+        if spare_clean is not None:
+            changes["prune_spare_clean"] = 1 if spare_clean else 0
+        if changes:
+            set_config(guild.id, **changes)
+        st = Settings(guild)
+        if not changes:
+            summary = "Nothing changed — here's what's set:"
+        else:
+            summary = "✅ Updated."
+        if not st.enabled:
+            state = "⚪ **off** — nobody is auto-removed"
+        elif not st.altguard_on:
+            state = ("⚪ **on, but idle** — AltGuard is off here, so there's no verification "
+                     "to fail and nobody is removed")
+        elif st.enforce:
+            state = f"🔴 **{st.action}** after **{st.hours}h**"
+        else:
+            state = f"🟡 **shadow** — would {st.action} after **{st.hours}h**, acts on nobody"
+        await interaction.response.send_message(
+            f"{summary}\n{state}\n"
+            f"-# Clean link-opens are {'spared' if st.spare_clean else 'not spared'}. "
+            f"Full settings on the AltGuard page of the dashboard.", ephemeral=True)
 
     @app_commands.command(name="prune-run",
                           description="Run the verify-prune sweep right now (admin).")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def prune_run(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        st = Settings(guild)
+        if not st.runnable:
+            if not st.enabled:
+                why = "it's switched **off** — `/prune-config enabled:True` turns it on"
+            elif not st.altguard_on:
+                why = "**AltGuard is off** here, so there's no verification to fail"
+            else:
+                why = "no **quarantine role** is set — run `/security setup`"
+            await interaction.response.send_message(f"⚪ Nothing to run: {why}.", ephemeral=True)
+            return
+        where = (f"results post to <#{st.modlog_id}>." if st.modlog_id
+                 else "⚠️ no mod-log channel is set, so there's nowhere to report to.")
         await interaction.response.send_message(
-            f"Running a verify-prune sweep ({'enforce' if ENFORCE else 'shadow'})… "
-            f"results post to <#{MODLOG_CHANNEL_ID}>.", ephemeral=True)
-        await self.sweep()
+            f"Running a verify-prune sweep ({'enforce' if st.enforce else 'shadow'})… {where}",
+            ephemeral=True)
+        candidates = self._candidates(guild, st)
+        if not candidates:
+            return
+        if not st.enforce:
+            await self._shadow_report(guild, st, candidates)
+            return
+        clean = await self._clean_passes() if st.spare_clean else {}
+        await self._enforce(guild, st, candidates, clean)
 
     @prune_status.error
     @prune_run.error
+    @prune_config.error
     async def _err(self, interaction: discord.Interaction, error):
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message(

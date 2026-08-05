@@ -6,8 +6,11 @@ from discord import app_commands
 from discord.ext import commands
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import quarantine_store as qstore
+from utils import quarantine as qt
 from utils.security_config import get_config, set_config
 from utils.links import config_view
+from cogs.moderation import _can_act
 
 SEV_CRITICAL, SEV_HIGH, SEV_MEDIUM = 0, 1, 2
 SEV_EMOJI = {SEV_CRITICAL: "🟥", SEV_HIGH: "🟧", SEV_MEDIUM: "🟨"}
@@ -452,9 +455,165 @@ class Security(commands.Cog):
             "⚪ Protection **disabled** for this server. The quarantine role and channel locks are left "
             "in place (harmless) — delete the role manually if you want them gone.", ephemeral=True)
 
+    # ───────────────────────────── manual quarantine ─────────────────────────
+    # The gate decides who to hold on the way IN. This is the door staff can
+    # close on someone already inside — an argument that's turning into a raid,
+    # a compromised account posting links, a member you want contained while you
+    # read the logs. It is deliberately independent of verification status: a
+    # fully verified member can be quarantined, and a held member's verification
+    # is not touched by lifting it.
+    def _q_log(self, guild, cfg):
+        cid = cfg.get("modlog_channel_id")
+        return guild.get_channel(int(cid)) if cid else None
+
+    @app_commands.command(
+        name="quarantine",
+        description="Hold a member — strip their roles and lock them out, whatever their verification status.")
+    @app_commands.describe(member="Who to hold",
+                           reason="Why — goes in the log and in their DM",
+                           notify="DM them what happened and how to get out (default: yes)")
+    @app_commands.default_permissions(manage_roles=True)
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def quarantine_cmd(self, interaction: discord.Interaction, member: discord.Member,
+                             reason: str = "", notify: bool = True):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild, cfg = interaction.guild, get_config(interaction.guild.id)
+
+        err = _can_act(interaction.user, member, guild.me, "quarantine")
+        if err:
+            await interaction.followup.send(f"❌ {err}", ephemeral=True)
+            return
+        if member.bot:
+            await interaction.followup.send(
+                "❌ That's a bot — its role is managed by Discord and can't be stripped. "
+                "Kick the app instead.", ephemeral=True)
+            return
+
+        why = reason.strip() or f"manual quarantine by {interaction.user}"
+        # Warn BEFORE acting: a role we can't strip is one they keep, and if it
+        # carries Administrator the "quarantine" would be theatre.
+        stuck = qt.blocked_roles(member, qt.role_for(guild))
+        ok, removed, error = await qt.apply(member, why)
+        if not ok:
+            await interaction.followup.send(f"❌ Couldn't quarantine {member.mention} — {error}",
+                                            ephemeral=True)
+            return
+
+        vc = cfg.get("verify_channel_id")
+        dmed = False
+        if notify:
+            where = f"\n\nYou can still see <#{vc}> — talk to the staff there." if vc else ""
+            try:
+                await member.send(
+                    f"🔒 Your access to **{guild.name}** has been put on hold.\n"
+                    f"**Reason:** {why}\n"
+                    f"Your roles have been saved and are given back in full when the hold "
+                    f"is lifted — nothing is lost.{where}")
+                dmed = True
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+        warn = ""
+        if stuck:
+            warn = ("\n⚠️ Couldn't strip " + ", ".join(r.mention for r in stuck) +
+                    " — they sit at or above my top role and carry real permissions. "
+                    "**They still hold them.** Move my role higher.")
+        await interaction.followup.send(
+            f"🔒 Quarantined {member.mention} — stripped **{len(removed)}** role(s), saved for restore.\n"
+            f"• Reason: {why}\n"
+            f"• {'📨 DMed them' if dmed else ('📪 DMs closed' if notify else '🔕 Not notified')}\n"
+            f"-# `/unquarantine` gives every role back exactly as it was."
+            + warn, ephemeral=True)
+
+        ch = self._q_log(guild, cfg)
+        if ch:
+            e = discord.Embed(
+                title="🔒 Member quarantined (manual)", color=0xE0A23B,
+                description=f"{member.mention} (`{member.id}`) was held by {interaction.user.mention}.")
+            e.add_field(name="Reason", value=why[:1024], inline=False)
+            e.add_field(name="Roles stripped",
+                        value=(", ".join(r.mention for r in removed)[:1024] or "none"), inline=False)
+            if stuck:
+                e.add_field(name="⚠️ Kept (above my role)",
+                            value=", ".join(r.mention for r in stuck)[:1024], inline=False)
+            e.set_footer(text="Reverse with /unquarantine — roles are restored exactly.")
+            try:
+                await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+    @app_commands.command(name="unquarantine",
+                          description="Lift a hold and give back every role that was stripped.")
+    @app_commands.describe(member="Who to release", reason="Why — goes in the log")
+    @app_commands.default_permissions(manage_roles=True)
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def unquarantine_cmd(self, interaction: discord.Interaction, member: discord.Member,
+                               reason: str = ""):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild, cfg = interaction.guild, get_config(interaction.guild.id)
+
+        if not (qt.is_held(member) or qstore.is_quarantined(member.id)):
+            await interaction.followup.send(
+                f"{member.mention} isn't being held here — nothing to lift.", ephemeral=True)
+            return
+
+        why = reason.strip() or f"lifted by {interaction.user}"
+        # Read the verification state BEFORE lifting: a member the GATE is
+        # holding will simply be re-held on their next join or sync, and telling
+        # someone their release stuck when it won't is the worst outcome here.
+        v = qstore.verification(member.id) or {}
+        gate_held = v.get("status") in ("pending", "quarantined")
+
+        ok, restored, error = await qt.lift(member, why)
+        if not ok:
+            await interaction.followup.send(f"❌ Couldn't lift the hold — {error}", ephemeral=True)
+            return
+
+        note = ""
+        if gate_held:
+            note = ("\n\n⚠️ AltGuard is still holding an **unfinished verification** for them. "
+                    "This lift gives their roles back, but the gate can hold them again. "
+                    "Use `/altguard-release` instead if you're vouching for them.")
+        try:
+            await member.send(
+                f"🔓 The hold on your access to **{guild.name}** has been lifted — "
+                f"your roles are back.")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        await interaction.followup.send(
+            f"🔓 Lifted the hold on {member.mention}. Restored: "
+            f"{', '.join(r.mention for r in restored) if restored else 'no stored roles'}." + note,
+            ephemeral=True)
+
+        ch = self._q_log(guild, cfg)
+        if ch:
+            e = discord.Embed(
+                title="🔓 Quarantine lifted", color=0x3BA55D,
+                description=f"{member.mention} (`{member.id}`) was released by {interaction.user.mention}.")
+            e.add_field(name="Reason", value=why[:1024], inline=False)
+            e.add_field(name="Roles restored",
+                        value=(", ".join(r.mention for r in restored)[:1024] or "no stored roles"),
+                        inline=False)
+            try:
+                await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message("❌ Administrator permission required.", ephemeral=True)
+            need = ", ".join(p.replace("_", " ").title() for p in error.missing_permissions)
+            msg = f"❌ You need **{need}** to use that."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
 
 
 async def setup(bot):

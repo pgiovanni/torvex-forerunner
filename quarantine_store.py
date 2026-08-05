@@ -248,6 +248,23 @@ def get(uid):
     return json.loads(row["role_ids"]) if row else None
 
 
+def guild_of(uid):
+    """Which guild the stored snapshot belongs to, as an int (None if none).
+
+    The table is keyed by uid alone, so a member held in two servers has ONE
+    snapshot. Anything that pops a record must check this first — popping in
+    server B would throw away server A's roles, and A could then never restore
+    them."""
+    with _conn() as c:
+        row = c.execute("SELECT guild_id FROM quarantined WHERE uid=?", (str(uid),)).fetchone()
+    if not row or not row["guild_id"]:
+        return None
+    try:
+        return int(row["guild_id"])
+    except (TypeError, ValueError):
+        return None
+
+
 def quarantine_reason(uid):
     with _conn() as c:
         row = c.execute("SELECT reason FROM quarantined WHERE uid=?", (str(uid),)).fetchone()
