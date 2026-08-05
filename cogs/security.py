@@ -274,15 +274,70 @@ class Security(commands.Cog):
         embed.add_field(name="​", value="​", inline=True)
         embed.add_field(name="Quarantine role", value=_role(cfg.get("quarantine_role_id")), inline=True)
         embed.add_field(name="Mod-log channel", value=_chan(cfg.get("modlog_channel_id")), inline=True)
+        # A quarantine with no visible verify channel is a silent dead end: the
+        # member is held and has nowhere to be told why or how to get out.
+        vc = cfg.get("verify_channel_id")
+        embed.add_field(
+            name="Verify channel",
+            value=(_chan(vc) if vc else "⚠️ *none — held members see nothing*"), inline=True)
         embed.add_field(name="Whitelist", value=f"{len(cfg.get('whitelist') or [])} id(s)", inline=True)
         embed.set_footer(text="/security setup to enable · /security enforce to act · AltGuard gate ships with the dashboard")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    async def _provision_quarantine_role(self, guild, role=None):
+        """Create (if needed) and correctly place the quarantine role.
+
+        Returns (role, created, notes). Raises discord.Forbidden if we can't
+        create it at all.
+
+        Placement is NOT about permission math — the role carries none, and a
+        channel deny works from any height. It decides WHO CAN UNDO a
+        quarantine: only members whose top role sits above it can take it off.
+        Left at the default bottom position, any mod with Manage Roles can free
+        someone the gate caught. So it goes directly beneath the bot's own top
+        role: as high as we can manage, above every ordinary staff role.
+        """
+        notes, created = [], False
+        if role is None:
+            role = await guild.create_role(
+                name="Quarantined", permissions=discord.Permissions.none(),
+                colour=discord.Colour(0x4F545C), hoist=False, mentionable=False,
+                reason="AltGuard: quarantine role for security suite")
+            created = True
+
+        me = guild.me
+        if me.top_role <= role and not me.guild_permissions.administrator:
+            notes.append(f"⚠️ My top role sits **below** {role.mention} — move **{me.top_role.name}** "
+                         "above it or I can't apply or remove the quarantine.")
+            return role, created, notes
+
+        # position 0 is @everyone; never try to occupy it
+        target = max(1, me.top_role.position - 1)
+        if role.position != target:
+            try:
+                await role.edit(position=target,
+                                reason="AltGuard: place quarantine role above staff roles")
+                above = [r.name for r in guild.roles
+                         if 0 < r.position < role.position and not r.managed
+                         and r.permissions.manage_roles]
+                if above:
+                    notes.append(f"↕️ Moved {role.mention} above {len(above)} role(s) that hold "
+                                 f"Manage Roles, so they can't undo a quarantine.")
+            except discord.Forbidden:
+                notes.append(f"⚠️ Couldn't reposition {role.mention} (need **Manage Roles**). It still "
+                             "works, but any staff role above it can remove it from a held member.")
+            except discord.HTTPException:
+                notes.append(f"⚠️ Discord refused to move {role.mention}; position it manually just "
+                             f"below **{me.top_role.name}**.")
+        return role, created, notes
+
     @security.command(name="setup", description="Enable anti-nuke + quarantine-lock for this server.")
     @app_commands.describe(modlog="Channel for security alerts",
+                           verify_channel="The ONE channel a quarantined member can still see",
                            quarantine_role="Existing lockout role (leave blank to auto-create one)")
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_cmd(self, interaction: discord.Interaction, modlog: discord.TextChannel,
+                        verify_channel: discord.TextChannel,
                         quarantine_role: discord.Role = None):
         if not interaction.guild:
             await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
@@ -290,41 +345,65 @@ class Security(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild = interaction.guild
 
-        role = quarantine_role
-        created = False
-        if role is None:
-            try:
-                role = await guild.create_role(
-                    name="Quarantined", permissions=discord.Permissions.none(),
-                    reason="AltGuard: quarantine role for security suite")
-                created = True
-            except discord.Forbidden:
-                await interaction.followup.send(
-                    "❌ I need **Manage Roles** to create a quarantine role — grant it, or pass an "
-                    "existing role with `quarantine_role:`.", ephemeral=True)
-                return
-        # hierarchy sanity: the bot must sit above the quarantine role to manage it
-        if guild.me.top_role <= role and not guild.me.guild_permissions.administrator:
+        try:
+            role, created, notes = await self._provision_quarantine_role(guild, quarantine_role)
+        except discord.Forbidden:
             await interaction.followup.send(
-                f"⚠️ My top role is below {role.mention} — move my role **above** it or I can't apply it.",
-                ephemeral=True)
+                "❌ I need **Manage Roles** to create a quarantine role — grant it, or pass an "
+                "existing role with `quarantine_role:`.", ephemeral=True)
+            return
 
+        # Recorded BEFORE the sweep: the sweep reads verify_channel_id to decide
+        # which channel stays visible, so setting it after would lock the one
+        # channel a held member needs.
         set_config(guild.id, antinuke_enabled=1, qlock_enabled=1,
-                   quarantine_role_id=role.id, modlog_channel_id=str(modlog.id))
+                   quarantine_role_id=role.id, modlog_channel_id=str(modlog.id),
+                   verify_channel_id=verify_channel.id)
 
-        # lock the quarantine role out of every channel right now
         swept = ""
         qlock = self.bot.get_cog("QuarantineLock")
         if qlock is not None:
             fixed, total = await qlock.sweep(guild)
-            swept = f"\n🔒 Locked the role out of **{fixed}/{total}** channels."
+            swept = (f"\n🔒 Locked the role out of **{fixed}/{total}** channels — "
+                     f"{verify_channel.mention} left visible (read-only).")
 
         await interaction.followup.send(
             f"✅ **Protection enabled** for **{guild.name}**.\n"
             f"• Quarantine role: {role.mention}{' *(created)*' if created else ''}\n"
+            f"• Verify channel: {verify_channel.mention}\n"
             f"• Mod-log: {modlog.mention}\n"
             f"• Anti-nuke is in **🟡 shadow mode** (alerts only) — watch {modlog.mention} for a bit, then "
-            f"run `/security enforce on:True` to let it act.{swept}",
+            f"run `/security enforce on:True` to let it act.{swept}"
+            + ("\n\n" + "\n".join(notes) if notes else ""),
+            ephemeral=True)
+
+    @security.command(name="verify-channel",
+                      description="Change which channel quarantined members can still see.")
+    @app_commands.describe(channel="The one channel that stays visible (read-only) while quarantined")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def verify_channel_cmd(self, interaction: discord.Interaction,
+                                 channel: discord.TextChannel):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        cfg = get_config(interaction.guild.id)
+        if not cfg.get("quarantine_role_id"):
+            await interaction.followup.send(
+                "⚠️ No quarantine role set up yet — run `/security setup` first.", ephemeral=True)
+            return
+        old = cfg.get("verify_channel_id")
+        set_config(interaction.guild.id, verify_channel_id=channel.id)
+        # Re-sweep so the previous verify channel gets locked back down in the
+        # same breath — otherwise it stays permanently open to held members.
+        swept = ""
+        qlock = self.bot.get_cog("QuarantineLock")
+        if qlock is not None:
+            fixed, total = await qlock.sweep(interaction.guild)
+            swept = f" ({fixed}/{total} channels corrected)"
+        await interaction.followup.send(
+            f"✅ Quarantined members can now see {channel.mention} and nothing else{swept}."
+            + (f"\n🔒 <#{old}> was re-locked." if old and int(old) != channel.id else ""),
             ephemeral=True)
 
     @security.command(name="enforce", description="Toggle whether anti-nuke actually acts (vs alert-only).")
