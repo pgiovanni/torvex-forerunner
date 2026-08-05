@@ -283,6 +283,95 @@ class AntiNuke(commands.Cog):
         await ch.send(content="@here", embed=embed)
 
     # ----------------------------------------------------- chat abuse (messages)
+    # ─────────────────────────────────────────────── user-installed app guard
+    @commands.Cog.listener("on_message")
+    async def _appguard(self, message):
+        """Catch USER-INSTALLED applications being run in this server.
+
+        These are the blind spot: the app is installed on the *person*, not the
+        guild, so it never appears in Server Settings → Integrations, an admin
+        cannot see it, and `bot_add` never fires. The only server-side control is
+        the Use External Apps permission — which most servers leave open because
+        it's on by default.
+
+        Discord does hand us the receipt though: a response posted by an app
+        carries `interaction_metadata`, and `is_user_integration` distinguishes
+        "installed to this user" from "installed to this server". That gives us
+        the app id AND the member who invoked it, which is the attribution the
+        raid-bot case (jalapeño) never had.
+
+        Note this is a SEPARATE listener from the chat-abuse one on purpose: that
+        one drops bot messages immediately, and every one of these IS a bot
+        message.
+        """
+        guild = message.guild
+        if guild is None or not is_enabled(guild.id, "antinuke"):
+            return
+        md = getattr(message, "interaction_metadata", None)
+        if md is None or not getattr(md, "is_user_integration", False):
+            return
+        app_id = message.application_id
+        if app_id and str(app_id) == str(self.bot.user.id):
+            return                                   # our own commands
+        cfg = get_config(guild.id)
+        if not cfg.get("appguard_enabled"):
+            return
+        if str(app_id) in {str(a) for a in (cfg.get("appguard_allow_apps") or [])}:
+            return                                   # explicitly permitted app
+
+        invoker = getattr(md, "user", None)
+        member = guild.get_member(invoker.id) if invoker else None
+        if member and self._exempt(guild, member, cfg):
+            return
+
+        action = (cfg.get("appguard_action") or "log").lower()
+        deleted = acted = False
+        if action in ("delete", "timeout", "quarantine"):
+            try:
+                await message.delete()
+                deleted = True
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                pass
+        if member and action == "timeout":
+            mins = int(cfg.get("appguard_timeout_min", 10) or 10)
+            try:
+                await member.timeout(datetime.timedelta(minutes=mins),
+                                     reason="AntiNuke: user-installed app used here")
+                acted = True
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+        elif member and action == "quarantine":
+            acted = await self._quarantine_offender(
+                guild, member, "used a user-installed application", cfg)
+
+        ch = self._modlog(guild, cfg)
+        if not ch:
+            return
+        who = (f"{member.mention} (`{member.id}`)" if member
+               else (f"`{invoker.id}`" if invoker else "unknown user"))
+        app_name = getattr(getattr(message, "application", None), "name", None)
+        e = discord.Embed(
+            title="📱 User-installed app used here",
+            color=0xE8A33D if action == "log" else 0xE03B3B,
+            description=(f"{who} ran an application that is installed on **their "
+                         f"account**, not on this server — so it never shows up in "
+                         f"Server Settings → Integrations."))
+        e.add_field(name="Application",
+                    value=(f"{app_name} (`{app_id}`)" if app_name else f"`{app_id}`"),
+                    inline=False)
+        e.add_field(name="Channel", value=message.channel.mention, inline=True)
+        e.add_field(name="Response", value="deleted" if deleted else "left up", inline=True)
+        e.add_field(name="Member",
+                    value=("timed out" if action == "timeout" and acted else
+                           "quarantined" if action == "quarantine" and acted else
+                           "not actioned"), inline=True)
+        e.set_footer(text="Close this for good: Server Settings → Roles → "
+                          "turn off Use External Apps")
+        try:
+            await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.guild is None or message.author.bot or message.webhook_id:

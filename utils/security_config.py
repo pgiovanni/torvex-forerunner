@@ -52,6 +52,13 @@ DEFAULTS = {
     # instantly reverted + the granter stripped, unless the granter is the guild
     # OWNER or this bot (ignores the general whitelist). 1 = on.
     "antinuke_admin_lockdown": 1,
+    # user-installed application guard. These apps live on the PERSON, not the
+    # server — invisible in Server Settings → Integrations, no bot_add event —
+    # so this listener is the only server-side visibility that exists.
+    "appguard_enabled": 0,
+    "appguard_action": "log",        # log | delete | timeout | quarantine
+    "appguard_timeout_min": 10,
+    "appguard_allow_apps": [],       # application ids explicitly permitted here
     # altguard tunables
     "quarantine_on_join": 0,        # forced gate
     "dm_on_join": 1,
