@@ -49,22 +49,74 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 DB_PATH = os.path.join(ROOT, "messages.db")
 MEDIA_DIR = os.path.join(ROOT, "media_cache")
 
-# ── RETENTION IS OPERATOR-SCOPED ────────────────────────────────────────────
-# This bot is public: anyone can add it. Enabling msglog must therefore never
-# make the OPERATOR the custodian of another server's message content or their
-# members' deleted images — that is their data, on our disk, under our legal
-# exposure, for communities we don't moderate.
+# ── RETENTION TIERS ─────────────────────────────────────────────────────────
+# This bot is public: anyone can add it. Retention must therefore never happen
+# to a server by accident — but a message log that forgets is barely a log, so
+# the answer is consent, not refusal. Three tiers:
 #
-# The line: the bot LOGS for everyone, but only REMEMBERS for the operator.
-#   * allowlisted guilds  -> full archive + media cache (unchanged behaviour)
-#   * everyone else       -> live log embeds only. Deletes still resolve their
-#                            content from discord.py's in-memory gateway cache,
-#                            so their mod log stays useful; nothing is persisted.
-# Defaults to the operator's own guild so an existing deployment is unchanged
+#   1. LOG ONLY (default, every guild, no agreement needed)
+#      Live embeds only. Deletes still resolve from discord.py's gateway cache,
+#      so the mod log works out of the box; nothing is written to our disk.
+#
+#   2. MESSAGE ARCHIVE (guild owner accepts the data-retention terms)
+#      Message rows + edits + the text identity ledger persist. Every row is
+#      keyed by guild_id and every read is filtered by it, so a guild is a
+#      lookup away and revoking the terms purges exactly that guild.
+#
+#   3. MEDIA ARCHIVE (operator grants it — MSGLOG_ARCHIVE_GUILDS)
+#      Adds the attachment/sticker/avatar cache: actual FILES from strangers'
+#      servers on the operator's disk, sharing one LRU directory and one disk
+#      budget. That is the tier that can't be handed out automatically, so it
+#      is opt-in by request. Servers without it still get full text history.
+#
+# Defaults to the operator's own guild, so an existing deployment is unchanged
 # and a fresh one is safe out of the box.
 ARCHIVE_GUILDS = {g.strip() for g in os.environ.get(
     "MSGLOG_ARCHIVE_GUILDS",
     os.environ.get("ALTGUARD_GUILD_ID", "")).split(",") if g.strip()}
+
+# The operator's OWN guilds — the only ones whose settings page may influence
+# shared disk policy (retention window, cache cap). A guild can be granted the
+# media tier without being handed the operator's disk budget.
+OPERATOR_GUILDS = {g.strip() for g in os.environ.get(
+    "ALTGUARD_GUILD_ID", "").split(",") if g.strip()} or set(ARCHIVE_GUILDS)
+
+# Bump when the terms text changes materially — acceptance records store the
+# version they agreed to, so an old acceptance can be re-prompted rather than
+# silently treated as consent to something they never read.
+TERMS_VERSION = 1
+
+# guild_id -> acceptance row. Cached because on_message consults it per message;
+# the DB table is the source of truth and this is refilled at startup.
+_CONSENT = {}
+
+
+# DRAFT — operator should review the wording before this ships publicly.
+TERMS_TEXT = (
+    "📜 **Message archive — data retention terms (v1)**\n"
+    "Turning the archive on means the person who runs this bot stores your server's data on "
+    "their machine. Read this before you accept.\n\n"
+    "**Stored:** message text, author, channel and timestamps · edit history · deletions and who "
+    "performed them · member events (joins, leaves, nickname/username changes, timeouts, kicks, "
+    "bans). Storage begins when you accept — there is no history from before that.\n"
+    "**Not stored on this tier:** files. Attachments, images, stickers and avatars are not kept, "
+    "so **deleted media cannot be recovered**. File archiving is granted separately by the "
+    "operator on request.\n"
+    "**Who can read it:** people with Manage Server *in this server* (via the bot's commands), "
+    "and the bot operator, who maintains the database and cannot be locked out of it.\n"
+    "**How long:** until you revoke. `/msglog revoke-terms` stops storage and permanently deletes "
+    "everything held for this server.\n"
+    "**Your side of it:** you tell your members what is logged, and you remain responsible for "
+    "your community's data. The operator supplies the tooling, not the policy.\n"
+    "**No guarantee of completeness:** outages, restarts, rate limits, size caps and Discord's "
+    "own blind spots all lose records. Treat the archive as helpful, never as proof."
+)
+
+
+def consent_ok(guild_id) -> bool:
+    """Current, un-revoked acceptance of the retention terms for this guild."""
+    row = _CONSENT.get(str(guild_id))
+    return bool(row) and int(row.get("version") or 0) >= TERMS_VERSION
 
 # Whole-cache disk limits come from the OPERATOR's environment only. They used
 # to be max()'d across every msglog-enabled guild, which let any remote admin
@@ -74,10 +126,43 @@ MEDIA_CAP_GB = max(1, int(os.environ.get("MSGLOG_MEDIA_CAP_GB") or 5))
 MEDIA_DAYS = max(1, int(os.environ.get("MSGLOG_MEDIA_DAYS") or 30))
 
 
-def archives_content(guild_id) -> bool:
-    """Whether we RETAIN message content / media / identity history for a guild.
-    Logging is unaffected — this governs persistence only."""
+def archives_messages(guild_id) -> bool:
+    """Tier 2: persist message rows, edits and the text identity ledger.
+    The operator's own guilds qualify implicitly; everyone else needs an
+    accepted agreement. Logging is unaffected — this governs persistence only."""
+    return str(guild_id) in ARCHIVE_GUILDS or consent_ok(guild_id)
+
+
+def archives_media(guild_id) -> bool:
+    """Tier 3: cache attachments, stickers and avatar bytes to our disk.
+    Operator-granted only — files are the shared, finite, legally awkward
+    resource, so a guild has to ask for it rather than tick a box."""
     return str(guild_id) in ARCHIVE_GUILDS
+
+
+def unstored_attachments(atts, cached_paths, cap_mb):
+    """Attachments named in the archive that have NO file on disk, with why.
+
+    Feeds the honesty line on delete embeds: the log must never imply it kept
+    something it didn't. Reasons are 'too large' (over the per-file cache cap)
+    or 'not archived' (cache off / not granted / CDN fetch failed / pruned).
+    """
+    have = set()
+    for p in cached_paths:
+        parts = os.path.basename(p).split("_", 2)
+        tok = parts[1] if len(parts) == 3 else ""
+        if tok.isdigit():
+            have.add(int(tok))
+    cap = max(0, int(cap_mb or 0)) * 1024 * 1024
+    missing = []
+    for i, a in enumerate(atts or []):
+        if i in have:
+            continue
+        size = a.get("size") or 0
+        missing.append((a.get("filename") or "?",
+                        "too large" if cap and size > cap else "not archived",
+                        size))
+    return missing
 FLUSH_SECONDS = 30
 RECENT_CAP = 4000           # in-memory rows for instant delete/edit lookups
 AUDIT_WAIT = 1.3            # audit entries lag the gateway event slightly
@@ -505,9 +590,34 @@ class ModLog(commands.Cog):
                        data        BLOB
                    )""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_avatar_uid ON avatar_blobs(uid)")
+            # Who agreed to us keeping their server's data, when, and to which
+            # version of the terms. Kept in the same DB as the data it licenses,
+            # so a copy of the archive always carries its own permission slip.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS archive_consent (
+                       guild_id    TEXT PRIMARY KEY,
+                       guild_name  TEXT,
+                       uid         TEXT,           -- who accepted (guild owner)
+                       username    TEXT,
+                       accepted_ts REAL,
+                       version     INTEGER,
+                       revoked_ts  REAL
+                   )""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ident_uid ON identity_events(uid, ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ident_kind ON identity_events(guild_id, kind, ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ident_after ON identity_events(after)")
+        self._load_consent()
+
+    def _load_consent(self):
+        """Refill the acceptance cache from disk. Consulted per message, so it
+        must never touch the DB on the hot path."""
+        _CONSENT.clear()
+        try:
+            with self._conn() as c:
+                for r in c.execute("SELECT * FROM archive_consent WHERE revoked_ts IS NULL"):
+                    _CONSENT[str(r["guild_id"])] = dict(r)
+        except Exception:
+            pass  # a consent read that fails must fail CLOSED: no rows = no retention
 
     def _conn(self):
         c = sqlite3.connect(DB_PATH, timeout=30)
@@ -599,9 +709,9 @@ class ModLog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.guild is None or not is_enabled(message.guild.id, "msglog"):
             return
-        # Non-operator guilds: log, don't remember. Their deletes still render
-        # from the gateway cache; we simply never write their content to disk.
-        if not archives_content(message.guild.id):
+        # Tier 1 guilds: log, don't remember. Their deletes still render from
+        # the gateway cache; we simply never write their content to disk.
+        if not archives_messages(message.guild.id):
             return
         atts = [{"filename": a.filename, "url": a.url, "size": a.size,
                  "content_type": a.content_type} for a in message.attachments]
@@ -625,9 +735,9 @@ class ModLog(commands.Cog):
             await self._cache_media(message)
 
     async def _cache_media(self, message):
-        # Defence in depth: on_message already returns early for non-operator
-        # guilds, but nothing else may ever write a stranger's media to our disk.
-        if not archives_content(message.guild.id):
+        # Tier 3 only. A guild can archive its text without ever putting a file
+        # on our disk, and nothing but an operator grant opens this path.
+        if not archives_media(message.guild.id):
             return
         cfg = get_config(message.guild.id)
         if not cfg.get("msglog_media"):
@@ -747,7 +857,14 @@ class ModLog(commands.Cog):
                    "created_ts": m.created_at.timestamp(), "content": m.content or "",
                    "reply_to": str(m.reference.message_id)
                    if m.reference and m.reference.message_id else None,
-                   "attachments": None,
+                   # Names/sizes only — nothing is fetched or written to disk.
+                   # Without this a non-archiving guild's delete embed showed no
+                   # sign an attachment was ever there, which reads as "there
+                   # wasn't one" rather than "we didn't keep it".
+                   "attachments": json.dumps(
+                       [{"filename": a.filename, "url": a.url, "size": a.size,
+                         "content_type": a.content_type} for a in m.attachments])
+                   if m.attachments else None,
                    "stickers": json.dumps(sticker_meta(m.stickers)) if m.stickers else None,
                    "poll": json.dumps(poll_meta(m.poll)) if getattr(m, "poll", None) else None,
                    "forward": json.dumps(fwd) if fwd else None}
@@ -824,13 +941,16 @@ class ModLog(commands.Cog):
                 embed.add_field(name="↪️ Forwarded message",
                                 value=_trunc(format_forward(fw), 1024), inline=False)
         else:
+            why = ("this server's messages aren't stored — `/msglog terms`"
+                   if not archives_messages(payload.guild_id) else "predates tracking")
             embed.description = (f"Message `{payload.message_id}` in <#{payload.channel_id}> "
-                                 f"— **not in the archive** (predates tracking).")
+                                 f"— **content not recoverable** ({why}).")
         if hit:
             embed.add_field(name="Deleted by", value=_deleter_line(hit), inline=False)
         files, quarantined = [], []
         atts = json.loads(row["attachments"]) if row and row.get("attachments") else []
-        for path in self._cached_media(payload.message_id):
+        cached = self._cached_media(payload.message_id)
+        for path in cached:
             if not is_repostable(path, atts):
                 quarantined.append(path)
                 continue
@@ -857,11 +977,25 @@ class ModLog(commands.Cog):
                 inline=False)
         media_ch = self._media_channel(guild, cfg)
         route_media = bool(files) and media_ch is not None and media_ch.id != log_ch.id
-        if atts and not files and not quarantined:
-            embed.add_field(name="Attachments (not recoverable)",
-                            value=_trunc("\n".join(a.get("filename", "?") for a in atts), 512),
-                            inline=False)
-        elif route_media:
+        # Say plainly what we did NOT keep. A log that lists an attachment while
+        # silently having no copy of it reads like evidence right up until the
+        # moment somebody needs the file.
+        cap_mb = cfg.get("msglog_media_max_mb", 25)
+        missing = unstored_attachments(atts, cached, cap_mb)
+        if missing:
+            lines = []
+            for name, why, size in missing[:5]:
+                reason = f"over the {cap_mb} MB cache limit" if why == "too large" else "not archived"
+                lines.append(f"`{name}` · {reason}" + (f" ({size:,} B)" if size else ""))
+            if len(missing) > 5:
+                lines.append(f"… +{len(missing) - 5} more")
+            if not archives_media(guild.id):
+                lines.append("*File archiving is off for this server — text is kept, "
+                             "attachments aren't. Ask the bot operator to enable it.*")
+            embed.add_field(
+                name=f"📭 Not stored — unrecoverable ({len(missing)})",
+                value=_trunc("\n".join(lines), 1024), inline=False)
+        if route_media:
             embed.add_field(name="🖼️ Deleted media",
                             value=f"re-posted in {media_ch.mention}", inline=False)
         elif files:
@@ -1059,12 +1193,15 @@ class ModLog(commands.Cog):
         row_in_mem = self._recent.get(str(payload.message_id))
         if row_in_mem is not None:
             row_in_mem["content"] = new
-        with self._conn() as c:
-            c.execute("UPDATE messages SET content=? WHERE message_id=?",
-                      (new, str(payload.message_id)))
-            c.execute("INSERT INTO edits(message_id,guild_id,edited_ts,old_content,new_content) "
-                      "VALUES (?,?,?,?,?)",
-                      (str(payload.message_id), str(payload.guild_id), edited_ts, old, new))
+        # An edit row is message content like any other — a guild that stores
+        # nothing must not accumulate before/after text through this path.
+        if archives_messages(payload.guild_id):
+            with self._conn() as c:
+                c.execute("UPDATE messages SET content=? WHERE message_id=?",
+                          (new, str(payload.message_id)))
+                c.execute("INSERT INTO edits(message_id,guild_id,edited_ts,old_content,new_content) "
+                          "VALUES (?,?,?,?,?)",
+                          (str(payload.message_id), str(payload.guild_id), edited_ts, old, new))
 
         cfg = get_config(payload.guild_id)
         log_ch = self._log_channel(guild, cfg)
@@ -1098,10 +1235,10 @@ class ModLog(commands.Cog):
     # ------------------------------------------------------------- media pruning
     @tasks.loop(hours=12)
     async def media_pruner(self):
-        # Operator-scoped: only guilds allowed to WRITE media may influence how
-        # long it is kept. A remote tenant must not extend retention on our disk.
+        # Only the operator's own guilds may influence how long media is kept —
+        # a granted tenant must not be able to extend retention on our disk.
         days = MEDIA_DAYS
-        for gid in ARCHIVE_GUILDS:
+        for gid in OPERATOR_GUILDS:
             days = max(days, int(get_config(gid).get("msglog_media_days", MEDIA_DAYS)))
         cutoff = time.time() - days * 86400
         try:
@@ -1119,9 +1256,10 @@ class ModLog(commands.Cog):
         """Hard whole-cache size cap, oldest evicted first. Age retention alone
         leaves a disk-fill DoS open (a Nitro account can post ~250MB/message);
         this turns the worst case into 'attacker evicts old memes'."""
+        # The cap is the OPERATOR's disk budget and comes from their environment
+        # only. Reading it from guild config (even an allowlisted guild's) let a
+        # granted server raise a shared global limit from its own settings page.
         cap_gb = MEDIA_CAP_GB
-        for gid in ARCHIVE_GUILDS:
-            cap_gb = max(cap_gb, int(get_config(gid).get("msglog_media_max_gb", MEDIA_CAP_GB)))
         try:
             entries = [(e.path, e.stat().st_mtime, e.stat().st_size)
                        for e in os.scandir(MEDIA_DIR) if e.is_file()]
@@ -1367,11 +1505,11 @@ class ModLog(commands.Cog):
         Deliberately best-effort and swallowing: the ledger must never be able
         to break the embed that the mods actually see.
 
-        Operator-scoped like the message archive: a remote guild's mods still get
-        every join/leave/ban/rename embed live, but we keep no lasting history of
-        their members. The embed is the product; the ledger is ours.
+        Scoped like the message archive (tier 2): a guild that hasn't accepted
+        the terms still gets every join/leave/ban/rename embed live, but we keep
+        no lasting history of their members.
         """
-        if not archives_content(guild_id):
+        if not archives_messages(guild_id):
             return
         try:
             uid = getattr(user, "id", user)
@@ -1613,7 +1751,12 @@ class ModLog(commands.Cog):
         if asset is None:
             return None
         ahash = getattr(asset, "key", None) or str(asset)
-        cfg = get_config(getattr(getattr(user, "guild", None), "id", 0) or 0)
+        gid = getattr(getattr(user, "guild", None), "id", 0) or 0
+        # Bytes are tier 3 like any other cached file — these are members' FACES,
+        # so a text-tier guild records which picture it was (hash) and nothing more.
+        if not archives_media(gid):
+            return ahash
+        cfg = get_config(gid)
         if not cfg.get("msglog_avatar_bytes", 1):
             return ahash
         try:
@@ -2115,12 +2258,131 @@ class ModLog(commands.Cog):
             fields["msglog_channel_id"] = str(channel.id)
         cfg = set_config(interaction.guild.id, **fields)
         target = cfg.get("msglog_channel_id") or cfg.get("modlog_channel_id")
+        msg = ("✅ **Message log enabled** — deletes (with who-deleted-it attribution), "
+               "edits and bulk deletes get logged"
+               + (f" to <#{target}>." if target else
+                  ".\n⚠️ No log channel set — pass `channel:` or nothing will post."))
+        if archives_messages(interaction.guild.id):
+            msg += "\n🗄️ Message archive is **on** — history is searchable with `/msglog deleted`."
+            if not archives_media(interaction.guild.id):
+                msg += ("\n📭 File archiving is **off**: text is kept, attachments aren't, so "
+                        "deleted images can't be recovered. Ask the bot operator to enable it.")
+        else:
+            msg += ("\n📭 **Nothing is being stored yet.** Deletes are recovered from the live "
+                    "cache only, so anything posted before the bot's last restart is gone. "
+                    "Run `/msglog terms` to see what turning on the archive means.")
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    @msglog.command(name="terms",
+                    description="What the archive stores, and how to turn it on or off.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def terms_cmd(self, interaction: discord.Interaction):
+        row = _CONSENT.get(str(interaction.guild.id))
+        if str(interaction.guild.id) in ARCHIVE_GUILDS:
+            state = "🟢 **Full archive** — text and files (operator-run server)."
+        elif row:
+            state = (f"🟢 **Accepted** by {_plain(row.get('username') or row.get('uid'))} "
+                     f"<t:{int(row.get('accepted_ts') or 0)}:D> (v{row.get('version')}). "
+                     f"Revoke any time with `/msglog revoke-terms`.")
+        else:
+            state = ("⚪ **Not accepted** — nothing is stored. The owner can accept with "
+                     "`/msglog accept-terms confirm:True`.")
+        await interaction.response.send_message(f"{TERMS_TEXT}\n\n{state}", ephemeral=True)
+
+    @msglog.command(name="accept-terms",
+                    description="Server owner: agree to the retention terms and turn the archive on.")
+    @app_commands.describe(confirm="Yes, I've read /msglog terms and I accept on behalf of this server")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def accept_terms_cmd(self, interaction: discord.Interaction, confirm: bool = False):
+        # Deliberately owner-only: Manage Server is a moderation permission, and
+        # this is not a moderation decision — it licenses someone else to hold
+        # this community's messages. That signature belongs to whoever owns it.
+        if interaction.user.id != interaction.guild.owner_id:
+            await interaction.response.send_message(
+                "🔒 Only the **server owner** can accept the retention terms — this decides "
+                "where your members' messages live, not how they're moderated. "
+                "Anyone with Manage Server can read them with `/msglog terms`.", ephemeral=True)
+            return
+        if not confirm:
+            await interaction.response.send_message(
+                f"{TERMS_TEXT}\n\nRe-run with `confirm:True` to accept.", ephemeral=True)
+            return
+        now = time.time()
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO archive_consent"
+                " (guild_id, guild_name, uid, username, accepted_ts, version, revoked_ts)"
+                " VALUES (?,?,?,?,?,?,NULL)"
+                " ON CONFLICT(guild_id) DO UPDATE SET guild_name=excluded.guild_name,"
+                " uid=excluded.uid, username=excluded.username,"
+                " accepted_ts=excluded.accepted_ts, version=excluded.version, revoked_ts=NULL",
+                (str(interaction.guild.id), interaction.guild.name, str(interaction.user.id),
+                 str(interaction.user), now, TERMS_VERSION))
+        self._load_consent()
         await interaction.response.send_message(
-            "✅ **Message log enabled** — every message is archived from now on; "
-            "deletes (with who-deleted-it attribution), edits and bulk deletes get logged"
-            + (f" to <#{target}>." if target else
-               ".\n⚠️ No log channel set — pass `channel:` or logs stay archive-only."),
+            f"✅ **Archive on** (terms v{TERMS_VERSION} accepted). Messages are stored from now "
+            "on — nothing before this moment exists. `/msglog deleted` and `/msglog history` "
+            "now work here.\n📭 Files are **not** stored on this tier: attachments and avatars "
+            "aren't kept, so deleted media stays unrecoverable. Ask the bot operator if you "
+            "want file archiving too.\n↩️ `/msglog revoke-terms` stops it and deletes everything.",
             ephemeral=True)
+
+    @msglog.command(name="revoke-terms",
+                    description="Server owner: stop storing this server's data and delete what's stored.")
+    @app_commands.describe(confirm="Yes — stop retention and permanently delete this server's archive")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def revoke_terms_cmd(self, interaction: discord.Interaction, confirm: bool = False):
+        if interaction.user.id != interaction.guild.owner_id:
+            await interaction.response.send_message(
+                "🔒 Only the **server owner** can revoke the retention terms.", ephemeral=True)
+            return
+        if not confirm:
+            await interaction.response.send_message(
+                "⚠️ This **permanently deletes** this server's stored messages, edit history and "
+                "member/identity records, and stops any further storage. Logging keeps working; "
+                "only the memory goes. Re-run with `confirm:True`.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        gid = str(interaction.guild.id)
+        self._flush()
+        counts = await asyncio.to_thread(self._purge_guild, gid)
+        with self._conn() as c:
+            c.execute("UPDATE archive_consent SET revoked_ts=? WHERE guild_id=?", (time.time(), gid))
+        self._load_consent()
+        note = ("\n⚠️ This server is on the operator's allowlist (`MSGLOG_ARCHIVE_GUILDS`), so "
+                "retention stays ON until that entry is removed — the data above was still deleted."
+                if gid in ARCHIVE_GUILDS else "")
+        await interaction.followup.send(
+            f"🗑️ **Archive revoked and purged.** Deleted {counts['messages']:,} messages, "
+            f"{counts['edits']:,} edit records, {counts['identity']:,} member events and "
+            f"{counts['files']:,} cached files. Nothing further is stored." + note,
+            ephemeral=True)
+
+    def _purge_guild(self, gid):
+        """Delete every stored row (and cached file) belonging to one guild.
+
+        Blocking on purpose — the caller runs it off the event loop. Media files
+        are named by message id, so the ids have to be read before the rows go.
+        """
+        counts = {"messages": 0, "edits": 0, "identity": 0, "files": 0}
+        with self._conn() as c:
+            ids = [r[0] for r in c.execute("SELECT message_id FROM messages WHERE guild_id=?", (gid,))]
+            counts["edits"] = c.execute("DELETE FROM edits WHERE guild_id=?", (gid,)).rowcount
+            counts["messages"] = c.execute("DELETE FROM messages WHERE guild_id=?", (gid,)).rowcount
+            counts["identity"] = c.execute("DELETE FROM identity_events WHERE guild_id=?",
+                                           (gid,)).rowcount
+            # Avatar blobs are shared across guilds by design (one picture, one
+            # row) — drop only those no surviving identity row still points at.
+            c.execute("DELETE FROM avatar_blobs WHERE uid NOT IN"
+                      " (SELECT DISTINCT uid FROM identity_events)")
+        for mid in ids:
+            for p in glob.glob(os.path.join(MEDIA_DIR, f"{mid}_*")):
+                try:
+                    os.remove(p)
+                    counts["files"] += 1
+                except OSError:
+                    pass
+        return counts
 
     @msglog.command(name="disable", description="Turn off archiving + logging.")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -2310,16 +2572,21 @@ class ModLog(commands.Cog):
         cfg = get_config(interaction.guild.id)
         target = cfg.get("msglog_channel_id") or cfg.get("modlog_channel_id")
         db_mb = os.path.getsize(DB_PATH) / 1e6 if os.path.exists(DB_PATH) else 0
+        if archives_media(interaction.guild.id):
+            tier = "🗄️ Retention: **messages + files**"
+        elif archives_messages(interaction.guild.id):
+            tier = ("🗄️ Retention: **messages only** — attachments aren't stored, so deleted "
+                    "media is unrecoverable (`/msglog terms`)")
+        else:
+            tier = ("📭 Retention: **nothing stored** — live logging only. "
+                    "The owner can turn the archive on with `/msglog terms`")
         lines = [
             f"{'🟢 ON' if cfg.get('msglog_enabled') else '🔴 OFF'} · log → "
             + (f"<#{target}>" if target else "*none*"),
+            tier,
             f"**{total:,}** messages archived"
             + (f" (<t:{int(span[0])}:d> → <t:{int(span[1])}:d>)" if span and span[0] else ""),
             f"**{deleted:,}** deletions · **{edits:,}** edits recorded",
-            f"Media cache: **{n_files}** files, {n_bytes/1e6:.1f} MB "
-            f"(≤{cfg.get('msglog_media_max_mb')} MB/file, {cfg.get('msglog_media_days')}d retention, "
-            f"{cfg.get('msglog_media_max_gb', 5)}GB cap)",
-            f"DB: {db_mb:.1f} MB",
             f"Members: {'🟢' if cfg.get('msglog_members', 1) else '🔴'} · "
             f"Voice: {'🟢' if cfg.get('msglog_voice', 1) else '🔴'} · "
             f"Roles: {'🟢' if cfg.get('msglog_roles', 1) else '🔴'} · "
@@ -2328,6 +2595,13 @@ class ModLog(commands.Cog):
             f"Channels: {'🟢' if cfg.get('msglog_channels', 1) else '🔴'} · "
             f"Expressions: {'🟢' if cfg.get('msglog_expressions', 1) else '🔴'}",
         ]
+        # Cache/disk figures are the OPERATOR's, shared across every archiving
+        # guild — only shown to a guild that actually has files in there.
+        if archives_media(interaction.guild.id):
+            lines.append(
+                f"Media cache: **{n_files}** files, {n_bytes/1e6:.1f} MB "
+                f"(≤{cfg.get('msglog_media_max_mb')} MB/file, {cfg.get('msglog_media_days')}d "
+                f"retention, {MEDIA_CAP_GB}GB cap) · DB: {db_mb:.1f} MB")
         ignored = cfg.get("msglog_ignore_channels") or []
         if ignored:
             lines.append("Ignored: " + " ".join(f"<#{i}>" for i in ignored))

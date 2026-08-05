@@ -170,6 +170,41 @@ check("no metadata + unknown ext stays quarantined",
 check("spoofed content_type without media ext stays quarantined",
       not ml.is_repostable("123_0_tool.exe", [{"filename": "tool.exe", "content_type": "application/x-msdownload"}]))
 
+# ---- retention tiers: log for everyone, remember only where it's licensed
+ml.ARCHIVE_GUILDS = {"111"}          # operator-granted media tier
+ml._CONSENT.clear()
+ml._CONSENT["222"] = {"version": ml.TERMS_VERSION, "uid": "9", "accepted_ts": 1.0}
+ml._CONSENT["333"] = {"version": 0}   # accepted an older, superseded terms text
+
+check("operator guild archives messages", ml.archives_messages("111"))
+check("operator guild archives media", ml.archives_media("111"))
+check("consenting guild archives messages", ml.archives_messages("222"))
+check("consenting guild does NOT archive media", not ml.archives_media("222"))
+check("stale consent version does not count", not ml.archives_messages("333"))
+check("unknown guild stores nothing", not ml.archives_messages("444"))
+check("unknown guild stores no media", not ml.archives_media("444"))
+check("guild id type does not matter", ml.archives_messages(222))
+ml._CONSENT.clear()
+
+# ---- honesty line: what the archive did NOT keep
+_a = [{"filename": "kept.png", "size": 1000},
+      {"filename": "huge.mp4", "size": 40 * 1024 * 1024},
+      {"filename": "gone.png", "size": 2000}]
+_missing = ml.unstored_attachments(_a, ["9_0_kept.png"], 25)
+check("cached attachment is not reported missing",
+      [m[0] for m in _missing] == ["huge.mp4", "gone.png"])
+check("oversize file is explained by the cap", _missing[0][1] == "too large")
+check("absent file reads as not archived", _missing[1][1] == "not archived")
+check("nothing cached means everything missing",
+      len(ml.unstored_attachments(_a, [], 25)) == 3)
+check("no attachments, nothing to warn about", ml.unstored_attachments([], [], 25) == [])
+check("all cached, no warning",
+      ml.unstored_attachments([{"filename": "a.png", "size": 1}], ["9_0_a.png"], 25) == [])
+check("sticker cache names never mask an attachment",
+      len(ml.unstored_attachments(_a, ["9_s0_pop.png"], 25)) == 3)
+check("cap of zero blames absence, not size",
+      ml.unstored_attachments(_a, [], 0)[1][1] == "not archived")
+
 # ---- size-cap eviction: oldest-first until back under the cap
 _e = [("old.png", 100, 400), ("mid.png", 200, 400), ("new.png", 300, 400)]
 check("under cap evicts nothing", ml.files_to_evict(_e, 2000) == [])
