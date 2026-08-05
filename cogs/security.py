@@ -298,14 +298,30 @@ class Security(commands.Cog):
         Left at the default bottom position, any mod with Manage Roles can free
         someone the gate caught. So it goes directly beneath the bot's own top
         role: as high as we can manage, above every ordinary staff role.
+
+        It is also HOISTED, so held members show as their own group in the member
+        list. A quarantine nobody can see is one that gets forgotten about — the
+        point is that staff notice at a glance who is being held. Note the
+        interaction with placement: hoisted groups are ordered by role position,
+        so sitting just under the bot puts that group at the TOP of the sidebar.
         """
         notes, created = [], False
         if role is None:
             role = await guild.create_role(
                 name="Quarantined", permissions=discord.Permissions.none(),
-                colour=discord.Colour(0x4F545C), hoist=False, mentionable=False,
+                colour=discord.Colour(0x4F545C), hoist=True, mentionable=False,
                 reason="AltGuard: quarantine role for security suite")
             created = True
+        elif not role.hoist:
+            # Auto-configuring means fixing a role that already exists, including
+            # one the dashboard created without hoisting it.
+            try:
+                await role.edit(hoist=True, reason="AltGuard: show held members in the member list")
+                notes.append(f"👁️ Hoisted {role.mention} so quarantined members show as their "
+                             "own group in the member list.")
+            except discord.HTTPException:
+                notes.append(f"⚠️ Couldn't hoist {role.mention} — set *Display role members "
+                             "separately* by hand if you want held members visible.")
 
         me = guild.me
         if me.top_role <= role and not me.guild_permissions.administrator:

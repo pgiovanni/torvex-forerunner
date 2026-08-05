@@ -18,11 +18,12 @@ from cogs.security import Security  # noqa: E402
 
 
 class FakeRole:
-    def __init__(self, name, position, manage_roles=False, managed=False):
+    def __init__(self, name, position, manage_roles=False, managed=False, hoist=True):
         self.id = abs(hash(name)) % 10**8
         self.name = name
         self.position = position
         self.managed = managed
+        self.hoist = hoist
         self.permissions = discord.Permissions(manage_roles=manage_roles)
         self.mention = f"@{name}"
         self.edit_calls = []
@@ -34,6 +35,8 @@ class FakeRole:
         self.edit_calls.append(kw)
         if "position" in kw:
             self.position = kw["position"]
+        if "hoist" in kw:
+            self.hoist = kw["hoist"]
 
     # discord.Role orders by position; the cog relies on `me.top_role <= role`
     def __le__(self, other):
@@ -84,8 +87,31 @@ class ProvisionTests(unittest.IsolatedAsyncioTestCase):
         role, created, notes = await cog()._provision_quarantine_role(guild)
         self.assertTrue(created)
         self.assertEqual(guild.created.created_with["permissions"], discord.Permissions.none())
-        self.assertFalse(guild.created.created_with["hoist"])
         self.assertFalse(guild.created.created_with["mentionable"])
+
+    async def test_new_role_is_hoisted_so_held_members_are_visible(self):
+        bot_top = FakeRole("Bot", 10)
+        guild = FakeGuild(FakeMe(bot_top))
+        await cog()._provision_quarantine_role(guild)
+        self.assertTrue(guild.created.created_with["hoist"],
+                        "a quarantine nobody can see gets forgotten about")
+
+    async def test_existing_unhoisted_role_is_fixed(self):
+        # what the dashboard's setup-quarantine button leaves behind
+        bot_top = FakeRole("Bot", 10)
+        existing = FakeRole("Quarantined", 1, hoist=False)
+        guild = FakeGuild(FakeMe(bot_top), roles=[existing])
+        role, created, notes = await cog()._provision_quarantine_role(guild, existing)
+        self.assertTrue(role.hoist)
+        self.assertTrue(any("Hoisted" in n for n in notes))
+
+    async def test_already_hoisted_role_is_not_re_edited(self):
+        bot_top = FakeRole("Bot", 10)
+        existing = FakeRole("Quarantined", 9, hoist=True)
+        guild = FakeGuild(FakeMe(bot_top), roles=[existing])
+        role, _, notes = await cog()._provision_quarantine_role(guild, existing)
+        self.assertEqual(role.edit_calls, [])
+        self.assertEqual(notes, [])
 
     async def test_lands_directly_below_the_bots_top_role(self):
         bot_top = FakeRole("Bot", 10)
