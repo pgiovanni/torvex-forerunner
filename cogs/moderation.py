@@ -1,9 +1,61 @@
+import os
 import re
+import sys
 from datetime import timedelta
 
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils.security_config import get_config  # noqa: E402
+
+
+def _mod_cfg(guild_id) -> dict:
+    """Per-guild moderation preferences. The COMMANDS are always available (they
+    are gated by Discord permissions); this only governs how they behave, and
+    only once an admin opts in — otherwise the historical defaults stand."""
+    cfg = get_config(guild_id)
+    if not cfg.get("mod_enabled"):
+        return {"dm": False, "require_reason": False,
+                "default_timeout_min": None, "ban_delete_days": None, "log_channel_id": None}
+    return {
+        "dm": bool(cfg.get("mod_dm_on_action", 1)),
+        "require_reason": bool(cfg.get("mod_require_reason", 0)),
+        "default_timeout_min": int(cfg.get("mod_default_timeout_min", 60) or 60),
+        "ban_delete_days": int(cfg.get("mod_ban_delete_days", 0) or 0),
+        "log_channel_id": cfg.get("mod_log_channel_id") or cfg.get("modlog_channel_id"),
+    }
+
+
+async def _dm_action(user, guild, verb: str, reason: str, duration: str = ""):
+    """Tell the member what happened and why, before it lands. Best-effort:
+    closed DMs must never block the moderation action itself."""
+    try:
+        e = discord.Embed(
+            title=f"You were {verb} in {guild.name}",
+            description=(reason or "No reason provided"),
+            color=0xED4245)
+        if duration:
+            e.add_field(name="Duration", value=duration, inline=True)
+        await user.send(embed=e)
+        return True
+    except (discord.Forbidden, discord.HTTPException, AttributeError):
+        return False
+
+
+async def _mod_log(bot, guild, cfg, embed):
+    """Post an action embed to the configured moderation log, if there is one."""
+    cid = cfg.get("log_channel_id")
+    if not cid:
+        return
+    ch = guild.get_channel(int(cid))
+    if ch is None:
+        return
+    try:
+        await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
 
 def _can_act(invoker: discord.Member, target: discord.Member, me: discord.Member, verb: str = "ban"):
@@ -115,8 +167,21 @@ class Moderation(commands.Cog):
                 target = None
         name = target.display_name if target else str(uid)
 
+        mcfg = _mod_cfg(guild.id)
+        if mcfg["require_reason"] and not (reason or "").strip():
+            await interaction.followup.send(
+                "❌ This server requires a reason for moderation actions.", ephemeral=True)
+            return
+        # a configured default only applies when the mod didn't pass one
+        if not delete_days and mcfg["ban_delete_days"]:
+            delete_days = max(0, min(7, mcfg["ban_delete_days"]))
+
         audit = f"{interaction.user} ({interaction.user.id})"
         full_reason = (reason or "No reason provided") + f" — by {audit}"
+        # DM BEFORE the ban — afterwards we share no server with them and can't
+        dmed = False
+        if mcfg["dm"] and member is not None:
+            dmed = await _dm_action(member, guild, "banned", reason)
         try:
             await guild.ban(discord.Object(id=uid), reason=full_reason,
                             delete_message_seconds=delete_days * 86400)
@@ -138,8 +203,11 @@ class Moderation(commands.Cog):
         embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
         if delete_days:
             embed.add_field(name="Messages deleted", value=f"last {delete_days} day(s)", inline=True)
+        if mcfg["dm"] and member is not None:
+            embed.add_field(name="Notified", value="DM sent" if dmed else "DMs closed", inline=True)
         embed.set_footer(text=f"Banned by {interaction.user.display_name}")
         await interaction.followup.send(embed=embed)  # public confirmation
+        await _mod_log(self.bot, guild, mcfg, embed)
         await interaction.followup.send("✅ Done.", ephemeral=True)
 
     @app_commands.command(name="unban", description="Unban a user by their Discord ID.")
@@ -214,8 +282,14 @@ class Moderation(commands.Cog):
 
         name = member.display_name
         uid = member.id
+        mcfg = _mod_cfg(interaction.guild.id)
+        if mcfg["require_reason"] and not (reason or "").strip():
+            await interaction.followup.send(
+                "❌ This server requires a reason for moderation actions.", ephemeral=True)
+            return
         audit = f"{interaction.user} ({interaction.user.id})"
         full_reason = (reason or "No reason provided") + f" — by {audit}"
+        dmed = await _dm_action(member, interaction.guild, "kicked", reason) if mcfg["dm"] else False
         try:
             await member.kick(reason=full_reason)
         except discord.Forbidden:
@@ -233,21 +307,24 @@ class Moderation(commands.Cog):
             description=f"**{name}** (`{uid}`) has been kicked. They can rejoin with an invite.",
         )
         embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+        if mcfg["dm"]:
+            embed.add_field(name="Notified", value="DM sent" if dmed else "DMs closed", inline=True)
         embed.set_footer(text=f"Kicked by {interaction.user.display_name}")
         await interaction.followup.send(embed=embed)  # public confirmation
+        await _mod_log(self.bot, interaction.guild, mcfg, embed)
         await interaction.followup.send("✅ Done.", ephemeral=True)
 
     @app_commands.command(name="timeout", description="Time out a member (mute + no reactions) for a duration.")
     @app_commands.describe(
         member="The member to time out",
-        duration="How long — e.g. 30m, 2h, 1d, 1h30m (max 28d)",
+        duration="How long — e.g. 30m, 2h, 1d, 1h30m (max 28d). Blank = this server's default.",
         reason="Why (shown in the audit log and the public embed)",
     )
     @app_commands.default_permissions(moderate_members=True)
     @app_commands.checks.has_permissions(moderate_members=True)
     @app_commands.guild_only()
     async def timeout(self, interaction: discord.Interaction, member: discord.Member,
-                      duration: str, reason: str = None):
+                      duration: str = "", reason: str = None):
         await interaction.response.defer(ephemeral=True)
         me = interaction.guild.me
 
@@ -264,7 +341,16 @@ class Moderation(commands.Cog):
                 ephemeral=True)
             return
 
+        mcfg = _mod_cfg(interaction.guild.id)
+        if mcfg["require_reason"] and not (reason or "").strip():
+            await interaction.followup.send(
+                "❌ This server requires a reason for moderation actions.", ephemeral=True)
+            return
+
         delta = _parse_duration(duration)
+        # blank duration falls back to the server's configured default
+        if delta is None and not (duration or "").strip() and mcfg["default_timeout_min"]:
+            delta = timedelta(minutes=mcfg["default_timeout_min"])
         if delta is None or delta < timedelta(seconds=10):
             await interaction.followup.send(
                 "❌ I couldn't read that duration. Use things like `30m`, `2h`, `1d`, `1h30m` (min 10s).",
@@ -275,6 +361,8 @@ class Moderation(commands.Cog):
 
         audit = f"{interaction.user} ({interaction.user.id})"
         full_reason = (reason or "No reason provided") + f" — by {audit}"
+        dmed = (await _dm_action(member, interaction.guild, "timed out", reason,
+                                 _fmt_duration(delta))) if mcfg["dm"] else False
         try:
             await member.timeout(delta, reason=full_reason)
         except discord.Forbidden:
@@ -294,8 +382,11 @@ class Moderation(commands.Cog):
                         f"— expires {discord.utils.format_dt(until, 'R')}.",
         )
         embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+        if mcfg["dm"]:
+            embed.add_field(name="Notified", value="DM sent" if dmed else "DMs closed", inline=True)
         embed.set_footer(text=f"Timed out by {interaction.user.display_name}")
         await interaction.followup.send(embed=embed)  # public confirmation
+        await _mod_log(self.bot, interaction.guild, mcfg, embed)
         await interaction.followup.send("✅ Done.", ephemeral=True)
 
     @app_commands.command(name="untimeout", description="Remove a member's timeout early.")

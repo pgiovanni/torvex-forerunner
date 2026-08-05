@@ -95,6 +95,24 @@ DEFAULTS = {
     "msglog_ignore_channels": [],    # channels never LOGGED (still archived)
     "msglog_members": 1,             # member lifecycle: join (w/ invite used), leave, kick/ban/unban w/ WHO+reason
     "msglog_roles": 1,               # member role add/remove (w/ WHO) + role create/delete/edit; own-bot changes never logged
+    # ── moderation (/ban /kick /timeout /prune-messages) ──────────────────────
+    "mod_enabled": 0,                # master opt-in for the CONFIG below; the
+                                     # commands themselves are always available
+                                     # (they're gated by Discord permissions)
+    "mod_log_channel_id": None,      # where actions post; falls back to modlog_channel_id
+    "mod_dm_on_action": 1,           # DM the member what happened + why before it lands
+    "mod_require_reason": 0,         # refuse ban/kick/timeout with no reason given
+    "mod_default_timeout_min": 60,   # /timeout default when no duration is passed
+    "mod_ban_delete_days": 0,        # delete this many days of the banned user's messages (0-7)
+    # ── automation (join roles + welcome/goodbye) ─────────────────────────────
+    "auto_enabled": 0,               # master opt-in
+    "autorole_ids": [],              # roles granted automatically on join
+    "autorole_delay_sec": 0,         # wait before granting (lets a raid filter act first)
+    "autorole_skip_pending": 1,      # don't grant until Discord onboarding/rules are done
+    "welcome_channel_id": None,      # None = welcome message off
+    "welcome_message": "",           # {user} {mention} {server} {count} are substituted
+    "goodbye_channel_id": None,
+    "goodbye_message": "",
 }
 
 

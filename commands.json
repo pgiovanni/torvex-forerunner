@@ -10,13 +10,13 @@
     },
     {
       "name": "fun",
-      "description": "Fun commands \u2014 roast, 8ball, tictactoe, connect4",
+      "description": "Fun commands — roast, 8ball, tictactoe, connect4",
       "cog": "fun",
       "cooldown_seconds": 0
     },
     {
       "name": "games",
-      "description": "Bot vs player games \u2014 tictactoe_bot, connect4_bot",
+      "description": "Bot vs player games — tictactoe_bot, connect4_bot",
       "cog": "games",
       "cooldown_seconds": 0
     },
@@ -28,37 +28,37 @@
     },
     {
       "name": "rpg",
-      "description": "Torvex RPG \u2014 fight, level up, earn orbs",
+      "description": "Torvex RPG — fight, level up, earn orbs",
       "cog": "rpg",
       "cooldown_seconds": 0
     },
     {
       "name": "economy",
-      "description": "Peepo Bucks economy \u2014 balance, rank, levels, leaderboard",
+      "description": "Peepo Bucks economy — balance, rank, levels, leaderboard",
       "cog": "economy",
       "cooldown_seconds": 0
     },
     {
       "name": "pvp",
-      "description": "PvP battles \u2014 challenge other players",
+      "description": "PvP battles — challenge other players",
       "cog": "pvp",
       "cooldown_seconds": 0
     },
     {
       "name": "gear",
-      "description": "Item/monster dictionary \u2014 weapons, armor, elements, monsters",
+      "description": "Item/monster dictionary — weapons, armor, elements, monsters",
       "cog": "gear",
       "cooldown_seconds": 0
     },
     {
       "name": "chess",
-      "description": "Play chess \u2014 vs bot or challenge another player",
+      "description": "Play chess — vs bot or challenge another player",
       "cog": "chess_cog",
       "cooldown_seconds": 0
     },
     {
       "name": "peepo",
-      "description": "Peepo collectibles \u2014 shop, trade, marketplace",
+      "description": "Peepo collectibles — shop, trade, marketplace",
       "cog": "peepo",
       "cooldown_seconds": 0
     },
@@ -124,7 +124,7 @@
     },
     {
       "name": "security",
-      "description": "Server security tools \u2014 role & channel permission audit (Admin only).",
+      "description": "Server security tools — role & channel permission audit (Admin only).",
       "cog": "security",
       "required_permissions": [
         "administrator"
@@ -306,7 +306,7 @@
     },
     {
       "name": "recon-status",
-      "description": "Recent reconnaissance signals \u00e2\u20ac\u201d bot + gate probing (admin)",
+      "description": "Recent reconnaissance signals â€” bot + gate probing (admin)",
       "cog": "recon_watch",
       "required_permissions": [
         "manage_guild"
@@ -386,7 +386,7 @@
     },
     {
       "name": "stats-status",
-      "description": "Activity-tracking status \u00e2\u20ac\u201d totals, top channels (admin)",
+      "description": "Activity-tracking status â€” totals, top channels (admin)",
       "cog": "stats",
       "required_permissions": [
         "administrator"
@@ -410,7 +410,7 @@
     },
     {
       "name": "activity",
-      "description": "Server activity graphs \u00e2\u20ac\u201d daily lines, heatmap, leaderboards, growth",
+      "description": "Server activity graphs â€” daily lines, heatmap, leaderboards, growth",
       "cog": "activity",
       "cooldown_seconds": 10
     },
@@ -440,7 +440,7 @@
     },
     {
       "name": "picount",
-      "description": "Pi-counting channel enforcement \u00e2\u20ac\u201d set-channel, recount, status, disable (admin)",
+      "description": "Pi-counting channel enforcement â€” set-channel, recount, status, disable (admin)",
       "cog": "pi_count",
       "required_permissions": [
         "administrator"
@@ -487,6 +487,14 @@
       "description": "Toggle whether your messages can appear as AI context 🔒",
       "cog": "ai",
       "cooldown_seconds": 0
+    },
+    {
+      "name": "automation",
+      "description": "Join roles + welcome messages (Admin only)",
+      "cog": "automation",
+      "required_permissions": [
+        "administrator"
+      ]
     }
   ]
 }
