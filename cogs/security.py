@@ -7,6 +7,7 @@ from discord.ext import commands
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import quarantine_store as qstore
+from utils import gate_terms
 from utils import quarantine as qt
 from utils.security_config import get_config, set_config
 from utils.links import config_view
@@ -459,6 +460,85 @@ class Security(commands.Cog):
         await interaction.response.send_message(
             "⚪ Protection **disabled** for this server. The quarantine role and channel locks are left "
             "in place (harmless) — delete the role manually if you want them gone.", ephemeral=True)
+
+    # ──────────────────────────── gate terms of service ──────────────────────
+    @security.command(name="terms",
+                      description="Read the verification-gate terms and see if this server accepted them.")
+    async def terms_cmd(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        st = gate_terms.status(interaction.guild.id)
+        if st["current"]:
+            when = f"<t:{int(st['at'] or 0)}:D>" if st["at"] else "—"
+            state = (f"🟢 **Accepted** by {st['username'] or st['uid']} {when} "
+                     f"(v{st['version']}). `/security revoke-terms` withdraws it.")
+        elif st["accepted"]:
+            state = (f"🟡 **Out of date** — this server accepted **v{st['version']}**, and the "
+                     f"terms are now **v{gate_terms.TERMS_VERSION}**. The owner needs to accept "
+                     f"again before the gate runs here.")
+        else:
+            state = ("⚪ **Not accepted** — the gate will not screen anyone here. The **server "
+                     "owner** can accept with `/security accept-terms confirm:True`.")
+        await interaction.response.send_message(
+            f"{gate_terms.TERMS_TEXT}\n\n{state}", ephemeral=True)
+
+    @security.command(name="accept-terms",
+                      description="Server owner: accept the verification-gate terms for this server.")
+    @app_commands.describe(confirm="Yes — I've read /security terms and I accept for this server")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def accept_terms_cmd(self, interaction: discord.Interaction, confirm: bool = False):
+        # Owner-only on purpose, and for a stronger reason than the archive
+        # terms: this consents to collecting device and network data from
+        # *members*, who are not party to the agreement and never clicked
+        # anything. That signature belongs to whoever owns the community.
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        if interaction.user.id != interaction.guild.owner_id:
+            await interaction.response.send_message(
+                "🔒 Only the **server owner** can accept these terms. They cover what is "
+                "collected from your members, not how your server is moderated — so it isn't a "
+                "Manage Server decision. Anyone can read them with `/security terms`.",
+                ephemeral=True)
+            return
+        if not confirm:
+            await interaction.response.send_message(
+                f"{gate_terms.TERMS_TEXT}\n\nRe-run with `confirm:True` to accept on behalf of "
+                f"**{interaction.guild.name}**.", ephemeral=True)
+            return
+        gate_terms.accept(interaction.guild.id, interaction.user.id, str(interaction.user))
+        await interaction.response.send_message(
+            f"✅ **Terms accepted** (v{gate_terms.TERMS_VERSION}) for **{interaction.guild.name}**.\n"
+            f"AltGuard can now be switched on here — it still won't screen anyone until you "
+            f"enable it and the operator activates the gate for this server.\n"
+            f"-# Tell your members what the check collects. `/security revoke-terms` withdraws "
+            f"consent and turns the gate off.", ephemeral=True)
+
+    @security.command(name="revoke-terms",
+                      description="Server owner: withdraw consent and stop the gate screening this server.")
+    @app_commands.describe(confirm="Yes — withdraw consent and switch AltGuard off here")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def revoke_terms_cmd(self, interaction: discord.Interaction, confirm: bool = False):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+        if interaction.user.id != interaction.guild.owner_id:
+            await interaction.response.send_message(
+                "🔒 Only the **server owner** can withdraw these terms.", ephemeral=True)
+            return
+        if not confirm:
+            await interaction.response.send_message(
+                "This withdraws consent **and switches AltGuard off** for this server — new "
+                "members stop being screened immediately. Device records already collected are "
+                "retained (they're shared evidence other servers rely on); ask the bot operator "
+                "if you need yours removed.\n\nRe-run with `confirm:True`.", ephemeral=True)
+            return
+        gate_terms.revoke(interaction.guild.id)
+        await interaction.response.send_message(
+            "↩️ **Consent withdrawn.** AltGuard is off for this server and nobody new is being "
+            "screened. Members currently held keep their quarantine until you release them — "
+            "`/unquarantine` gives their roles back.", ephemeral=True)
 
     # ───────────────────────────── manual quarantine ─────────────────────────
     # The gate decides who to hold on the way IN. This is the door staff can

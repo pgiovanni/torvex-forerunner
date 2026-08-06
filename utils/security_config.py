@@ -73,6 +73,15 @@ DEFAULTS = {
     # dm_failed is the setting that keeps a closed-DM joiner from being stranded
     # without ever pinging anyone else.
     "verify_ping": "always",
+    # ── verification-gate terms of service (utils/gate_terms.py) ─────────────
+    # The owner's signature, required before the gate may screen anyone here.
+    # NEVER declare these as plugin fields: a settings form must not be able to
+    # write a consent record, or "I agree" becomes a checkbox someone else ticks.
+    "gate_terms_version": 0,        # 0 = never accepted
+    "gate_terms_uid": None,         # who accepted
+    "gate_terms_username": None,
+    "gate_terms_at": None,          # epoch seconds
+    "gate_terms_text": None,        # the exact wording that was agreed to
     # ── verify-prune: what happens to someone who never finishes verifying ────
     # A held member who just sits there forever is a foothold, so there's a
     # clock. Every part of it is a server's own call — including turning the
