@@ -158,6 +158,14 @@ DEFAULTS = {
     "welcome_message": "",           # {user} {mention} {server} {count} are substituted
     "goodbye_channel_id": None,
     "goodbye_message": "",
+    # ── automation rules (cogs/auto_rules.py) ─────────────────────────────────
+    # The dashboard's rule builder writes these. `rules` is a LIST of rule
+    # objects, not flat keys — see cogs/auto_rules.py for the shape and for why
+    # the engine treats anything it doesn't recognise as False rather than True.
+    # Off by default and the master switch is separate from each rule's own, so
+    # an admin can stop every rule at once without editing any of them.
+    "rules_enabled": 0,
+    "rules": [],
 }
 
 

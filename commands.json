@@ -518,9 +518,17 @@
       "cooldown_seconds": 0
     },
     {
-      "name": "automation",
+      "name": "welcome",
       "description": "Join roles + welcome messages (Admin only)",
       "cog": "automation",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "automation",
+      "description": "Custom automation rules (Admin only)",
+      "cog": "auto_rules",
       "required_permissions": [
         "administrator"
       ]

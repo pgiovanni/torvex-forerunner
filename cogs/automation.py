@@ -1,11 +1,16 @@
-"""Automation — join roles + welcome/goodbye messages.
+"""Join & Welcome — join roles + welcome/goodbye messages.
 
-Per-guild, opt-in, configured from the dashboard (or /automation). Nothing here
+Per-guild, opt-in, configured from the dashboard (or /welcome). Nothing here
 runs until `auto_enabled` is set for that guild, so adding the bot to a server
 never changes its behaviour on its own.
 
 Deliberately small: this is the "MEE6 basics" layer. Anything that punishes or
 restricts lives in the security cogs, not here.
+
+NAMING: this used to be called Automation and own the /automation command. That
+name now belongs to cogs/auto_rules.py — the rule builder, which is what people
+mean by automation — so this is /welcome. The config keys stay `auto_*`, because
+renaming them would orphan every guild's stored settings for the sake of a label.
 """
 import asyncio
 import os
@@ -115,10 +120,10 @@ class Automation(commands.Cog):
 
     # ───────────────────────────────────────────────────────────────── commands
     group = app_commands.Group(
-        name="automation", description="Join roles + welcome messages (Admin only)",
+        name="welcome", description="Join roles + welcome messages (Admin only)",
         default_permissions=discord.Permissions(administrator=True))
 
-    @group.command(name="status", description="Show this server's automation settings.")
+    @group.command(name="status", description="Show this server's join & welcome settings.")
     @app_commands.checks.has_permissions(administrator=True)
     async def status(self, interaction: discord.Interaction):
         cfg = get_config(interaction.guild.id)
@@ -131,7 +136,7 @@ class Automation(commands.Cog):
             r.mention for r in (interaction.guild.get_role(int(i))
                                 for i in (cfg.get("autorole_ids") or [])) if r) or "—"
         e = discord.Embed(
-            title="⚙️ Automation",
+            title="👋 Join & Welcome",
             description=("🟢 **On**" if cfg.get("auto_enabled") else "🔴 **Off** — nothing runs"),
             color=0x5B8CFF)
         e.add_field(name="Join roles", value=roles, inline=False)
@@ -143,12 +148,13 @@ class Automation(commands.Cog):
         e.set_footer(text="Configure at dashboard.torvex.app")
         await interaction.response.send_message(embed=e, ephemeral=True)
 
-    @group.command(name="enable", description="Turn automation on or off for this server.")
+    @group.command(name="enable",
+                   description="Turn join roles + welcome messages on or off.")
     @app_commands.checks.has_permissions(administrator=True)
     async def enable(self, interaction: discord.Interaction, on: bool):
         set_config(interaction.guild.id, auto_enabled=1 if on else 0)
         await interaction.response.send_message(
-            f"Automation is now **{'on' if on else 'off'}**.", ephemeral=True)
+            f"Join & Welcome is now **{'on' if on else 'off'}**.", ephemeral=True)
 
 
 async def setup(bot):
