@@ -26,12 +26,13 @@ from collections import defaultdict, deque
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import quarantine_store as qstore  # shared with AltGuard — stores stripped roles for /altguard-release
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from utils.security_config import get_config, set_config, is_enabled
+from utils.security_config import get_config, set_config, is_enabled, all_enabled
+from utils import antinuke_window as awin
 
 log = logging.getLogger("antinuke")
 
@@ -108,6 +109,88 @@ class AntiNuke(commands.Cog):
         self.cooldown = {}                                      # (gid, uid, key) -> last trip ts
         self.ban_victims = defaultdict(deque)                  # (gid, executor) -> (ts, victim_uid)
 
+    async def cog_load(self):
+        self.window_watch.start()
+
+    async def cog_unload(self):
+        self.window_watch.cancel()
+
+    # ------------------------------------------------- maintenance windows
+    @tasks.loop(seconds=60)
+    async def window_watch(self):
+        """Announce maintenance windows opening and closing, then reap them.
+
+        This loop is a RECORD-KEEPER, not an enforcer. Expiry is evaluated at
+        read time in antinuke_window.is_active, so by the time this runs the
+        limits are already back to normal — if the loop dies, the window still
+        ends on schedule and the only thing lost is the mod-log card. That's the
+        whole reason expiry isn't a scheduled write.
+
+        The open notice lives here rather than in the slash command because a
+        window opened from the web dashboard has no command to hang it off; this
+        way both routes announce identically and neither can forget.
+        """
+        for gid in all_enabled("antinuke"):
+            try:
+                cfg = get_config(gid)
+                win = cfg.get("antinuke_window")
+                if not win:
+                    continue
+                guild = self.bot.get_guild(gid)
+                if guild is None:
+                    continue   # another shard's guild, or we were kicked
+                if awin.needs_open_notice(win):
+                    await self._window_notice(guild, win, cfg, opening=True)
+                    set_config(gid, antinuke_window=dict(win, announced_open=1))
+                elif awin.needs_close_notice(win):
+                    await self._window_notice(guild, win, cfg, opening=False)
+                    set_config(gid, antinuke_window=dict(win, announced_close=1))
+                elif awin.is_reapable(win):
+                    set_config(gid, antinuke_window=None)
+            except Exception:
+                log.exception("[antinuke] window_watch failed for guild %s", gid)
+
+    @window_watch.before_loop
+    async def _before_window_watch(self):
+        await self.bot.wait_until_ready()
+
+    async def _window_notice(self, guild, win, cfg, *, opening):
+        """Post the open/close card. Silent when the guild has no mod-log —
+        the window still works; there is just nowhere to say so."""
+        ch = self._modlog(guild, cfg)
+        if ch is None:
+            return
+        who = f"<@{win.get('uid')}> (`{win.get('uid')}`)"
+        raised = "\n".join(f"• {VECTOR_LABELS.get(v, v)}: **{c}× / {w}s**"
+                           for v, (c, w) in awin.vector_summary())
+        if opening:
+            until = discord.utils.format_dt(
+                datetime.datetime.fromtimestamp(float(win["expires_at"]),
+                                                datetime.timezone.utc), "R")
+            embed = discord.Embed(
+                title="🔧 Maintenance window OPEN", color=0xE8A33D,
+                description=(f"{who} has raised anti-nuke limits for bulk work.\n"
+                             f"Ends {until}."))
+            embed.add_field(name="Raised for them only", value=raised, inline=False)
+            embed.add_field(name="Unchanged", value=(
+                "Channel/role deletes, bans, kicks and webhooks keep their normal "
+                "limits, and admin-role grants stay owner-only."), inline=False)
+        else:
+            closer = win.get("closed_early_by")
+            how = f"closed early by **{closer}**" if closer else "expired on schedule"
+            embed = discord.Embed(
+                title="🔒 Maintenance window CLOSED", color=0x5B8CFF,
+                description=f"The window for {who} {how}. Normal limits are back.")
+        embed.add_field(name="Opened by", value=f"{win.get('opened_by_name')} "
+                        f"(`{win.get('opened_by')}`)", inline=True)
+        embed.add_field(name="Duration", value=f"{win.get('minutes')} min", inline=True)
+        if win.get("reason"):
+            embed.add_field(name="Reason", value=win["reason"][:1000], inline=False)
+        try:
+            await ch.send(embed=embed)
+        except discord.HTTPException:
+            pass
+
     # ------------------------------------------------------------- config helpers
     @staticmethod
     def _enforce(cfg):
@@ -123,9 +206,13 @@ class AntiNuke(commands.Cog):
         return guild.get_channel(int(mid)) if mid else None
 
     @staticmethod
-    def _limits(cfg):
+    def _limits(cfg, actor_id=None):
         """Effective (count, window) per vector — per-guild overrides layered on
-        the code defaults."""
+        the code defaults, then an open maintenance window for THIS actor only.
+
+        Called with no actor by /antinuke status, which should always show the
+        server's standing thresholds rather than whoever happens to be looking.
+        """
         lim = dict(ACTION_LIMITS)
         for k, v in (cfg.get("antinuke_limits") or {}).items():
             if k in lim and isinstance(v, (list, tuple)) and len(v) == 2:
@@ -133,7 +220,7 @@ class AntiNuke(commands.Cog):
                     lim[k] = (max(1, int(v[0])), max(1, int(v[1])))
                 except (TypeError, ValueError):
                     pass
-        return lim
+        return awin.effective_limits(lim, cfg.get("antinuke_window"), actor_id)
 
     def _removable(self, guild, member, cfg):
         """Roles we can actually strip: not @everyone, not managed, not the
@@ -199,7 +286,9 @@ class AntiNuke(commands.Cog):
         if self._exempt(guild, user, cfg):
             return
         gid = guild.id
-        count, window = self._limits(cfg)[action]
+        # the actor is passed in so an open maintenance window can raise the
+        # limit for THEM without touching anyone else's
+        count, window = self._limits(cfg, user.id)[action]
         now = time.time()
         if action == "ban" and target_id:
             bv = self.ban_victims[(gid, user.id)]
@@ -638,7 +727,16 @@ class AntiNuke(commands.Cog):
             "• admin role granted to a member by non-owner → **revert + strip** (instant)\n"
             "• bot added by non-trusted user → **kick the bot** (instant)"), inline=False)
         embed.add_field(name="Whitelist (rate-limits waived)", value=f"owner, this bot, bots, {wl}", inline=False)
-        embed.set_footer(text="Tune with /antinuke messages-allowed · role-grants · role-removes · set-limit")
+        win = cfg.get("antinuke_window")
+        if awin.is_active(win):
+            mins = awin.remaining(win) // 60 + 1
+            raised = ", ".join(f"{VECTOR_LABELS.get(v, v)} {c}×/{w}s"
+                               for v, (c, w) in awin.vector_summary())
+            embed.add_field(name="🔧 Maintenance window", value=(
+                f"OPEN for <@{win['uid']}> — **~{mins} min left**\n{raised}\n"
+                f"-# Thresholds above are the server's; this person's are raised."),
+                inline=False)
+        embed.set_footer(text="Tune with /antinuke messages-allowed · role-grants · role-removes · set-limit · window-open")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def _set_vector(self, interaction, vector, count, window):
@@ -672,6 +770,61 @@ class AntiNuke(commands.Cog):
     async def set_limit(self, interaction: discord.Interaction, vector: app_commands.Choice[str],
                         count: app_commands.Range[int, 1, 100], window: app_commands.Range[int, 1, 600]):
         await self._set_vector(interaction, vector.value, count, window)
+
+    @group.command(name="window-open",
+                   description="Give ONE person time-boxed headroom for bulk role work")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(user="who is doing the bulk work",
+                           minutes=f"{awin.MIN_MINUTES}-{awin.MAX_MINUTES} "
+                                   f"(default {awin.DEFAULT_MINUTES})",
+                           reason="what they're doing — shown in the mod-log card")
+    async def window_open(self, interaction: discord.Interaction, user: discord.Member,
+                          minutes: app_commands.Range[int, awin.MIN_MINUTES, awin.MAX_MINUTES] = None,
+                          reason: str = ""):
+        gid = interaction.guild.id
+        cfg = get_config(gid)
+        if not cfg.get("antinuke_enabled"):
+            return await interaction.response.send_message(
+                "⚪ Anti-nuke isn't enabled here, so there are no limits to raise.",
+                ephemeral=True)
+        if user.bot:
+            return await interaction.response.send_message(
+                "❌ Bots are already exempt from these limits.", ephemeral=True)
+        # Opening a window for someone who is already exempt would sit in the
+        # mod-log looking like protection was loosened when nothing changed.
+        if user.id == interaction.guild.owner_id or user.id in set(cfg.get("whitelist") or []):
+            return await interaction.response.send_message(
+                f"ℹ️ {user.mention} is already exempt from rate limits "
+                f"({'server owner' if user.id == interaction.guild.owner_id else 'on the whitelist'}) "
+                f"— a window would change nothing.", ephemeral=True)
+        existing = cfg.get("antinuke_window")
+        if awin.is_active(existing) and str(existing.get("uid")) != str(user.id):
+            return await interaction.response.send_message(
+                f"❌ A window is already open for <@{existing['uid']}> "
+                f"({awin.remaining(existing) // 60 + 1} min left). Close it first — "
+                f"one at a time is deliberate.", ephemeral=True)
+        win = awin.open_window(user.id, str(user), minutes or awin.DEFAULT_MINUTES,
+                               interaction.user.id, str(interaction.user), reason)
+        set_config(gid, antinuke_window=win)
+        raised = ", ".join(f"{VECTOR_LABELS.get(v, v)} {c}×/{w}s"
+                           for v, (c, w) in awin.vector_summary())
+        await interaction.response.send_message(
+            f"🔧 Window open for {user.mention} for **{win['minutes']} min**.\n"
+            f"Raised for them only: {raised}.\n"
+            f"-# Destructive vectors and the admin-grant lockdown are unchanged. "
+            f"It expires on its own — you don't have to close it.", ephemeral=True)
+
+    @group.command(name="window-close", description="End the open maintenance window now")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def window_close(self, interaction: discord.Interaction):
+        gid = interaction.guild.id
+        win = get_config(gid).get("antinuke_window")
+        if not awin.is_active(win):
+            return await interaction.response.send_message(
+                "ℹ️ No maintenance window is open.", ephemeral=True)
+        set_config(gid, antinuke_window=awin.close_window(win, str(interaction.user)))
+        await interaction.response.send_message(
+            f"🔒 Window closed for <@{win['uid']}>. Normal limits are back.", ephemeral=True)
 
     @group.command(name="messages-allowed", description="Set the message-flood limit (optionally per channel)")
     @app_commands.checks.has_permissions(administrator=True)

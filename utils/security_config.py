@@ -43,6 +43,9 @@ DEFAULTS = {
     "antinuke_limits": {},
     # message-flood: server default [count, window_s] (None = code default FLOOD_RATE)
     "antinuke_flood": None,
+    # time-boxed headroom for ONE person doing bulk work (see utils/antinuke_window.py).
+    # None = no window. Expiry is read-time, so a stale record here is inert.
+    "antinuke_window": None,
     # per-channel message-flood override: {channel_id(str): [count, window_s]}
     "antinuke_channel_flood": {},
     # channels where message-flood is NOT enforced (spam/bot channels — "allowed

@@ -214,6 +214,69 @@ async def s_spam_channel_exempt():
         an.get_config = lambda gid: dict(CFG)
 
 
+# ---- maintenance windows -------------------------------------------------
+# The window is the only feature that makes this cog LESS protective, so these
+# three fix its edges: it works for its target, it does nothing for anyone else,
+# and it cannot touch a destructive vector no matter who opened it.
+def _with_window(uid, minutes=30):
+    from utils import antinuke_window as awin
+    return {**CFG, "antinuke_window": awin.open_window(
+        uid, "bulkworker", minutes, 1, "owner", "assigning event roles")}
+
+
+async def s_window_allows_bulk_grants():
+    ex = Member(130); cog, g = fresh(ex)
+    an.get_config = lambda gid: _with_window(130)
+    try:
+        for i in range(30):     # 6x the normal (5,15) limit for member_role
+            target = Member(9000 + i)
+            before = types.SimpleNamespace(roles=[], guild=g, id=target.id)
+            after = types.SimpleNamespace(roles=[Role(1600 + i)], guild=g, id=target.id)
+            await cog.on_member_update(before, after)
+        return not ex.edit.called
+    finally:
+        an.get_config = lambda gid: dict(CFG)
+
+
+async def s_window_is_scoped_to_one_person():
+    ex = Member(131); cog, g = fresh(ex)
+    an.get_config = lambda gid: _with_window(999)   # window belongs to SOMEONE ELSE
+    try:
+        for i in range(6):
+            before = types.SimpleNamespace(roles=[], guild=g, id=9100 + i)
+            after = types.SimpleNamespace(roles=[Role(1700 + i)], guild=g, id=9100 + i)
+            await cog.on_member_update(before, after)
+        return ex.edit.called    # normal limit still applies to them
+    finally:
+        an.get_config = lambda gid: dict(CFG)
+
+
+async def s_window_never_raises_destructive():
+    ex = Member(132); cog, g = fresh(ex)
+    an.get_config = lambda gid: _with_window(132)   # window is THEIRS
+    try:
+        for i in range(3):       # channel_delete is (3, 12) and must stay there
+            await cog._record_action(g, "channel_delete", 5100 + i)
+        return ex.edit.called
+    finally:
+        an.get_config = lambda gid: dict(CFG)
+
+
+async def s_expired_window_does_nothing():
+    ex = Member(133); cog, g = fresh(ex)
+    from utils import antinuke_window as awin
+    stale = awin.open_window(133, "bulkworker", 30, 1, "owner", "", now=1000.0)
+    an.get_config = lambda gid: {**CFG, "antinuke_window": stale}  # expired long ago
+    try:
+        for i in range(6):
+            before = types.SimpleNamespace(roles=[], guild=g, id=9200 + i)
+            after = types.SimpleNamespace(roles=[Role(1800 + i)], guild=g, id=9200 + i)
+            await cog.on_member_update(before, after)
+        return ex.edit.called
+    finally:
+        an.get_config = lambda gid: dict(CFG)
+
+
 SCENARIOS = [
     ("mass channel-delete -> strip+quarantine", s_mass_channel_delete),
     ("below threshold (2 deletes) -> no action", s_below_threshold),
@@ -231,6 +294,10 @@ SCENARIOS = [
     ("unauthorized admin grant -> revert + strip granter", s_admin_grant_unauthorized),
     ("owner grants admin -> allowed", s_admin_grant_by_owner),
     ("spam-allowed channel -> flood exempt", s_spam_channel_exempt),
+    ("window open -> 30 role grants allowed", s_window_allows_bulk_grants),
+    ("window is someone else's -> still stripped", s_window_is_scoped_to_one_person),
+    ("window open -> channel-delete STILL trips", s_window_never_raises_destructive),
+    ("expired window -> normal limits apply", s_expired_window_does_nothing),
 ]
 
 
