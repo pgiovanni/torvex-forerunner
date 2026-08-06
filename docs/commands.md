@@ -2,7 +2,7 @@
 
 Every slash command **Peepo's Reclaimer** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **182 commands** (83 top-level, the rest subcommands) across 33 cogs
+- **187 commands** (84 top-level, the rest subcommands) across 34 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -27,7 +27,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/member-activity`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recent-leaves`, `/recon-status`, `/recon-unblock`, `/roster-missing`, `/roster-snapshot`, `/security`, `/structure-restore`, `/structure-status`, `/unquarantine`, `/verify`
 
-**Server setup** — `/automation`, `/backup_emojis`, `/picount`, `/rolemenu`, `/setup`, `/steal-emoji`, `/suggest`
+**Server setup** — `/backup_emojis`, `/picount`, `/rolemenu`, `/setup`, `/steal-emoji`, `/suggest`, `/welcome`
 
 **Members & invites** — `/activity`, `/backfill-chat-levels`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/invite`, `/levelroles`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/stats-status`, `/store`, `/tracked-invite`
 
@@ -36,6 +36,8 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 **AI** — `/ai-privacy`, `/ai-status`, `/ai-usage`, `/ask`
 
 **Help** — `/add-bot`, `/dashboard`, `/help`
+
+**Other** — `/automation`
 
 ---
 
@@ -649,6 +651,20 @@ Hold a member — strip their roles and lock them out, whatever their verificati
 | `reason` | string | No | Why — goes in the log and in their DM |
 | `notify` | boolean | No | DM them what happened and how to get out (default: yes) |
 
+#### `/security accept-terms`
+
+Server owner: accept the verification-gate terms for this server.
+
+```
+/security accept-terms [confirm]
+```
+
+**Access:** **Server owner only**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `confirm` | boolean | No | Yes — I've read /security terms and I accept for this server |
+
 #### `/security audit`
 
 Scan roles AND channel overrides for dangerous permissions.
@@ -687,6 +703,20 @@ Toggle whether anti-nuke actually acts (vs alert-only).
 |---|---|:--:|---|
 | `on` | boolean | Yes | True = act (strip/timeout/ban) · False = shadow (alert only) |
 
+#### `/security revoke-terms`
+
+Server owner: withdraw consent and stop the gate screening this server.
+
+```
+/security revoke-terms [confirm]
+```
+
+**Access:** **Server owner only**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `confirm` | boolean | No | Yes — withdraw consent and switch AltGuard off here |
+
 #### `/security setup`
 
 Enable anti-nuke + quarantine-lock for this server.
@@ -712,6 +742,18 @@ Show this server's protection settings.
 ```
 
 **Access:** Requires **Administrator**
+
+*No parameters.*
+
+#### `/security terms`
+
+Read the verification-gate terms and see if this server accepted them.
+
+```
+/security terms
+```
+
+**Access:** Everyone
 
 *No parameters.*
 
@@ -1124,12 +1166,12 @@ Channel for new member welcome messages.
 
 <sub>`cogs/automation.py`</sub>
 
-#### `/automation enable`
+#### `/welcome enable`
 
-Turn automation on or off for this server.
+Turn join roles + welcome messages on or off.
 
 ```
-/automation enable <on>
+/welcome enable <on>
 ```
 
 **Access:** Requires **Administrator**
@@ -1138,12 +1180,12 @@ Turn automation on or off for this server.
 |---|---|:--:|---|
 | `on` | boolean | Yes | … |
 
-#### `/automation status`
+#### `/welcome status`
 
-Show this server's automation settings.
+Show this server's join & welcome settings.
 
 ```
-/automation status
+/welcome status
 ```
 
 **Access:** Requires **Administrator**
@@ -1475,12 +1517,15 @@ Mint a labeled invite for a public source (Disboard, Reddit, a site).
 Import XP, levels & role rewards from MEE6's leaderboard API
 
 ```
-/levelroles import-mee6
+/levelroles import-mee6 [preview] [create_missing]
 ```
 
 **Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
 
-*No parameters.*
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `preview` | boolean | No | Show what would be imported without writing anything |
+| `create_missing` | boolean | No | Recreate reward roles MEE6 references that no longer exist |
 
 #### `/levelroles list`
 
@@ -2685,6 +2730,40 @@ Show all available commands.
 ```
 
 **Access:** Everyone
+
+*No parameters.*
+
+---
+
+## Other
+
+### auto_rules
+
+<sub>`cogs/auto_rules.py`</sub>
+
+#### `/automation enable`
+
+Turn ALL automation rules on or off.
+
+```
+/automation enable <on>
+```
+
+**Access:** Requires **Administrator**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `on` | boolean | Yes | … |
+
+#### `/automation status`
+
+Show this server's automation rules.
+
+```
+/automation status
+```
+
+**Access:** Requires **Administrator**
 
 *No parameters.*
 
