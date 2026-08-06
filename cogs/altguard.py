@@ -322,6 +322,70 @@ class VerifyPanel(discord.ui.View):
         )
 
 
+class HoldReplyView(discord.ui.View):
+    """Buttons on the mod-log card that carries a held member's own answer.
+
+    The custom_id is STATIC so the view survives restarts; the target uid is read
+    back out of the embed footer (`uid:<id>`), which keeps one registered view
+    serving every card instead of one per member.
+    """
+
+    def __init__(self, cog=None):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @staticmethod
+    def _uid_from(message: discord.Message):
+        for e in message.embeds:
+            m = re.search(r"uid:(\d+)", (e.footer.text or "") if e.footer else "")
+            if m:
+                return int(m.group(1))
+        return None
+
+    async def _guard(self, interaction: discord.Interaction):
+        """Admin-only, and only usable while the cog is live."""
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "That's an admin action.", ephemeral=True)
+            return None
+        uid = self._uid_from(interaction.message)
+        member = interaction.guild.get_member(uid) if uid else None
+        if member is None:
+            await interaction.response.send_message(
+                "That member isn't in the server any more.", ephemeral=True)
+            return None
+        return member
+
+    @discord.ui.button(label="Release + restore roles", style=discord.ButtonStyle.success,
+                       emoji="✅", custom_id="altguard:holdreply_release")
+    async def release_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = await self._guard(interaction)
+        if member is None or not self.cog:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        ok, restored, _aged, also, _failed = await self.cog._do_group_release(
+            interaction.guild, interaction.user, member
+        )
+        roles = ", ".join(r.mention for r in restored) if restored else "no stored roles"
+        extra = (" · also cleared " + ", ".join(a.mention for a in also)) if also else ""
+        await interaction.followup.send(
+            (f"✅ Released {member.mention}. Restored: {roles}.{extra}" if ok else
+             f"⚠️ Couldn't fully restore {member.mention} — check permissions/hierarchy.{extra}"),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Keep held", style=discord.ButtonStyle.secondary,
+                       emoji="🔒", custom_id="altguard:holdreply_keep")
+    async def keep_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = await self._guard(interaction)
+        if member is None:
+            return
+        # No state change — this is an acknowledgement so the next mod knows the
+        # card was read. The quarantine is already in place.
+        await interaction.response.send_message(
+            f"🔒 Left {member.mention} held. Nothing changed.", ephemeral=True)
+
+
 class AltGuard(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -337,6 +401,7 @@ class AltGuard(commands.Cog):
             self.quarantine_on_join = persisted == "1"
         self.session = aiohttp.ClientSession()
         self.bot.add_view(VerifyPanel())  # persistent verify button — works after restarts
+        self.bot.add_view(HoldReplyView(self))  # buttons on hold-reply cards
         self.poll_results.start()
         if ALMOST_ROLE_ID:
             self.sync_almost_verified.start()
@@ -867,6 +932,7 @@ class AltGuard(commands.Cog):
         if not results:
             await self._poll_shares(guild)  # still surface link-sharing
             await self._poll_precaptures(guild)
+            await self._poll_hold_replies(guild)
             return
 
         acked = []
@@ -945,6 +1011,80 @@ class AltGuard(commands.Cog):
 
         await self._poll_shares(guild)
         await self._poll_precaptures(guild)
+        await self._poll_hold_replies(guild)
+
+    async def _poll_hold_replies(self, guild):
+        """Surface what a HELD member said about their own device match.
+
+        The gate asks this only on device-match holds; the answer is self-declared
+        context for a human and never touched the verdict. Read it that way: a
+        'yes' is worth a lot (someone volunteered a checkable explanation), a 'no'
+        is worth almost nothing (innocent and evader both say no), and saying
+        NOTHING is not evidence of anything.
+        """
+        if not self.session or not GATE_URL:
+            return
+        try:
+            async with self.session.get(
+                f"{GATE_URL}/api/hold-replies", headers=_hmac_headers(), timeout=10
+            ) as r:
+                if r.status != 200:
+                    return
+                data = await r.json()
+        except Exception as e:
+            log.debug("hold-reply poll failed: %s", e)
+            return
+
+        replies = data.get("replies", [])
+        if not replies:
+            return
+
+        ids = []
+        for rep in replies:
+            ids.append(rep["id"])
+            if guild:
+                await self._hold_reply_alert(guild, rep)
+
+        try:
+            async with self.session.post(
+                f"{GATE_URL}/api/hold-replies/ack", headers=_hmac_headers(),
+                json={"ids": ids}, timeout=10,
+            ):
+                pass
+        except Exception as e:
+            log.debug("hold-reply ack failed: %s", e)
+
+    async def _hold_reply_alert(self, guild, rep):
+        ch = guild.get_channel(MODLOG_CHANNEL_ID)
+        if not ch:
+            return
+        uid = int(rep["uid"])
+        member = guild.get_member(uid)
+        label = {
+            "mine":   ("✅ “Yes — the other account is mine”", 0x57F287),
+            "shared": ("👨‍👩‍👧 “It's a shared device — family, partner, roommate”", 0xFEE75C),
+            "no":     ("❔ “No / not that I know of”", 0x95A5A6),
+        }.get(rep.get("choice") or "", ("(unknown answer)", 0x95A5A6))
+
+        embed = discord.Embed(
+            title="💬 Held member replied",
+            color=label[1],
+            description=(f"{member.mention if member else f'<@{uid}>'} `{uid}` answered the "
+                         f"device-match question on the verify page."),
+        )
+        embed.add_field(name="Answer", value=label[0], inline=False)
+        note = (rep.get("note") or "").strip()
+        if note:
+            embed.add_field(name="In their words", value=f">>> {note[:1000]}", inline=False)
+        embed.add_field(
+            name="How to weigh it",
+            value=("-# Self-declared and unscored. A **yes** is a checkable explanation; "
+                   "a **no** rules nothing out either way. Verify against the match, don't "
+                   "substitute this for it."),
+            inline=False,
+        )
+        embed.set_footer(text=f"uid:{uid} · AltGuard hold reply")
+        await ch.send(embed=embed, view=HoldReplyView(self))
 
     async def _poll_precaptures(self, guild):
         """Surface pre-auth landing-page captures whose DEVICE matched a known
@@ -1521,15 +1661,13 @@ class AltGuard(commands.Cog):
                 seen.add(int(mt.group(1)))
         return seen
 
-    @app_commands.command(
-        name="altguard-release",
-        description="Clear a quarantine and restore removed roles — releases the whole matched-alt group",
-    )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    async def release(self, interaction: discord.Interaction, member: discord.Member):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        guild = interaction.guild
+    async def _do_group_release(self, guild, actor, member: discord.Member):
+        """Release one member + every still-held account fingerprint-linked to them.
+
+        Extracted from /altguard-release so the hold-reply mod-log card can offer
+        the exact same action from a button — one release path, not two.
+        Returns (ok, restored, aged, also, failed).
+        """
         qrole = guild.get_role(QUARANTINE_ROLE_ID)
 
         # Releasing one confirmed alt vouches for the whole group: find every
@@ -1540,7 +1678,7 @@ class AltGuard(commands.Cog):
         # Mark trusted: their device (if on file) stays a live detector — a NEW
         # account matching it is still quarantined for review — but the alt-cascade
         # will never re-quarantine this member again.
-        qstore.clear(member.id, f"released by {interaction.user}")
+        qstore.clear(member.id, f"released by {actor}")
 
         # Cascade-release: every in-server member of the group still held goes
         # out with them. This does NOT whitelist the device — a future alt still
@@ -1556,11 +1694,24 @@ class AltGuard(commands.Cog):
             if not held:
                 continue
             a_ok, _, _ = await self._release(alt)
-            qstore.clear(aid, f"released by {interaction.user} (group release with {member.id})")
+            qstore.clear(aid, f"released by {actor} (group release with {member.id})")
             (also if a_ok else failed).append(alt)
 
         if also or failed:
-            await self._group_release_note(guild, interaction.user, member, also, failed)
+            await self._group_release_note(guild, actor, member, also, failed)
+        return ok, restored, aged, also, failed
+
+    @app_commands.command(
+        name="altguard-release",
+        description="Clear a quarantine and restore removed roles — releases the whole matched-alt group",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def release(self, interaction: discord.Interaction, member: discord.Member):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        ok, restored, aged, also, failed = await self._do_group_release(
+            interaction.guild, interaction.user, member
+        )
 
         roles = ", ".join(r.mention for r in restored) if restored else "no stored roles"
         age_note = (f"\n-# No age band on file — defaulted to **{aged}**; they can change it themselves."
