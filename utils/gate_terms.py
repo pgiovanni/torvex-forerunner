@@ -30,6 +30,10 @@ TERMS_VERSION = 1
 
 TERMS_TEXT = (
     "🛡️ **AltGuard verification gate — terms (v1)**\n"
+    "-# ⚠️ This is **not** the message-archive agreement. If you've already accepted terms "
+    "for this bot, that one covered *storing your server's messages*. This one covers *what "
+    "is collected from your members when they verify*. Accepting one has never accepted the "
+    "other.\n\n"
     "Switching this on means members of your server are asked to pass a device check run "
     "on the bot operator's infrastructure. They are not the ones agreeing to this — you are, "
     "on their behalf. Please read it properly.\n\n"

@@ -145,6 +145,10 @@ DEFAULTS = {
     "mod_require_reason": 0,         # refuse ban/kick/timeout with no reason given
     "mod_default_timeout_min": 60,   # /timeout default when no duration is passed
     "mod_ban_delete_days": 0,        # delete this many days of the banned user's messages (0-7)
+    # ── AI chat (/ask + characters) ───────────────────────────────────────────
+    # Not launchable yet — the dashboard shows the card as "coming soon" and
+    # refuses its settings page. Present here so the key exists before launch.
+    "ai_enabled": 0,
     # ── automation (join roles + welcome/goodbye) ─────────────────────────────
     "auto_enabled": 0,               # master opt-in
     "autorole_ids": [],              # roles granted automatically on join
