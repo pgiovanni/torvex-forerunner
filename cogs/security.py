@@ -281,9 +281,14 @@ class Security(commands.Cog):
         # A quarantine with no visible verify channel is a silent dead end: the
         # member is held and has nowhere to be told why or how to get out.
         vc = cfg.get("verify_channel_id")
+        # The greeting can be turned down per guild, so say which mode is on —
+        # "channel is set" and "they get told about it" aren't the same thing.
+        ping = {"never": " · no greeting ping",
+                "dm_failed": " · greeting only if their DM fails"}.get(
+                    str(cfg.get("verify_ping") or "always"), "")
         embed.add_field(
             name="Verify channel",
-            value=(_chan(vc) if vc else "⚠️ *none — held members see nothing*"), inline=True)
+            value=(_chan(vc) + ping if vc else "⚠️ *none — held members see nothing*"), inline=True)
         embed.add_field(name="Whitelist", value=f"{len(cfg.get('whitelist') or [])} id(s)", inline=True)
         embed.set_footer(text="/security setup to enable · /security enforce to act")
         await interaction.response.send_message(

@@ -48,6 +48,7 @@ from discord.ext import commands, tasks
 import quarantine_store as qstore
 import rejoin_roles
 from tokens import make_token, pack
+from utils.security_config import get_config
 
 log = logging.getLogger("altguard")
 
@@ -147,6 +148,27 @@ RELEASE_MATCH_PCT = _env_int("ALTGUARD_RELEASE_MATCH_PCT", 85)
 
 def _verify_link(uid: int, gid: int) -> str:
     return f"{GATE_URL}/v/{pack(make_token(SECRET, uid, gid))}"
+
+
+def _verify_ping_wanted(guild_id: int, dm_delivered: bool) -> bool:
+    """Should we @ the held member in the verify channel? Per-guild
+    (security_config `verify_ping`, dashboard-settable):
+
+      always     — greet every held member (the original behaviour)
+      dm_failed  — only when their DM never landed
+      never      — never ping; the Verify panel button in that channel is the
+                   only prompt they get
+
+    Turning it off is safe on its own — the panel button is always there — but
+    it does mean a closed-DM joiner sees no prompt at all, which is exactly the
+    case `dm_failed` covers.
+    """
+    mode = str(get_config(guild_id).get("verify_ping") or "always")
+    if mode == "never":
+        return False
+    if mode == "dm_failed":
+        return not dm_delivered
+    return True
 
 
 def _device_profile(attrs: dict) -> str:
@@ -594,13 +616,21 @@ class AltGuard(commands.Cog):
         # @everyone. Screened joiners were skipped here for no good reason.
         # Moot now that screening is off, but don't trust `pending` to mean
         # "can't see the server" if it ever comes back.
-        if quarantined and VERIFY_CHANNEL_ID and not member.pending:
+        # ...unless this guild has the greeting turned down (verify_ping). Read
+        # the DELIVERY RECORD, not `status`: an already-issued rejoiner returns
+        # "already issued …" here even when that original DM never landed.
+        v = qstore.verification(member.id)
+        dm_ok = bool(v and v.get("dm_delivered"))
+        if (quarantined and VERIFY_CHANNEL_ID and not member.pending
+                and _verify_ping_wanted(member.guild.id, dm_ok)):
             vch = member.guild.get_channel(VERIFY_CHANNEL_ID)
             if vch:
                 try:
+                    tail = ("we also DMed you the link" if dm_ok else
+                            "we couldn't DM you, so this button is the way in")
                     await vch.send(
                         f"👋 {member.mention} — your access is held for a quick anti-raid check. "
-                        f"Tap **🔒 Verify** above to unlock (we also DMed you the link)."
+                        f"Tap **🔒 Verify** above to unlock ({tail})."
                     )
                 except discord.Forbidden:
                     pass
@@ -667,7 +697,9 @@ class AltGuard(commands.Cog):
         if v and v.get("status") == "passed":
             return
         # verify channel is reachable now — point them at the panel button
-        if VERIFY_CHANNEL_ID:
+        # (subject to the same per-guild verify_ping setting as the join ping)
+        if VERIFY_CHANNEL_ID and _verify_ping_wanted(
+                member.guild.id, bool(v and v.get("dm_delivered"))):
             vch = member.guild.get_channel(VERIFY_CHANNEL_ID)
             if vch:
                 try:

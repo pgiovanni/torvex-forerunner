@@ -67,6 +67,12 @@ DEFAULTS = {
     "spoof_ban_threshold": 60,
     "default_role_ids": [],
     "verify_channel_id": None,
+    # Greeting a held member in the verify channel. The panel button lives there
+    # either way, so this is purely about whether a public @ping fires on join:
+    # "always" | "dm_failed" (only when their DM never landed) | "never".
+    # dm_failed is the setting that keeps a closed-DM joiner from being stranded
+    # without ever pinging anyone else.
+    "verify_ping": "always",
     # ── verify-prune: what happens to someone who never finishes verifying ────
     # A held member who just sits there forever is a foothold, so there's a
     # clock. Every part of it is a server's own call — including turning the
