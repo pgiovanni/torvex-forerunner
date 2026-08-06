@@ -166,6 +166,26 @@ DEFAULTS = {
     # an admin can stop every rule at once without editing any of them.
     "rules_enabled": 0,
     "rules": [],
+    # ── activity stats (cogs/stats.py) ────────────────────────────────────────
+    # DELIBERATELY ON BY DEFAULT, unlike everything else in this file. This tier
+    # stores NUMBERS ONLY — one row per (day, channel, user, count), never a
+    # word of anyone's message — and a day nobody counted is gone forever, so
+    # defaulting it off would quietly cost every server its history in exchange
+    # for privacy it already has. Turning it off is one toggle on the Stats card.
+    #
+    # Scale, measured rather than guessed (2026-08-05, home guild):
+    #   1,325,685 archived messages -> messages.db  1.6 GB   (content)
+    #   the same traffic            -> stats.db     1.1 MB   (counts)
+    # ~1500x. That ratio is the whole reason these are two separate settings:
+    # "all time" for counts is megabytes, "all time" for content is gigabytes.
+    "stats_enabled": 1,
+    "stats_voice": 1,                # voice-session tracking (also numbers only)
+    "stats_ignore_channels": [],     # never counted (staff rooms, bot spam)
+    # "forward" = count from now on. "all" = also backfill history, which is
+    # what makes "since server start" graphs possible on a server that added
+    # the bot last week. Set by the Stats card; the backfill itself is a queued
+    # job (utils/stats_jobs.py) so a REST crawl never blocks the gateway.
+    "stats_scope": "forward",
 }
 
 
