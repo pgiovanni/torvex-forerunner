@@ -166,6 +166,21 @@ DEFAULTS = {
     # an admin can stop every rule at once without editing any of them.
     "rules_enabled": 0,
     "rules": [],
+    # ── leveling: where level-up announcements go (cogs/economy.py) ───────────
+    # "here" = the channel they were talking in (MEE6's behaviour and ours since
+    # day one), "channel" = one fixed channel, "dm" = message the member, "off"
+    # = announce nothing. Resolved by utils/level_notify.py.
+    #
+    # This is the SERVER's side of the choice only. A member can always silence
+    # their own level-ups with /notifications, and that opt-out wins over every
+    # value here — including "dm", so nobody starts receiving DMs because an
+    # admin changed a server setting.
+    "levels_announce": "here",
+    "levels_announce_channel_id": None,
+    # one-time marker: the old boolean guild_settings.levelup_notifs (Postgres)
+    # has been folded into levels_announce for this guild. Same pattern as
+    # prune_seeded — without it the migration would re-run and stomp later edits.
+    "levels_seeded": 0,
     # ── activity stats (cogs/stats.py) ────────────────────────────────────────
     # DELIBERATELY ON BY DEFAULT, unlike everything else in this file. This tier
     # stores NUMBERS ONLY — one row per (day, channel, user, count), never a

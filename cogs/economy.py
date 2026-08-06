@@ -3,11 +3,16 @@ from discord import app_commands
 from discord.ext import commands
 import asyncpg
 import aiohttp
+import asyncio
 import os
+import sys
 import time
 import random
 import logging
 from datetime import date
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils import security_config, level_notify  # noqa: E402
 
 log = logging.getLogger("economy")
 
@@ -200,6 +205,7 @@ class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.pool: asyncpg.Pool | None = None
+        self._register_task: asyncio.Task | None = None
         # (user_id, guild_id) → monotonic ts of last guild-XP award (MEE6 pacing)
         self._guild_xp_last: dict[tuple[str, str], float] = {}
 
@@ -252,13 +258,10 @@ class Economy(commands.Cog):
                 ADD COLUMN IF NOT EXISTS daily_regular_bucks_count INT NOT NULL DEFAULT 0,
                 ADD COLUMN IF NOT EXISTS daily_regular_bucks_date  DATE
         """)
-        # Register all current guilds in guild_settings
-        for guild in self.bot.guilds:
-            await self.pool.execute("""
-                INSERT INTO guild_settings (guild_id, levelup_notifs)
-                VALUES ($1, TRUE)
-                ON CONFLICT DO NOTHING
-            """, str(guild.id))
+        # Registering the guilds has to WAIT for the guild cache. Cogs load in
+        # setup_hook (since the 7/5 role-menu fix), and bot.guilds is empty
+        # until READY — this loop used to run here and quietly did nothing.
+        self._register_task = asyncio.create_task(self._register_guilds())
 
         # Backfill Peepos server from global xp (only if no rows exist yet for that guild)
         peepos_guild = str(PEEPOS_GUILD_ID)
@@ -274,8 +277,86 @@ class Economy(commands.Cog):
             """, peepos_guild)
 
     async def cog_unload(self):
+        if self._register_task:
+            self._register_task.cancel()
         if self.pool:
             await self.pool.close()
+
+    async def _register_guilds(self):
+        """Give every guild we're in a settings row, once the cache exists."""
+        await self.bot.wait_until_ready()
+        for guild in self.bot.guilds:
+            try:
+                await self.pool.execute("""
+                    INSERT INTO guild_settings (guild_id, levelup_notifs)
+                    VALUES ($1, TRUE)
+                    ON CONFLICT DO NOTHING
+                """, str(guild.id))
+                await self._seed_announce_config(guild.id)
+            except Exception as e:
+                log.error(f"guild registration failed for {guild.id}: {e}")
+
+    # ── level-up announcements ────────────────────────────────────────────────
+    async def _seed_announce_config(self, guild_id: int):
+        """Carry the old on/off boolean into the new levels_announce setting.
+
+        Level-up announcements used to be one column in Postgres
+        (guild_settings.levelup_notifs). They now live with every other
+        per-guild setting in security_config, where the dashboard can reach
+        them — but a server that had turned announcements OFF must stay off
+        across that move, so the boolean seeds the new key exactly once.
+        Guarded by levels_seeded so a later change here isn't stomped on the
+        next restart (same pattern as prune_seeded).
+        """
+        try:
+            cfg = security_config.get_config(guild_id)
+            if cfg.get("levels_seeded"):
+                return
+            row = await self.pool.fetchrow(
+                "SELECT levelup_notifs FROM guild_settings WHERE guild_id = $1", str(guild_id)
+            )
+            was_on = row["levelup_notifs"] if row else True
+            security_config.set_config(
+                guild_id, levels_seeded=1,
+                **({} if was_on else {"levels_announce": "off"}))
+        except Exception as e:
+            log.error(f"levels_announce seed failed for {guild_id}: {e}")
+
+    async def _announce_levelup(self, member: discord.Member, guild: discord.Guild,
+                                level: int, origin: discord.abc.Messageable):
+        """Send one level-up notification wherever this server wants it.
+
+        Never raises: a level-up that can't be announced is a cosmetic loss, and
+        this runs inside on_message for every message in every guild.
+        """
+        cfg = security_config.get_config(guild.id)
+        kind, channel_id = level_notify.destination(cfg, getattr(origin, "id", None))
+        if kind == "off":
+            return
+
+        if kind == "dm":
+            try:
+                await member.send(
+                    f"⬆️ You leveled up to **Level {level}** in **{guild.name}**!"
+                )
+            except discord.HTTPException:
+                pass  # closed DMs — nothing to fall back to, and nowhere to complain
+            return
+
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            return
+        # Checked rather than caught: announcing into a channel the bot can't
+        # post in was a steady drip of 403s in the log (one per levelup, in
+        # every guild), and a permissions error is not an exception worth
+        # raising on the message hot path.
+        perms = channel.permissions_for(guild.me)
+        if not (perms.view_channel and perms.send_messages):
+            return
+        try:
+            await channel.send(f"⬆️ {member.mention} leveled up to **Level {level}**!")
+        except discord.HTTPException as e:
+            log.warning(f"levelup announce failed in {guild.id}/{channel.id}: {e}")
 
     async def get_or_create(self, user: discord.User | discord.Member) -> asyncpg.Record:
         await self.pool.execute(
@@ -379,6 +460,7 @@ class Economy(commands.Cog):
             VALUES ($1, TRUE)
             ON CONFLICT DO NOTHING
         """, str(guild.id))
+        await self._seed_announce_config(guild.id)
         log.info(f"Joined guild: {guild.name} ({guild.id})")
 
     @commands.Cog.listener()
@@ -394,15 +476,11 @@ class Economy(commands.Cog):
             # level_roles cog listens for this to swap Level N+ reward roles.
             if g_leveled_up and guild_id:
                 self.bot.dispatch("peepo_guild_level_up", message.author, message.guild, g_level)
+                # The member's own opt-out is checked first and wins over every
+                # server setting, DM included.
                 if user_notifs:
-                    guild_row = await self.pool.fetchrow(
-                        "SELECT levelup_notifs FROM guild_settings WHERE guild_id = $1", str(guild_id)
-                    )
-                    guild_notifs = guild_row["levelup_notifs"] if guild_row else True
-                    if guild_notifs:
-                        await message.channel.send(
-                            f"⬆️ {message.author.mention} leveled up to **Level {g_level}**!"
-                        )
+                    await self._announce_levelup(
+                        message.author, message.guild, g_level, message.channel)
 
             await _api("POST", "/api/bot/game/sync-level", json={
                 "discordId": str(message.author.id),
@@ -703,24 +781,72 @@ class Economy(commands.Cog):
             await interaction.response.send_message("❌ Admin only.", ephemeral=True)
 
     # ── /server-notifications ─────────────────────────────────────────────────
-    @app_commands.command(name="server-notifications", description="[Admin] Toggle level-up notifications for this server.")
+    @app_commands.command(
+        name="server-notifications",
+        description="[Admin] Where level-up notifications go in this server — or turn them off.")
+    @app_commands.describe(
+        mode="Where announcements go. Leave blank to see the current setting.",
+        channel="The channel to send them to (only used with “In one specific channel”).")
+    @app_commands.choices(mode=[
+        app_commands.Choice(name=level_notify.MODE_LABELS["here"], value="here"),
+        app_commands.Choice(name=level_notify.MODE_LABELS["channel"], value="channel"),
+        app_commands.Choice(name=level_notify.MODE_LABELS["dm"], value="dm"),
+        app_commands.Choice(name=level_notify.MODE_LABELS["off"], value="off"),
+    ])
     @app_commands.checks.has_permissions(administrator=True)
-    async def server_notifications(self, interaction: discord.Interaction):
-        guild_id = str(interaction.guild_id)
-        row = await self.pool.fetchrow(
-            "SELECT levelup_notifs FROM guild_settings WHERE guild_id = $1", guild_id
-        )
-        current = row["levelup_notifs"] if row else True
-        new_val = not current
+    async def server_notifications(self, interaction: discord.Interaction,
+                                   mode: app_commands.Choice[str] = None,
+                                   channel: discord.TextChannel = None):
+        gid = interaction.guild_id
+        cfg = security_config.get_config(gid)
+
+        if mode is None and channel is None:
+            await interaction.response.send_message(
+                f"Level-up announcements: **{level_notify.describe(cfg)}**\n"
+                "-# Change it with the `mode` option. Members can silence their own "
+                "level-ups anywhere with `/notifications`.",
+                ephemeral=True)
+            return
+
+        # A channel on its own reads as "send them there" — no reason to make
+        # someone pick the mode as well when they've already named the channel.
+        new_mode = mode.value if mode else "channel"
+
+        if new_mode == "channel":
+            if channel is None:
+                await interaction.response.send_message(
+                    "Pick the channel too — `mode:` “In one specific channel” needs "
+                    "a `channel:`.", ephemeral=True)
+                return
+            perms = channel.permissions_for(interaction.guild.me)
+            if not (perms.view_channel and perms.send_messages):
+                await interaction.response.send_message(
+                    f"I can't post in {channel.mention}, so nothing would ever be "
+                    "announced there. Give me **View Channel** + **Send Messages** "
+                    "there first (`/check-perms fix:True` can do it), then run this again.",
+                    ephemeral=True)
+                return
+
+        fields = {"levels_announce": new_mode, "levels_seeded": 1}
+        if new_mode == "channel":
+            fields["levels_announce_channel_id"] = channel.id
+        security_config.set_config(gid, **fields)
+
+        # Keep the legacy boolean in step. Nothing reads it any more, but it's
+        # what this setting was before today and a rollback should not silently
+        # turn a server's announcements back on.
         await self.pool.execute("""
             INSERT INTO guild_settings (guild_id, levelup_notifs)
             VALUES ($1, $2)
             ON CONFLICT (guild_id) DO UPDATE SET levelup_notifs = $2
-        """, guild_id, new_val)
-        state = "**on** ⬆️" if new_val else "**off** 🔕"
+        """, str(gid), new_mode != "off")
+
+        cfg = security_config.get_config(gid)
         await interaction.response.send_message(
-            f"Server level-up notifications turned {state}.", ephemeral=True
-        )
+            f"✅ Level-up announcements: **{level_notify.describe(cfg, channel.mention if channel else None)}**"
+            + ("\n-# Members with their DMs closed simply won't get one — there's no fallback."
+               if new_mode == "dm" else ""),
+            ephemeral=True)
 
     @server_notifications.error
     async def server_notifications_error(self, interaction: discord.Interaction, error):
