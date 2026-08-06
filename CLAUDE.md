@@ -1,5 +1,17 @@
 # peepos-reclaimer — Claude Context
 
+## ⚠️ SHARED-TREE POLICY (Paul, 2026-08-05)
+Multiple agent sessions work this tree and the one VPS in parallel — the
+coordination file is `~/altguard/HANDOFF.md` (read it before deploying, update
+it on handoff). Binding rules: never deploy a single edited file from the tree
+(full feature set, or `git show HEAD:<file>` + only your hunks); pre-deploy,
+grep what you ship for imports/references you didn't write and stop if they're
+missing on prod; never fix a boot error by deploying another session's
+unfinished files — roll back to HEAD; never `git add -A` on a shared tree —
+stage surgically and read the staged diff; commit + push your own hunks before
+handing off; prod is the only truth — diff local vs deployed before overwriting
+anything another agent touched. Ship `utils/` before `cogs/`.
+
 ## What It Is
 All-in-one Discord bot for the Torvex community. Moderation, security, events, games, and Torvex Lescala RPG integration. Python + discord.py.
 
