@@ -22,6 +22,7 @@ from discord.ext import commands
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.security_config import get_config, set_config, is_enabled  # noqa: E402
+from utils.quiet_removals import is_quiet  # noqa: E402
 
 MAX_AUTOROLES = 10          # a runaway config shouldn't mean 50 role writes per join
 MAX_DELAY = 3600
@@ -69,7 +70,7 @@ class Automation(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        if member.bot or not is_enabled(member.guild.id, "auto"):
+        if member.bot or is_quiet(member.id) or not is_enabled(member.guild.id, "auto"):
             return
         cfg = get_config(member.guild.id)
         ch = member.guild.get_channel(int(cfg.get("goodbye_channel_id") or 0))

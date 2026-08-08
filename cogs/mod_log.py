@@ -44,6 +44,7 @@ from discord.ext import commands, tasks
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.security_config import get_config, set_config, is_enabled, all_enabled  # noqa: E402
+from utils.quiet_removals import is_quiet  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 DB_PATH = os.path.join(ROOT, "messages.db")
@@ -2181,6 +2182,8 @@ class ModLog(commands.Cog):
             before=member.nick, after=member.global_name or member.name,
             by_uid=(rec or {}).get("by_id"), by_name=(rec or {}).get("by_name"),
             reason=(rec or {}).get("reason"))
+        if is_quiet(member.id):
+            return  # silenced removal — the ledger row above is written either way
         if rec and rec["action"] is discord.AuditLogAction.ban:
             return  # the ban embed (with reason) is posted from the audit event
         joined = f"<t:{int(member.joined_at.timestamp())}:R>" if member.joined_at else "?"

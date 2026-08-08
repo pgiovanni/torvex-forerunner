@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.links import config_view, dashboard_url  # noqa: E402
+from utils.quiet_removals import is_quiet  # noqa: E402
 
 TORVEX_API_URL = os.getenv("TORVEX_API_URL", "http://localhost:5000")
 TORVEX_BOT_KEY = os.getenv("TORVEX_BOT_KEY", "")
@@ -134,7 +135,7 @@ class Setup(commands.Cog):
         """Post a goodbye message to the leaves channel when a member leaves.
         Channel is set via the GOODBYE_CHANNEL_ID env var — independent of the Torvex
         guild-config API so it works even while that service is down."""
-        if member.bot:
+        if member.bot or is_quiet(member.id):
             return
         ch_id = os.getenv("GOODBYE_CHANNEL_ID")
         if not ch_id:

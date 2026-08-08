@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import sys
@@ -9,6 +10,11 @@ from discord.ext import commands
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.security_config import get_config  # noqa: E402
+from utils.quiet_removals import mark, clear  # noqa: E402
+
+# anti-nuke's kick vector is (5, 20); 6s spacing keeps a bulk quiet-kick well
+# under it without the operator having to think about it.
+QUIET_KICK_SPACING = 6.0
 
 
 def _mod_cfg(guild_id) -> dict:
@@ -313,6 +319,82 @@ class Moderation(commands.Cog):
         await interaction.followup.send(embed=embed)  # public confirmation
         await _mod_log(self.bot, interaction.guild, mcfg, embed)
         await interaction.followup.send("✅ Done.", ephemeral=True)
+
+    @app_commands.command(
+        name="quiet-kick",
+        description="Kick a member with no goodbye message and no mod-log embed (still recorded).")
+    @app_commands.describe(
+        member="The member to kick quietly",
+        user_ids="Or several at once — user IDs separated by spaces or commas",
+        reason="Why (still written to Discord's audit log and the identity ledger)",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def quiet_kick(self, interaction: discord.Interaction,
+                         member: discord.Member = None, user_ids: str = None,
+                         reason: str = None):
+        """For clearing out dormant shells and abandoned alts without the
+        channel reading like a purge. Nothing is hidden from the RECORD —
+        member_events, the identity ledger and Discord's own audit log all
+        still get the kick. What's suppressed is the announcement.
+
+        Bulk kicks are PACED. anti-nuke trips at 5 kicks in 20s, and clearing
+        out six shells is not a reason to strip your own roles."""
+        await interaction.response.defer(ephemeral=True)
+        guild, me = interaction.guild, interaction.guild.me
+        if not me.guild_permissions.kick_members:
+            await interaction.followup.send("❌ I don't have the **Kick Members** permission.", ephemeral=True)
+            return
+
+        targets, unknown = [], []
+        if member:
+            targets.append(member)
+        for raw in re.split(r"[\s,]+", (user_ids or "").strip()):
+            if not raw:
+                continue
+            m = guild.get_member(int(raw)) if raw.isdigit() else None
+            (targets.append(m) if m else unknown.append(raw))
+        targets = list({t.id: t for t in targets}.values())
+        if not targets:
+            await interaction.followup.send(
+                "❌ Nobody to kick — pass a member or one or more user IDs of people "
+                f"currently in the server.{' Not found: ' + ', '.join(unknown) if unknown else ''}",
+                ephemeral=True)
+            return
+
+        audit = f"{interaction.user} ({interaction.user.id})"
+        full_reason = (reason or "Quiet kick") + f" — by {audit}"
+        done, failed = [], []
+        for i, t in enumerate(targets):
+            err = _can_act(interaction.user, t, me, verb="kick")
+            if err:
+                failed.append(f"{t.display_name} — {err}")
+                continue
+            if i:
+                await asyncio.sleep(QUIET_KICK_SPACING)   # stay under anti-nuke
+            mark(t.id)   # mark BEFORE: on_member_remove can fire before kick() returns
+            try:
+                await t.kick(reason=full_reason)
+                done.append(f"{t.display_name} (`{t.id}`)")
+            except discord.Forbidden:
+                clear(t.id)
+                failed.append(f"{t.display_name} — Discord refused (my role may be below theirs)")
+            except discord.HTTPException as e:
+                clear(t.id)
+                failed.append(f"{t.display_name} — {e}")
+
+        lines = []
+        if done:
+            lines.append(f"🤫 Kicked **{len(done)}** quietly — no goodbye, no mod-log embed:\n"
+                         + "\n".join(f"• {d}" for d in done))
+            lines.append("_Still recorded in `member_events`, the identity ledger, and Discord's "
+                         "audit log. None are banned — they can rejoin._")
+        if failed:
+            lines.append("⚠️ Skipped:\n" + "\n".join(f"• {f}" for f in failed))
+        if unknown:
+            lines.append(f"❔ Not in the server: {', '.join(unknown)}")
+        await interaction.followup.send("\n\n".join(lines)[:1900], ephemeral=True)
 
     @app_commands.command(name="timeout", description="Time out a member (mute + no reactions) for a duration.")
     @app_commands.describe(

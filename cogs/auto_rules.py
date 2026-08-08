@@ -44,6 +44,7 @@ from discord.ext import commands
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.security_config import get_config, set_config  # noqa: E402
+from utils.quiet_removals import is_quiet  # noqa: E402
 
 MAX_RULES = 25              # mirrors the dashboard's cap; re-applied here because
 MAX_ACTIONS = 5             # this process is the one holding the permissions
@@ -438,6 +439,8 @@ class AutoRules(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
+        if is_quiet(member.id):
+            return                      # silenced removal — no leave rules fire
         await self._fire(member.guild, "leave", member, make_ctx(
             user_id=member.id, is_bot=member.bot, roles=[r.id for r in member.roles],
             account_days=_account_days(member)))
