@@ -218,6 +218,9 @@ def _conn_line(res: dict, ip: bool = False) -> str:
 _CONN_CLASS = {
     "mobile": "📶 mobile carrier",
     "residential": "🏠 residential ISP",
+    "business": "🏢 business/organisation line",
+    "satellite": "🛰️ satellite ISP",
+    "hosting": "🖥️ datacenter / hosting",
     "none": "no rDNS published",
     "unknown": "unclassified network",
 }
@@ -239,14 +242,20 @@ def _precap_conn(p: dict, ip: bool = True) -> str:
     trusted = bool(p.get("scored_geo_trust"))
     if loc and not trusted:
         loc += " (exit)"
+    # Fall back to the CAPTURE-TIME facts (local GeoLite2, written the instant
+    # the page posted) for anything the drain hasn't filled in yet. Alerts fire
+    # ~2 minutes ahead of scoring, and a card that just says the IP tells an
+    # operator nothing about who owns it. The raw IP always stays on the line.
     head = [x for x in (f"📍 {loc}" if loc else None,
-                        p.get("scored_country"), p.get("scored_isp")) if x]
+                        p.get("scored_country") or p.get("cap_country"),
+                        p.get("scored_isp") or p.get("cap_org")) if x]
     if ip:
         head.append(f"`{p.get('ip', '?')}`")
     lines = [" · ".join(head) if head else f"`{p.get('ip', '?')}`"]
 
-    asn, org = p.get("scored_asn"), p.get("scored_org")
-    cls = p.get("scored_conn_class")
+    asn = p.get("scored_asn") or p.get("cap_asn")
+    org = p.get("scored_org") or p.get("cap_org")
+    cls = p.get("scored_conn_class") or p.get("cap_conn_class")
     if asn or org or cls:
         # IPQS echoes the bare IP in `host` when the range publishes no PTR —
         # printing that back as rDNS would read like a real hostname. Parsed, not
@@ -932,6 +941,7 @@ class AltGuard(commands.Cog):
         if not results:
             await self._poll_shares(guild)  # still surface link-sharing
             await self._poll_precaptures(guild)
+            await self._refresh_precap_cards(guild)
             await self._poll_hold_replies(guild)
             return
 
@@ -1011,6 +1021,7 @@ class AltGuard(commands.Cog):
 
         await self._poll_shares(guild)
         await self._poll_precaptures(guild)
+        await self._refresh_precap_cards(guild)
         await self._poll_hold_replies(guild)
 
     async def _poll_hold_replies(self, guild):
@@ -1107,73 +1118,16 @@ class AltGuard(commands.Cog):
             ids.append(p["id"])
             if not ch:
                 continue
+            embed, loud = self._precap_embed(p)
+            msg = await ch.send(content="@here" if loud else None, embed=embed,
+                                allowed_mentions=discord.AllowedMentions(everyone=True))
+            # remember the card so it can be corrected once the drain scores the
+            # row — the first render only ever knows what the local mmdb knew
             try:
-                matches = json.loads(p.get("matches") or "[]")
-            except (TypeError, ValueError):
-                matches = []
-            try:
-                attrs = json.loads(p.get("attrs") or "{}")
-            except (TypeError, ValueError):
-                attrs = {}
-            watched = [m for m in matches if qstore.is_watched(m["uid"])]
-            top = p.get("top_pct", 0)
-            match_txt = ", ".join(f"<@{m['uid']}> (`{m['uid']}` · {m['pct']}%)" for m in matches[:6]) or "—"
-            loud = bool(watched)
-            target = p.get("target_uid")
-            # A row can reach us two ways: it matched a known device (the original
-            # alert), or timing says the clicker IS the target and the gate replayed
-            # a verdict for them (the "bailed at the Discord login" review queue).
-            scored = p.get("scored_verdict")
-            review_only = bool(scored) and not matches
-            if loud:
-                title, color = "🚨 WATCHED device opened a verify link", 0x8B0000
-            elif review_only:
-                title = "🕵️ Opened the link but never finished — scored for review"
-                color = 0x3BA55D if scored == "pass" else 0xE0A23B
-            else:
-                title, color = "👁️ Link-open device matched a known account", 0xE0A23B
-            if review_only:
-                desc = (
-                    f"<@{target}> (`{target}`) opened their verify link and let the page finish, "
-                    f"then stopped at the Discord login. Timing says the clicker **is** them, so the "
-                    f"gate replayed their signals through the normal scorer."
-                )
-            else:
-                desc = (
-                    f"A verify link **issued for** <@{target}> (`{target}`) was opened by a device that "
-                    f"matches **{len(matches)}** known account(s), up to **{top}%**. Captured on the trust "
-                    f"page **before** the Discord login — so this fires even if they never finish verifying."
-                )
-            embed = discord.Embed(title=title, color=color, description=desc)
-            if scored:
-                risk = p.get("scored_risk", 0)
-                try:
-                    why = json.loads(p.get("scored_reasons") or "[]")
-                except (TypeError, ValueError):
-                    why = []
-                verdict_line = ("✅ **PASS**" if scored == "pass" else f"⚠️ **{str(scored).upper()}**")
-                embed.add_field(
-                    name="⚖️ Replayed verdict (review only — nobody was released)",
-                    value=(f"{verdict_line} · risk **{risk}**\n"
-                           + "\n".join(f"• {w}" for w in why[:4]))[:1024],
-                    inline=False)
-            if matches or not review_only:
-                embed.add_field(name="Device matches", value=match_txt[:1024], inline=False)
-            if watched:
-                embed.add_field(name="🚨 On your watchlist",
-                                value=", ".join(f"<@{m['uid']}>" for m in watched)[:1024], inline=False)
-            embed.add_field(name="🖥️ Device", value=_device_profile(attrs)[:1024], inline=False)
-            conn = _precap_conn(p) + (f"\nJA4 `{p['ja4']}`" if p.get("ja4") else "")
-            embed.add_field(name="🌐 Connection", value=conn[:1024], inline=False)
-            if p.get("timing"):
-                embed.add_field(name="🕒 Timing confidence", value=p["timing"][:1024], inline=False)
-            embed.set_footer(
-                text=("Replayed from stored signals · no OAuth binding, no velocity — "
-                      "release with /altguard-release if you're satisfied"
-                      if review_only else
-                      "Pre-auth capture · unattributed — the opener may not be the link's target"))
-            await ch.send(content="@here" if loud else None, embed=embed,
-                          allowed_mentions=discord.AllowedMentions(everyone=True))
+                if msg is not None:
+                    qstore.remember_precap_card(p["id"], ch.id, msg.id)
+            except Exception:
+                log.exception("could not track precapture card %s", p.get("id"))
         try:
             async with self.session.post(
                 f"{GATE_URL}/api/precaptures/ack", headers=_hmac_headers(), json={"ids": ids}, timeout=10
@@ -1181,6 +1135,124 @@ class AltGuard(commands.Cog):
                 pass
         except Exception:
             pass
+
+    def _precap_embed(self, p):
+        """Build the mod-log card for one precapture row -> (embed, loud).
+
+        Pure rendering, no I/O, deliberately: it is called once when the alert
+        fires and AGAIN when the intel drain has scored the row, so a corrected
+        card is the same code path rather than a second, subtly different one.
+        """
+        try:
+            matches = json.loads(p.get("matches") or "[]")
+        except (TypeError, ValueError):
+            matches = []
+        try:
+            attrs = json.loads(p.get("attrs") or "{}")
+        except (TypeError, ValueError):
+            attrs = {}
+        watched = [m for m in matches if qstore.is_watched(m["uid"])]
+        top = p.get("top_pct", 0)
+        match_txt = ", ".join(f"<@{m['uid']}> (`{m['uid']}` · {m['pct']}%)" for m in matches[:6]) or "—"
+        loud = bool(watched)
+        target = p.get("target_uid")
+        # A row can reach us two ways: it matched a known device (the original
+        # alert), or timing says the clicker IS the target and the gate replayed
+        # a verdict for them (the "bailed at the Discord login" review queue).
+        scored = p.get("scored_verdict")
+        review_only = bool(scored) and not matches
+        if loud:
+            title, color = "🚨 WATCHED device opened a verify link", 0x8B0000
+        elif review_only:
+            title = "🕵️ Opened the link but never finished — scored for review"
+            color = 0x3BA55D if scored == "pass" else 0xE0A23B
+        else:
+            title, color = "👁️ Link-open device matched a known account", 0xE0A23B
+        if review_only:
+            desc = (
+                f"<@{target}> (`{target}`) opened their verify link and let the page finish, "
+                f"then stopped at the Discord login. Timing says the clicker **is** them, so the "
+                f"gate replayed their signals through the normal scorer."
+            )
+        else:
+            desc = (
+                f"A verify link **issued for** <@{target}> (`{target}`) was opened by a device that "
+                f"matches **{len(matches)}** known account(s), up to **{top}%**. Captured on the trust "
+                f"page **before** the Discord login — so this fires even if they never finish verifying."
+            )
+        embed = discord.Embed(title=title, color=color, description=desc)
+        if scored:
+            risk = p.get("scored_risk", 0)
+            try:
+                why = json.loads(p.get("scored_reasons") or "[]")
+            except (TypeError, ValueError):
+                why = []
+            verdict_line = ("✅ **PASS**" if scored == "pass" else f"⚠️ **{str(scored).upper()}**")
+            embed.add_field(
+                name="⚖️ Replayed verdict (review only — nobody was released)",
+                value=(f"{verdict_line} · risk **{risk}**\n"
+                       + "\n".join(f"• {w}" for w in why[:4]))[:1024],
+                inline=False)
+        if matches or not review_only:
+            embed.add_field(name="Device matches", value=match_txt[:1024], inline=False)
+        if watched:
+            embed.add_field(name="🚨 On your watchlist",
+                            value=", ".join(f"<@{m['uid']}>" for m in watched)[:1024], inline=False)
+        embed.add_field(name="🖥️ Device", value=_device_profile(attrs)[:1024], inline=False)
+        conn = _precap_conn(p) + (f"\nJA4 `{p['ja4']}`" if p.get("ja4") else "")
+        embed.add_field(name="🌐 Connection", value=conn[:1024], inline=False)
+        if p.get("timing"):
+            embed.add_field(name="🕒 Timing confidence", value=p["timing"][:1024], inline=False)
+        embed.set_footer(
+            text=("Replayed from stored signals · no OAuth binding, no velocity — "
+                  "release with /altguard-release if you're satisfied"
+                  if review_only else
+                  "Pre-auth capture · unattributed — the opener may not be the link's target"))
+        return embed, loud
+
+    async def _refresh_precap_cards(self, guild):
+        """Correct cards that were posted before the gate had scored the row.
+
+        The alert fires within a second of the link-open; the intel drain scores
+        on a timer (109s on the 2026-08-09 alert whose Connection line was a
+        bare IPv6 while the gate went on to learn `AS7552 Viettel Group,
+        residential`). We hold the message id, ask the gate for the row's
+        CURRENT state, and re-render in place once `scored_ts` is set. Editing
+        rather than re-posting is deliberate: a second card for one link-open
+        reads like a second event.
+        """
+        cards = {c["precap_id"]: c for c in qstore.precap_cards_to_refresh()}
+        if not cards:
+            return
+        try:
+            async with self.session.post(
+                f"{GATE_URL}/api/precaptures/refresh", headers=_hmac_headers(),
+                json={"ids": list(cards)}, timeout=10
+            ) as r:
+                if r.status != 200:
+                    return
+                rows = (await r.json()).get("precaptures", [])
+        except Exception:
+            return
+        for p in rows:
+            card = cards.get(p.get("id"))
+            if not card:
+                continue
+            if not p.get("scored_ts"):
+                continue                      # not scored yet — try again later
+            try:
+                ch = guild.get_channel(int(card["channel_id"])) if guild else None
+                if ch is None:
+                    qstore.mark_precap_refreshed(p["id"])   # channel gone; stop retrying
+                    continue
+                msg = await ch.fetch_message(int(card["message_id"]))
+                embed, _ = self._precap_embed(p)
+                await msg.edit(embed=embed)
+                qstore.mark_precap_refreshed(p["id"])
+            except discord.NotFound:
+                qstore.mark_precap_refreshed(p["id"])       # card deleted by a mod
+            except Exception:
+                log.exception("could not refresh precapture card %s", p.get("id"))
 
     async def _poll_shares(self, guild):
         """Surface link-sharing: a link issued for A opened by B (verified as B)."""

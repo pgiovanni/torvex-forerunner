@@ -76,6 +76,46 @@ def init():
                    spared_at REAL
                )"""
         )
+        c.execute(
+            # Which mod-log message belongs to which precapture row, so a card
+            # can be corrected after the fact. A link-open alert posts within a
+            # second, but the gate's intel drain scores the row on a timer —
+            # 109s on the 2026-08-09 alert whose Connection line was a bare IPv6
+            # while the gate went on to learn "AS7552 Viettel Group, residential".
+            # Without this the card stays wrong forever.
+            """CREATE TABLE IF NOT EXISTS precap_cards (
+                   precap_id  INTEGER PRIMARY KEY,
+                   channel_id TEXT,
+                   message_id TEXT,
+                   refreshed  INTEGER DEFAULT 0,
+                   ts         REAL
+               )"""
+        )
+
+
+# --- precapture card tracking ------------------------------------------------
+def remember_precap_card(precap_id, channel_id, message_id):
+    """Note the message a precapture alert was posted as. REPLACE, not INSERT:
+    a re-posted row should track the newest card, never raise."""
+    with _conn() as c:
+        c.execute("INSERT OR REPLACE INTO precap_cards"
+                  "(precap_id, channel_id, message_id, refreshed, ts) VALUES (?,?,?,0,?)",
+                  (int(precap_id), str(channel_id), str(message_id), time.time()))
+
+
+def precap_cards_to_refresh(limit=25, max_age_s=86400):
+    """Cards posted but not yet corrected. Age-bounded so a row the drain never
+    scores (it can decline to) is not retried forever."""
+    cutoff = time.time() - max_age_s
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM precap_cards WHERE refreshed=0 AND ts>=? "
+            "ORDER BY ts ASC LIMIT ?", (cutoff, int(limit))).fetchall()]
+
+
+def mark_precap_refreshed(precap_id):
+    with _conn() as c:
+        c.execute("UPDATE precap_cards SET refreshed=1 WHERE precap_id=?", (int(precap_id),))
 
 
 # --- prune stay-of-execution -------------------------------------------------
