@@ -1,0 +1,5269 @@
+{
+ "bot": "Peepo's Reclaimer",
+ "commands": [
+  {
+   "path": "activity channel",
+   "description": "A channel's messages per day.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "Which channel",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    },
+    {
+     "name": "days",
+     "type": "integer",
+     "required": false,
+     "description": "Window in days (default 30)",
+     "min": 2,
+     "max": 3650
+    }
+   ],
+   "signature": "/activity channel <channel> [days]",
+   "root": "activity",
+   "cog": "activity",
+   "permissions": [],
+   "cooldown_seconds": 10,
+   "dm_allowed": false
+  },
+  {
+   "path": "activity growth",
+   "description": "Member growth — current humans vs bots by join date.",
+   "params": [],
+   "signature": "/activity growth",
+   "root": "activity",
+   "cog": "activity",
+   "permissions": [],
+   "cooldown_seconds": 10,
+   "dm_allowed": false
+  },
+  {
+   "path": "activity heatmap",
+   "description": "When is the server active? Hour × weekday.",
+   "params": [
+    {
+     "name": "days",
+     "type": "integer",
+     "required": false,
+     "description": "Window in days (default 30)",
+     "min": 2,
+     "max": 3650
+    }
+   ],
+   "signature": "/activity heatmap [days]",
+   "root": "activity",
+   "cog": "activity",
+   "permissions": [],
+   "cooldown_seconds": 10,
+   "dm_allowed": false
+  },
+  {
+   "path": "activity leaderboard",
+   "description": "Most active members.",
+   "params": [
+    {
+     "name": "days",
+     "type": "integer",
+     "required": false,
+     "description": "Window in days (default 30)",
+     "min": 2,
+     "max": 3650
+    },
+    {
+     "name": "top",
+     "type": "integer",
+     "required": false,
+     "description": "How many (default 10)",
+     "min": 3,
+     "max": 20
+    }
+   ],
+   "signature": "/activity leaderboard [days] [top]",
+   "root": "activity",
+   "cog": "activity",
+   "permissions": [],
+   "cooldown_seconds": 10,
+   "dm_allowed": false
+  },
+  {
+   "path": "activity server",
+   "description": "Messages per day, server-wide.",
+   "params": [
+    {
+     "name": "days",
+     "type": "integer",
+     "required": false,
+     "description": "Window in days (default 30)",
+     "min": 2,
+     "max": 3650
+    }
+   ],
+   "signature": "/activity server [days]",
+   "root": "activity",
+   "cog": "activity",
+   "permissions": [],
+   "cooldown_seconds": 10,
+   "dm_allowed": false
+  },
+  {
+   "path": "activity user",
+   "description": "A member's messages per day + top channels.",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": true,
+     "description": "Whose activity"
+    },
+    {
+     "name": "days",
+     "type": "integer",
+     "required": false,
+     "description": "Window in days (default 30)",
+     "min": 2,
+     "max": 3650
+    }
+   ],
+   "signature": "/activity user <user> [days]",
+   "root": "activity",
+   "cog": "activity",
+   "permissions": [],
+   "cooldown_seconds": 10,
+   "dm_allowed": false
+  },
+  {
+   "path": "activity voice",
+   "description": "Voice-time leaderboard (tracked since the cog deployed).",
+   "params": [
+    {
+     "name": "days",
+     "type": "integer",
+     "required": false,
+     "description": "Window in days (default 30)",
+     "min": 2,
+     "max": 3650
+    },
+    {
+     "name": "top",
+     "type": "integer",
+     "required": false,
+     "description": "How many (default 10)",
+     "min": 3,
+     "max": 20
+    }
+   ],
+   "signature": "/activity voice [days] [top]",
+   "root": "activity",
+   "cog": "activity",
+   "permissions": [],
+   "cooldown_seconds": 10,
+   "dm_allowed": false
+  },
+  {
+   "path": "ai-privacy",
+   "description": "Toggle whether your messages can appear as AI context 🔒",
+   "params": [],
+   "signature": "/ai-privacy",
+   "root": "ai-privacy",
+   "cog": "ai",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "ai-status",
+   "description": "AI spend + usage this month (admin)",
+   "params": [],
+   "signature": "/ai-status",
+   "root": "ai-status",
+   "cog": "ai",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "ai-usage",
+   "description": "Check your AI energy for today ⚡",
+   "params": [],
+   "signature": "/ai-usage",
+   "root": "ai-usage",
+   "cog": "ai",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "ask",
+   "description": "Ask the AI — it knows the server 🤖",
+   "params": [
+    {
+     "name": "question",
+     "type": "string",
+     "required": true,
+     "description": "What do you want to know?"
+    },
+    {
+     "name": "quick",
+     "type": "boolean",
+     "required": false,
+     "description": "Quick mode — faster and cheaper, good for simple questions"
+    },
+    {
+     "name": "character",
+     "type": "string",
+     "required": false,
+     "description": "Who answers — the bot, a wizard, a gremlin, or the butler",
+     "choices": [
+      "Peepo (default)",
+      "Grimbeard the wizard 🧙",
+      "Grub the gremlin 🦝",
+      "Reginald the butler 🎩"
+     ]
+    }
+   ],
+   "signature": "/ask <question> [quick] [character]",
+   "root": "ask",
+   "cog": "ai",
+   "permissions": [],
+   "cooldown_seconds": 15,
+   "dm_allowed": false
+  },
+  {
+   "path": "altguard-check",
+   "description": "Verify a member OR an ex-user (by ID) — DM them, or just generate a link",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": false,
+     "description": "the member to verify (in-server)"
+    },
+    {
+     "name": "user_id",
+     "type": "string",
+     "required": false,
+     "description": "raw Discord ID — for an ex-user who left or was banned"
+    },
+    {
+     "name": "dm",
+     "type": "boolean",
+     "required": false,
+     "description": "True (default) = try to DM them; False = just give YOU the link"
+    },
+    {
+     "name": "quarantine",
+     "type": "boolean",
+     "required": false,
+     "description": "True = strip their roles + hold them until they pass (in-server only)"
+    }
+   ],
+   "signature": "/altguard-check [user] [user_id] [dm] [quarantine]",
+   "root": "altguard-check",
+   "cog": "altguard",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "altguard-gate",
+   "description": "Forced quarantine-on-join: turn ON/OFF live (persists), or omit to check status",
+   "params": [
+    {
+     "name": "enabled",
+     "type": "boolean",
+     "required": false,
+     "description": "On = every new joiner is quarantined until they verify. Omit to just see the current state."
+    }
+   ],
+   "signature": "/altguard-gate [enabled]",
+   "root": "altguard-gate",
+   "cog": "altguard",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "altguard-lookup",
+   "description": "Inspect a user's fingerprint/verdict history and who they link to",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": false,
+     "description": "member (or use user_id for someone not in the server)"
+    },
+    {
+     "name": "user_id",
+     "type": "string",
+     "required": false,
+     "description": "raw Discord ID — for banned/left accounts not in the server"
+    }
+   ],
+   "signature": "/altguard-lookup [user] [user_id]",
+   "root": "altguard-lookup",
+   "cog": "altguard",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "altguard-release",
+   "description": "Clear a quarantine and restore removed roles — releases the whole matched-alt group",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": true,
+     "description": "…"
+    }
+   ],
+   "signature": "/altguard-release <member>",
+   "root": "altguard-release",
+   "cog": "altguard",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "altguard-sweep",
+   "description": "DM every human member a verification link (failures get quarantined)",
+   "params": [
+    {
+     "name": "dry_run",
+     "type": "boolean",
+     "required": false,
+     "description": "just count, don't DM anyone"
+    }
+   ],
+   "signature": "/altguard-sweep [dry_run]",
+   "root": "altguard-sweep",
+   "cog": "altguard",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "altguard-unwatch",
+   "description": "Remove an account from the watchlist",
+   "params": [
+    {
+     "name": "user_id",
+     "type": "string",
+     "required": true,
+     "description": "raw Discord ID to stop watching"
+    }
+   ],
+   "signature": "/altguard-unwatch <user_id>",
+   "root": "altguard-unwatch",
+   "cog": "altguard",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "altguard-verify-panel",
+   "description": "Post the click-to-verify button in this channel (admin)",
+   "params": [],
+   "signature": "/altguard-verify-panel",
+   "root": "altguard-verify-panel",
+   "cog": "altguard",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "altguard-watch",
+   "description": "Watchlist a (banned) account — loud alert if they ever verify or an alt matches them",
+   "params": [
+    {
+     "name": "user_id",
+     "type": "string",
+     "required": true,
+     "description": "raw Discord ID to watch"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": false,
+     "description": "why (e.g. 'banned raider')"
+    }
+   ],
+   "signature": "/altguard-watch <user_id> [reason]",
+   "root": "altguard-watch",
+   "cog": "altguard",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "verify",
+   "description": "Get your own verification link",
+   "params": [],
+   "signature": "/verify",
+   "root": "verify",
+   "cog": "altguard",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "antinuke admin-lockdown",
+   "description": "Toggle: only owner + this bot may grant Administrator",
+   "params": [
+    {
+     "name": "enabled",
+     "type": "boolean",
+     "required": true,
+     "description": "…"
+    }
+   ],
+   "signature": "/antinuke admin-lockdown <enabled>",
+   "root": "antinuke",
+   "cog": "antinuke",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "antinuke messages-allowed",
+   "description": "Set the message-flood limit (optionally per channel)",
+   "params": [
+    {
+     "name": "count",
+     "type": "integer",
+     "required": true,
+     "description": "messages allowed",
+     "min": 1,
+     "max": 500
+    },
+    {
+     "name": "window",
+     "type": "integer",
+     "required": true,
+     "description": "within this many seconds",
+     "min": 1,
+     "max": 600
+    },
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": false,
+     "description": "only this channel (omit = server-wide default)",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/antinuke messages-allowed <count> <window> [channel]",
+   "root": "antinuke",
+   "cog": "antinuke",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "antinuke role-grants",
+   "description": "Limit how many role-GRANTS an actor may do before it's a nuke",
+   "params": [
+    {
+     "name": "count",
+     "type": "integer",
+     "required": true,
+     "description": "role grants allowed",
+     "min": 1,
+     "max": 100
+    },
+    {
+     "name": "window",
+     "type": "integer",
+     "required": true,
+     "description": "within this many seconds",
+     "min": 1,
+     "max": 600
+    }
+   ],
+   "signature": "/antinuke role-grants <count> <window>",
+   "root": "antinuke",
+   "cog": "antinuke",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "antinuke role-removes",
+   "description": "Limit how many role-REMOVES an actor may do before it's a nuke",
+   "params": [
+    {
+     "name": "count",
+     "type": "integer",
+     "required": true,
+     "description": "role removals allowed",
+     "min": 1,
+     "max": 100
+    },
+    {
+     "name": "window",
+     "type": "integer",
+     "required": true,
+     "description": "within this many seconds",
+     "min": 1,
+     "max": 600
+    }
+   ],
+   "signature": "/antinuke role-removes <count> <window>",
+   "root": "antinuke",
+   "cog": "antinuke",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "antinuke set-limit",
+   "description": "Set the rate limit for any destructive vector",
+   "params": [
+    {
+     "name": "vector",
+     "type": "string",
+     "required": true,
+     "description": "which action",
+     "choices": [
+      "channel deletes",
+      "channel creates",
+      "role deletes",
+      "role creates",
+      "bans",
+      "kicks",
+      "webhook creates",
+      "role grants",
+      "role removes"
+     ]
+    },
+    {
+     "name": "count",
+     "type": "integer",
+     "required": true,
+     "description": "allowed in the window",
+     "min": 1,
+     "max": 100
+    },
+    {
+     "name": "window",
+     "type": "integer",
+     "required": true,
+     "description": "within this many seconds",
+     "min": 1,
+     "max": 600
+    }
+   ],
+   "signature": "/antinuke set-limit <vector> <count> <window>",
+   "root": "antinuke",
+   "cog": "antinuke",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "antinuke status",
+   "description": "Show anti-nuke mode & all thresholds",
+   "params": [],
+   "signature": "/antinuke status",
+   "root": "antinuke",
+   "cog": "antinuke",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "antinuke unwhitelist-channel",
+   "description": "Re-apply flood limits to a channel",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "…",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/antinuke unwhitelist-channel <channel>",
+   "root": "antinuke",
+   "cog": "antinuke",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "antinuke whitelist-channel",
+   "description": "Exempt a channel from flood limits (allowed to be spammed)",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "…",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/antinuke whitelist-channel <channel>",
+   "root": "antinuke",
+   "cog": "antinuke",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "antinuke window-close",
+   "description": "End the open maintenance window now",
+   "params": [],
+   "signature": "/antinuke window-close",
+   "root": "antinuke",
+   "cog": "antinuke",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "antinuke window-open",
+   "description": "Give ONE person time-boxed headroom for bulk role work",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": true,
+     "description": "who is doing the bulk work"
+    },
+    {
+     "name": "minutes",
+     "type": "integer",
+     "required": false,
+     "description": "5-120 (default 30)",
+     "min": 5,
+     "max": 120
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": false,
+     "description": "what they're doing — shown in the mod-log card"
+    }
+   ],
+   "signature": "/antinuke window-open <user> [minutes] [reason]",
+   "root": "antinuke",
+   "cog": "antinuke",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "automation enable",
+   "description": "Turn ALL automation rules on or off.",
+   "params": [
+    {
+     "name": "on",
+     "type": "boolean",
+     "required": true,
+     "description": "…"
+    }
+   ],
+   "signature": "/automation enable <on>",
+   "root": "automation",
+   "cog": "auto_rules",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "automation status",
+   "description": "Show this server's automation rules.",
+   "params": [],
+   "signature": "/automation status",
+   "root": "automation",
+   "cog": "auto_rules",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "welcome enable",
+   "description": "Turn join roles + welcome messages on or off.",
+   "params": [
+    {
+     "name": "on",
+     "type": "boolean",
+     "required": true,
+     "description": "…"
+    }
+   ],
+   "signature": "/welcome enable <on>",
+   "root": "welcome",
+   "cog": "automation",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "welcome status",
+   "description": "Show this server's join & welcome settings.",
+   "params": [],
+   "signature": "/welcome status",
+   "root": "welcome",
+   "cog": "automation",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "chess",
+   "description": "Play chess — vs bot or challenge a player.",
+   "params": [
+    {
+     "name": "opponent",
+     "type": "user",
+     "required": false,
+     "description": "Player to challenge. Leave blank to play vs bot."
+    },
+    {
+     "name": "difficulty",
+     "type": "string",
+     "required": false,
+     "description": "Bot difficulty (easy/medium/hard). Ignored for PvP.",
+     "choices": [
+      "Easy",
+      "Medium",
+      "Hard"
+     ]
+    }
+   ],
+   "signature": "/chess [opponent] [difficulty]",
+   "root": "chess",
+   "cog": "chess_cog",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "backfill-chat-levels",
+   "description": "[Admin] Sync all chat levels to RPG XP multipliers.",
+   "params": [],
+   "signature": "/backfill-chat-levels",
+   "root": "backfill-chat-levels",
+   "cog": "economy",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "balance",
+   "description": "Check your Peepo Bucks and level.",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": false,
+     "description": "Check another user's balance (optional)"
+    }
+   ],
+   "signature": "/balance [user]",
+   "root": "balance",
+   "cog": "economy",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "chat-levels",
+   "description": "Top 10 members by chat level, Peepo Bucks, and Regular Bucks.",
+   "params": [
+    {
+     "name": "scope",
+     "type": "string",
+     "required": false,
+     "description": "global = all servers, local = this server only (default)",
+     "choices": [
+      "local (this server)",
+      "global (all servers)"
+     ]
+    },
+    {
+     "name": "sort",
+     "type": "string",
+     "required": false,
+     "description": "rank by experience (default) or Peepo Bucks",
+     "choices": [
+      "experience level",
+      "peepo bucks"
+     ]
+    }
+   ],
+   "signature": "/chat-levels [scope] [sort]",
+   "root": "chat-levels",
+   "cog": "economy",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "check-perms",
+   "description": "[Admin] Show and fix channels the bot can't read.",
+   "params": [
+    {
+     "name": "fix",
+     "type": "boolean",
+     "required": false,
+     "description": "Show a picker to fix channel permissions"
+    }
+   ],
+   "signature": "/check-perms [fix]",
+   "root": "check-perms",
+   "cog": "economy",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "notifications",
+   "description": "Toggle level-up notifications on or off.",
+   "params": [],
+   "signature": "/notifications",
+   "root": "notifications",
+   "cog": "economy",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rank",
+   "description": "Server rank, level, total XP, and XP needed for the next level.",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": false,
+     "description": "Check another member's rank (optional)"
+    }
+   ],
+   "signature": "/rank [user]",
+   "root": "rank",
+   "cog": "economy",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "redeem",
+   "description": "Redeem a store item with your Peepo Bucks.",
+   "params": [
+    {
+     "name": "item",
+     "type": "string",
+     "required": true,
+     "description": "Item ID to redeem (e.g. nitro, nitro_basic, robux_800)"
+    }
+   ],
+   "signature": "/redeem <item>",
+   "root": "redeem",
+   "cog": "economy",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg-leaderboard",
+   "description": "Top 10 Torvex RPG players by level, coins, and kills.",
+   "params": [
+    {
+     "name": "scope",
+     "type": "string",
+     "required": false,
+     "description": "global = all servers, local = this server only (default)",
+     "choices": [
+      "local (this server)",
+      "global (all servers)"
+     ]
+    }
+   ],
+   "signature": "/rpg-leaderboard [scope]",
+   "root": "rpg-leaderboard",
+   "cog": "economy",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "server-notifications",
+   "description": "[Admin] Where level-up notifications go in this server — or turn them off.",
+   "params": [
+    {
+     "name": "mode",
+     "type": "string",
+     "required": false,
+     "description": "Where announcements go. Leave blank to see the current setting.",
+     "choices": [
+      "In the channel they were talking in",
+      "In one specific channel",
+      "Direct message to the member",
+      "Don't announce level-ups"
+     ]
+    },
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": false,
+     "description": "The channel to send them to (only used with “In one specific channel”).",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/server-notifications [mode] [channel]",
+   "root": "server-notifications",
+   "cog": "economy",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "store",
+   "description": "Browse the Peepo Bucks store.",
+   "params": [],
+   "signature": "/store",
+   "root": "store",
+   "cog": "economy",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "backup_emojis",
+   "description": "Download all server emojis and save them to the emojis/ folder on the bot host.",
+   "params": [],
+   "signature": "/backup_emojis",
+   "root": "backup_emojis",
+   "cog": "emojis",
+   "permissions": [
+    "Manage Expressions"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "steal-emoji",
+   "description": "Copy custom emojis into this server — paste them (or one emoji ID) and I'll grab them.",
+   "params": [
+    {
+     "name": "emoji",
+     "type": "string",
+     "required": true,
+     "description": "Paste the emoji(s) to steal (from any server), a raw emoji ID, or a CDN emoji link"
+    },
+    {
+     "name": "name",
+     "type": "string",
+     "required": false,
+     "description": "Rename it (only when stealing a single emoji)"
+    }
+   ],
+   "signature": "/steal-emoji <emoji> [name]",
+   "root": "steal-emoji",
+   "cog": "emojis",
+   "permissions": [
+    "Manage Expressions"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "8ball",
+   "description": "Ask the magic 8-ball a question.",
+   "params": [
+    {
+     "name": "question",
+     "type": "string",
+     "required": true,
+     "description": "…"
+    }
+   ],
+   "signature": "/8ball <question>",
+   "root": "8ball",
+   "cog": "fun",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "connect4",
+   "description": "Challenge someone to Connect 4.",
+   "params": [
+    {
+     "name": "opponent",
+     "type": "user",
+     "required": true,
+     "description": "…"
+    }
+   ],
+   "signature": "/connect4 <opponent>",
+   "root": "connect4",
+   "cog": "fun",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "roast",
+   "description": "Roast someone. All in good fun.",
+   "params": [
+    {
+     "name": "target",
+     "type": "user",
+     "required": true,
+     "description": "…"
+    }
+   ],
+   "signature": "/roast <target>",
+   "root": "roast",
+   "cog": "fun",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "tictactoe",
+   "description": "Challenge someone to tic tac toe.",
+   "params": [
+    {
+     "name": "opponent",
+     "type": "user",
+     "required": true,
+     "description": "…"
+    }
+   ],
+   "signature": "/tictactoe <opponent>",
+   "root": "tictactoe",
+   "cog": "fun",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "connect4_bot",
+   "description": "Play Connect 4 against the bot.",
+   "params": [
+    {
+     "name": "difficulty",
+     "type": "string",
+     "required": true,
+     "description": "How hard should the bot play?",
+     "choices": [
+      "Easy",
+      "Medium",
+      "Hard"
+     ]
+    }
+   ],
+   "signature": "/connect4_bot <difficulty>",
+   "root": "connect4_bot",
+   "cog": "games",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "tictactoe_bot",
+   "description": "Play Tic Tac Toe against the bot.",
+   "params": [
+    {
+     "name": "difficulty",
+     "type": "string",
+     "required": true,
+     "description": "How hard should the bot play?",
+     "choices": [
+      "Easy",
+      "Medium",
+      "Hard"
+     ]
+    }
+   ],
+   "signature": "/tictactoe_bot <difficulty>",
+   "root": "tictactoe_bot",
+   "cog": "games",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "gear armor",
+   "description": "Browse all armor sets sorted by level.",
+   "params": [],
+   "signature": "/gear armor",
+   "root": "gear",
+   "cog": "gear",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "gear elements",
+   "description": "Learn about the elemental system.",
+   "params": [],
+   "signature": "/gear elements",
+   "root": "gear",
+   "cog": "gear",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "gear monsters",
+   "description": "Browse monsters by zone.",
+   "params": [
+    {
+     "name": "zone",
+     "type": "string",
+     "required": false,
+     "description": "Filter by zone (Plains, Forest, Mountains, Dungeon, Volcano, Abyss)",
+     "choices": [
+      "Plains",
+      "Forest",
+      "Mountains",
+      "Dungeon",
+      "Volcano",
+      "Abyss"
+     ]
+    }
+   ],
+   "signature": "/gear monsters [zone]",
+   "root": "gear",
+   "cog": "gear",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "gear weapons",
+   "description": "Browse all weapons sorted by level.",
+   "params": [],
+   "signature": "/gear weapons",
+   "root": "gear",
+   "cog": "gear",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "gift coins",
+   "description": "Gift coins to another player.",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": true,
+     "description": "The player to receive the coins"
+    },
+    {
+     "name": "amount",
+     "type": "integer",
+     "required": true,
+     "description": "How many coins to gift"
+    }
+   ],
+   "signature": "/gift coins <user> <amount>",
+   "root": "gift",
+   "cog": "gifts",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "add-bot",
+   "description": "Add Peepo's Reclaimer to your server.",
+   "params": [],
+   "signature": "/add-bot",
+   "root": "add-bot",
+   "cog": "help",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "dashboard",
+   "description": "Open the web dashboard to configure the bot.",
+   "params": [],
+   "signature": "/dashboard",
+   "root": "dashboard",
+   "cog": "help",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "help",
+   "description": "Show all available commands.",
+   "params": [],
+   "signature": "/help",
+   "root": "help",
+   "cog": "help",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "invite",
+   "description": "Get your personal tracked invite link.",
+   "params": [],
+   "signature": "/invite",
+   "root": "invite",
+   "cog": "invites",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "invite-intel",
+   "description": "Full join dossier: invite source + device/verdict fused by uid (mod).",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": false,
+     "description": "Member to inspect"
+    },
+    {
+     "name": "user_id",
+     "type": "string",
+     "required": false,
+     "description": "...or a raw Discord ID"
+    }
+   ],
+   "signature": "/invite-intel [user] [user_id]",
+   "root": "invite-intel",
+   "cog": "invites",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "invite-lockdown",
+   "description": "Phase 2: block native invites + purge untracked links (dry-run unless confirm).",
+   "params": [
+    {
+     "name": "confirm",
+     "type": "boolean",
+     "required": false,
+     "description": "Actually apply it. Without this it only reports what WOULD change."
+    }
+   ],
+   "signature": "/invite-lockdown [confirm]",
+   "root": "invite-lockdown",
+   "cog": "invites",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "invite-stats",
+   "description": "Top inviters and join sources (admin).",
+   "params": [],
+   "signature": "/invite-stats",
+   "root": "invite-stats",
+   "cog": "invites",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "invite-unlock",
+   "description": "Reverse the lockdown: let members create native invites again (dry-run unless confirm).",
+   "params": [
+    {
+     "name": "confirm",
+     "type": "boolean",
+     "required": false,
+     "description": "Actually apply it. Without this it only reports what WOULD change."
+    }
+   ],
+   "signature": "/invite-unlock [confirm]",
+   "root": "invite-unlock",
+   "cog": "invites",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "tracked-invite",
+   "description": "Mint a labeled invite for a public source (Disboard, Reddit, a site).",
+   "params": [
+    {
+     "name": "label",
+     "type": "string",
+     "required": true,
+     "description": "A source label, e.g. 'disboard', 'reddit', 'website'"
+    }
+   ],
+   "signature": "/tracked-invite <label>",
+   "root": "tracked-invite",
+   "cog": "invites",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "levelroles import-mee6",
+   "description": "Import XP, levels & role rewards from MEE6's leaderboard API",
+   "params": [
+    {
+     "name": "preview",
+     "type": "boolean",
+     "required": false,
+     "description": "Show what would be imported without writing anything"
+    },
+    {
+     "name": "create_missing",
+     "type": "boolean",
+     "required": false,
+     "description": "Recreate reward roles MEE6 references that no longer exist"
+    }
+   ],
+   "signature": "/levelroles import-mee6 [preview] [create_missing]",
+   "root": "levelroles",
+   "cog": "level_roles",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "levelroles list",
+   "description": "Show the level → role reward map",
+   "params": [],
+   "signature": "/levelroles list",
+   "root": "levelroles",
+   "cog": "level_roles",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "levelroles remove",
+   "description": "Remove the reward role for a level",
+   "params": [
+    {
+     "name": "level",
+     "type": "integer",
+     "required": true,
+     "description": "…"
+    }
+   ],
+   "signature": "/levelroles remove <level>",
+   "root": "levelroles",
+   "cog": "level_roles",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "levelroles set",
+   "description": "Set the reward role for a level",
+   "params": [
+    {
+     "name": "level",
+     "type": "integer",
+     "required": true,
+     "description": "level threshold (e.g. 10)"
+    },
+    {
+     "name": "role",
+     "type": "role",
+     "required": true,
+     "description": "role to award at that level"
+    }
+   ],
+   "signature": "/levelroles set <level> <role>",
+   "root": "levelroles",
+   "cog": "level_roles",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "levelroles sync",
+   "description": "Sweep all members: give each their highest Level N+ role, strip the rest",
+   "params": [],
+   "signature": "/levelroles sync",
+   "root": "levelroles",
+   "cog": "level_roles",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "hitlist add",
+   "description": "Add a domain to this server's grabber/canary hitlist.",
+   "params": [
+    {
+     "name": "domain",
+     "type": "string",
+     "required": true,
+     "description": "e.g. grabify.link (a bare word like 'canarytokens' matches as a substring)"
+    }
+   ],
+   "signature": "/hitlist add <domain>",
+   "root": "hitlist",
+   "cog": "link_guard",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "hitlist disable",
+   "description": "Turn off LinkGuard for this server.",
+   "params": [],
+   "signature": "/hitlist disable",
+   "root": "hitlist",
+   "cog": "link_guard",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "hitlist enable",
+   "description": "Turn on LinkGuard for this server (shadow mode).",
+   "params": [
+    {
+     "name": "modlog",
+     "type": "channel",
+     "required": false,
+     "description": "Channel for LinkGuard alerts (reuses the security mod-log if set).",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/hitlist enable [modlog]",
+   "root": "hitlist",
+   "cog": "link_guard",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "hitlist enforce",
+   "description": "Toggle acting (delete + timeout) vs shadow (alert-only).",
+   "params": [
+    {
+     "name": "on",
+     "type": "boolean",
+     "required": true,
+     "description": "True = delete the message + timeout the poster · False = alert only"
+    }
+   ],
+   "signature": "/hitlist enforce <on>",
+   "root": "hitlist",
+   "cog": "link_guard",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "hitlist list",
+   "description": "Show LinkGuard status + this server's domain counts.",
+   "params": [],
+   "signature": "/hitlist list",
+   "root": "hitlist",
+   "cog": "link_guard",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "hitlist remove",
+   "description": "Remove a domain: drop a guild-added one, or allow-list a base one.",
+   "params": [
+    {
+     "name": "domain",
+     "type": "string",
+     "required": true,
+     "description": "Domain to stop matching in this server."
+    }
+   ],
+   "signature": "/hitlist remove <domain>",
+   "root": "hitlist",
+   "cog": "link_guard",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "hitlist test",
+   "description": "Dry-run: would this text/URL trip LinkGuard?",
+   "params": [
+    {
+     "name": "text",
+     "type": "string",
+     "required": true,
+     "description": "Paste a message or URL — nothing is fetched, matching only."
+    }
+   ],
+   "signature": "/hitlist test <text>",
+   "root": "hitlist",
+   "cog": "link_guard",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog accept-terms",
+   "description": "Server owner: agree to the retention terms and turn the archive on.",
+   "params": [
+    {
+     "name": "confirm",
+     "type": "boolean",
+     "required": false,
+     "description": "Yes, I've read /msglog terms and I accept on behalf of this server"
+    }
+   ],
+   "signature": "/msglog accept-terms [confirm]",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog automod",
+   "description": "Toggle AutoMod block + rule-change logging.",
+   "params": [
+    {
+     "name": "enabled",
+     "type": "boolean",
+     "required": true,
+     "description": "On = log what AutoMod blocks and any rule changes"
+    }
+   ],
+   "signature": "/msglog automod <enabled>",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog channels",
+   "description": "Toggle channel-change logging on or off.",
+   "params": [
+    {
+     "name": "enabled",
+     "type": "boolean",
+     "required": true,
+     "description": "On = log channel create/delete/edit + permission-overwrite changes"
+    }
+   ],
+   "signature": "/msglog channels <enabled>",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog deleted",
+   "description": "A user's recently deleted messages, from the archive.",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": true,
+     "description": "Whose deleted messages"
+    },
+    {
+     "name": "limit",
+     "type": "integer",
+     "required": false,
+     "description": "How many (default 10, max 25)",
+     "min": 1,
+     "max": 25
+    }
+   ],
+   "signature": "/msglog deleted <user> [limit]",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog disable",
+   "description": "Turn off archiving + logging.",
+   "params": [],
+   "signature": "/msglog disable",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog enable",
+   "description": "Turn on the message archive + mod-log.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": false,
+     "description": "Where delete/edit logs go (defaults to the security mod-log)",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/msglog enable [channel]",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog expressions",
+   "description": "Toggle emoji/sticker create/delete/edit logging on or off.",
+   "params": [
+    {
+     "name": "enabled",
+     "type": "boolean",
+     "required": true,
+     "description": "On = log custom emoji + sticker changes, with the image grabbed on deletion"
+    }
+   ],
+   "signature": "/msglog expressions <enabled>",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog forget",
+   "description": "Erase all identity records + stored avatars for a user ID.",
+   "params": [
+    {
+     "name": "user_id",
+     "type": "string",
+     "required": true,
+     "description": "Numeric user ID to erase from the identity ledger"
+    }
+   ],
+   "signature": "/msglog forget <user_id>",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog history",
+   "description": "Every recorded name, timeout and lifecycle event for a user ID.",
+   "params": [
+    {
+     "name": "user_id",
+     "type": "string",
+     "required": true,
+     "description": "Numeric user ID — works for users who already left or deleted their account"
+    }
+   ],
+   "signature": "/msglog history <user_id>",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog ignore",
+   "description": "Toggle a channel out of delete/edit LOGGING (still archived).",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "…",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/msglog ignore <channel>",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog media-channel",
+   "description": "Route deleted-media re-posts to a separate channel (e.g. 18+ staff only).",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": false,
+     "description": "Destination for media re-posts; omit to attach media to the log embeds again",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/msglog media-channel [channel]",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog names",
+   "description": "Toggle nickname/username/timeout logging on or off.",
+   "params": [
+    {
+     "name": "enabled",
+     "type": "boolean",
+     "required": true,
+     "description": "On = log nickname, username and timeout changes"
+    }
+   ],
+   "signature": "/msglog names <enabled>",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog revoke-terms",
+   "description": "Server owner: stop storing this server's data and delete what's stored.",
+   "params": [
+    {
+     "name": "confirm",
+     "type": "boolean",
+     "required": false,
+     "description": "Yes — stop retention and permanently delete this server's archive"
+    }
+   ],
+   "signature": "/msglog revoke-terms [confirm]",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog roles",
+   "description": "Toggle role-change logging on or off.",
+   "params": [
+    {
+     "name": "enabled",
+     "type": "boolean",
+     "required": true,
+     "description": "On = log member role add/remove + role create/delete/edit"
+    }
+   ],
+   "signature": "/msglog roles <enabled>",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog status",
+   "description": "Archive totals + configuration.",
+   "params": [],
+   "signature": "/msglog status",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog terms",
+   "description": "What the archive stores, and how to turn it on or off.",
+   "params": [],
+   "signature": "/msglog terms",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog voice",
+   "description": "Toggle voice channel join/leave/move logging on or off.",
+   "params": [
+    {
+     "name": "enabled",
+     "type": "boolean",
+     "required": true,
+     "description": "On = log voice join/leave/switch to the mod-log"
+    }
+   ],
+   "signature": "/msglog voice <enabled>",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "ban",
+   "description": "Ban a member, or pre-ban a user by ID (not in the server).",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": false,
+     "description": "The member/user to ban (pick them here)"
+    },
+    {
+     "name": "user_id",
+     "type": "string",
+     "required": false,
+     "description": "...or a raw Discord ID — for someone not in the server"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": false,
+     "description": "Why they're being banned (shown in the audit log)"
+    },
+    {
+     "name": "delete_days",
+     "type": "integer",
+     "required": false,
+     "description": "Delete their messages from the last N days (0–7, default 0)",
+     "min": 0,
+     "max": 7
+    }
+   ],
+   "signature": "/ban [user] [user_id] [reason] [delete_days]",
+   "root": "ban",
+   "cog": "moderation",
+   "permissions": [
+    "Ban Members"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "kick",
+   "description": "Kick a member from the server (they can rejoin with an invite).",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": true,
+     "description": "The member to kick"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": false,
+     "description": "Why they're being kicked (shown in the audit log)"
+    }
+   ],
+   "signature": "/kick <member> [reason]",
+   "root": "kick",
+   "cog": "moderation",
+   "permissions": [
+    "Kick Members"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "prune-messages",
+   "description": "Bulk-delete the last N messages in this channel (count-based, not by date).",
+   "params": [
+    {
+     "name": "amount",
+     "type": "integer",
+     "required": true,
+     "description": "How many recent messages to delete (1–1000).",
+     "min": 1,
+     "max": 1000
+    }
+   ],
+   "signature": "/prune-messages <amount>",
+   "root": "prune-messages",
+   "cog": "moderation",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "quiet-kick",
+   "description": "Kick a member with no goodbye message and no mod-log embed (still recorded).",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": false,
+     "description": "The member to kick quietly"
+    },
+    {
+     "name": "user_ids",
+     "type": "string",
+     "required": false,
+     "description": "Or several at once — user IDs separated by spaces or commas"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": false,
+     "description": "Why (still written to Discord's audit log and the identity ledger)"
+    }
+   ],
+   "signature": "/quiet-kick [member] [user_ids] [reason]",
+   "root": "quiet-kick",
+   "cog": "moderation",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "timeout",
+   "description": "Time out a member (mute + no reactions) for a duration.",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": true,
+     "description": "The member to time out"
+    },
+    {
+     "name": "duration",
+     "type": "string",
+     "required": false,
+     "description": "How long — e.g. 30m, 2h, 1d, 1h30m (max 28d). Blank = this server's default."
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": false,
+     "description": "Why (shown in the audit log and the public embed)"
+    }
+   ],
+   "signature": "/timeout <member> [duration] [reason]",
+   "root": "timeout",
+   "cog": "moderation",
+   "permissions": [
+    "Timeout Members"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "unban",
+   "description": "Unban a user by their Discord ID.",
+   "params": [
+    {
+     "name": "user_id",
+     "type": "string",
+     "required": true,
+     "description": "The banned user's raw Discord ID"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": false,
+     "description": "Why they're being unbanned (audit log)"
+    }
+   ],
+   "signature": "/unban <user_id> [reason]",
+   "root": "unban",
+   "cog": "moderation",
+   "permissions": [
+    "Ban Members"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "untimeout",
+   "description": "Remove a member's timeout early.",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": true,
+     "description": "The timed-out member"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": false,
+     "description": "Why (audit log)"
+    }
+   ],
+   "signature": "/untimeout <member> [reason]",
+   "root": "untimeout",
+   "cog": "moderation",
+   "permissions": [
+    "Timeout Members"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "peepo add",
+   "description": "[Admin] Add a peepo by name and image URL.",
+   "params": [
+    {
+     "name": "name",
+     "type": "string",
+     "required": true,
+     "description": "Peepo name (no spaces)"
+    },
+    {
+     "name": "url",
+     "type": "string",
+     "required": true,
+     "description": "Direct image URL"
+    },
+    {
+     "name": "rarity",
+     "type": "string",
+     "required": false,
+     "description": "Rarity tier (default: Common)",
+     "choices": [
+      "Common",
+      "Uncommon",
+      "Rare",
+      "Epic",
+      "Legendary"
+     ]
+    }
+   ],
+   "signature": "/peepo add <name> <url> [rarity]",
+   "root": "peepo",
+   "cog": "peepo",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "peepo buy",
+   "description": "Buy a peepo from the fixed-price shop with coins.",
+   "params": [
+    {
+     "name": "name",
+     "type": "string",
+     "required": true,
+     "description": "Peepo name (start typing for suggestions)",
+     "autocomplete": true
+    }
+   ],
+   "signature": "/peepo buy <name>",
+   "root": "peepo",
+   "cog": "peepo",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "peepo collection",
+   "description": "View your peepo collection (or another player's).",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": false,
+     "description": "The user to check (leave blank for yourself)"
+    }
+   ],
+   "signature": "/peepo collection [user]",
+   "root": "peepo",
+   "cog": "peepo",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "peepo crate",
+   "description": "Open a Peepo Crate for 5,000 coins — chance at any rarity including Legendary!",
+   "params": [],
+   "signature": "/peepo crate",
+   "root": "peepo",
+   "cog": "peepo",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "peepo market browse",
+   "description": "Browse peepos for sale by other players.",
+   "params": [],
+   "signature": "/peepo market browse",
+   "root": "peepo",
+   "cog": "peepo",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "peepo market buy",
+   "description": "Buy a listing from the marketplace.",
+   "params": [
+    {
+     "name": "listing_id",
+     "type": "string",
+     "required": true,
+     "description": "Listing ID (from /peepo market browse)"
+    }
+   ],
+   "signature": "/peepo market buy <listing_id>",
+   "root": "peepo",
+   "cog": "peepo",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "peepo market cancel",
+   "description": "Cancel one of your active listings.",
+   "params": [
+    {
+     "name": "listing_id",
+     "type": "string",
+     "required": true,
+     "description": "Listing ID to cancel (from /peepo market browse)"
+    }
+   ],
+   "signature": "/peepo market cancel <listing_id>",
+   "root": "peepo",
+   "cog": "peepo",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "peepo market list",
+   "description": "List one of your peepos for sale.",
+   "params": [
+    {
+     "name": "peepo_name",
+     "type": "string",
+     "required": true,
+     "description": "Name of the peepo to list",
+     "autocomplete": true
+    },
+    {
+     "name": "price",
+     "type": "integer",
+     "required": true,
+     "description": "Price in coins"
+    }
+   ],
+   "signature": "/peepo market list <peepo_name> <price>",
+   "root": "peepo",
+   "cog": "peepo",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "peepo shop",
+   "description": "Browse the peepo shop — buy with RPG Coins, grouped by rarity.",
+   "params": [],
+   "signature": "/peepo shop",
+   "root": "peepo",
+   "cog": "peepo",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "peepo sync",
+   "description": "[Admin] Sync server emojis to the peepo catalog.",
+   "params": [],
+   "signature": "/peepo sync",
+   "root": "peepo",
+   "cog": "peepo",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "peepo trade",
+   "description": "Offer a peepo trade to another player.",
+   "params": [
+    {
+     "name": "recipient",
+     "type": "user",
+     "required": true,
+     "description": "The player to trade with"
+    },
+    {
+     "name": "peepo_name",
+     "type": "string",
+     "required": false,
+     "description": "Peepo you're offering (leave blank for coins-only)",
+     "autocomplete": true
+    },
+    {
+     "name": "coins",
+     "type": "integer",
+     "required": false,
+     "description": "Coins you're offering (default 0)"
+    }
+   ],
+   "signature": "/peepo trade <recipient> [peepo_name] [coins]",
+   "root": "peepo",
+   "cog": "peepo",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "picount disable",
+   "description": "Stop enforcing the pi channel",
+   "params": [],
+   "signature": "/picount disable",
+   "root": "picount",
+   "cog": "pi_count",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "picount recount",
+   "description": "Rescan the pi channel from scratch and delete invalid messages",
+   "params": [],
+   "signature": "/picount recount",
+   "root": "picount",
+   "cog": "pi_count",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "picount set-channel",
+   "description": "Enable pi-count enforcement in a channel (rescans its history)",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "…",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/picount set-channel <channel>",
+   "root": "picount",
+   "cog": "pi_count",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "picount status",
+   "description": "Pi-count status — digits so far, top contributors",
+   "params": [],
+   "signature": "/picount status",
+   "root": "picount",
+   "cog": "pi_count",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "challenge",
+   "description": "Challenge another player to a PvP battle.",
+   "params": [
+    {
+     "name": "opponent",
+     "type": "user",
+     "required": true,
+     "description": "The player you want to fight"
+    }
+   ],
+   "signature": "/challenge <opponent>",
+   "root": "challenge",
+   "cog": "pvp",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "quarantine-lock",
+   "description": "Force-lock the quarantine role out of every channel (admin)",
+   "params": [],
+   "signature": "/quarantine-lock",
+   "root": "quarantine-lock",
+   "cog": "quarantine_lock",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "recon-status",
+   "description": "Recent reconnaissance signals against the bot and gate.",
+   "params": [],
+   "signature": "/recon-status",
+   "root": "recon-status",
+   "cog": "recon_watch",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "recon-unblock",
+   "description": "Lift a gate IP block early.",
+   "params": [
+    {
+     "name": "ip",
+     "type": "string",
+     "required": true,
+     "description": "The IP address to unblock"
+    }
+   ],
+   "signature": "/recon-unblock <ip>",
+   "root": "recon-unblock",
+   "cog": "recon_watch",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "rolemenu addrole",
+   "description": "Add a role button to a panel",
+   "params": [
+    {
+     "name": "panel",
+     "type": "integer",
+     "required": true,
+     "description": "panel number"
+    },
+    {
+     "name": "role",
+     "type": "role",
+     "required": true,
+     "description": "role to hand out"
+    },
+    {
+     "name": "label",
+     "type": "string",
+     "required": false,
+     "description": "button text (defaults to role name)"
+    },
+    {
+     "name": "emoji",
+     "type": "string",
+     "required": false,
+     "description": "any emoji — standard, or a custom one from a server I'm in"
+    }
+   ],
+   "signature": "/rolemenu addrole <panel> <role> [label] [emoji]",
+   "root": "rolemenu",
+   "cog": "role_menu",
+   "permissions": [
+    "Manage Roles"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "rolemenu bootstrap",
+   "description": "Recreate the full MEE6 reaction-roles set as panels in a channel",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "channel to post the panels in (e.g. #reaction-roles)",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/rolemenu bootstrap <channel>",
+   "root": "rolemenu",
+   "cog": "role_menu",
+   "permissions": [
+    "Manage Roles"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "rolemenu create",
+   "description": "Create an empty role panel for a channel",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "where the panel is posted",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    },
+    {
+     "name": "title",
+     "type": "string",
+     "required": true,
+     "description": "panel heading"
+    },
+    {
+     "name": "description",
+     "type": "string",
+     "required": false,
+     "description": "optional blurb"
+    }
+   ],
+   "signature": "/rolemenu create <channel> <title> [description]",
+   "root": "rolemenu",
+   "cog": "role_menu",
+   "permissions": [
+    "Manage Roles"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "rolemenu delete",
+   "description": "Delete a panel (and its message)",
+   "params": [
+    {
+     "name": "panel",
+     "type": "integer",
+     "required": true,
+     "description": "…"
+    }
+   ],
+   "signature": "/rolemenu delete <panel>",
+   "root": "rolemenu",
+   "cog": "role_menu",
+   "permissions": [
+    "Manage Roles"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "rolemenu list",
+   "description": "List this server's role panels",
+   "params": [],
+   "signature": "/rolemenu list",
+   "root": "rolemenu",
+   "cog": "role_menu",
+   "permissions": [
+    "Manage Roles"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "rolemenu removerole",
+   "description": "Remove a role button from a panel",
+   "params": [
+    {
+     "name": "panel",
+     "type": "integer",
+     "required": true,
+     "description": "…"
+    },
+    {
+     "name": "role",
+     "type": "role",
+     "required": true,
+     "description": "…"
+    }
+   ],
+   "signature": "/rolemenu removerole <panel> <role>",
+   "root": "rolemenu",
+   "cog": "role_menu",
+   "permissions": [
+    "Manage Roles"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "rolemenu set-emoji",
+   "description": "Change (or clear) the emoji on a role button",
+   "params": [
+    {
+     "name": "panel",
+     "type": "integer",
+     "required": true,
+     "description": "panel number"
+    },
+    {
+     "name": "role",
+     "type": "role",
+     "required": true,
+     "description": "which button"
+    },
+    {
+     "name": "emoji",
+     "type": "string",
+     "required": false,
+     "description": "any emoji, or leave blank to remove it"
+    },
+    {
+     "name": "label",
+     "type": "string",
+     "required": false,
+     "description": "optional: also change the button text"
+    }
+   ],
+   "signature": "/rolemenu set-emoji <panel> <role> [emoji] [label]",
+   "root": "rolemenu",
+   "cog": "role_menu",
+   "permissions": [
+    "Manage Roles"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "rolemenu template",
+   "description": "Post a ready-made role panel — creates any roles you don't have yet",
+   "params": [
+    {
+     "name": "template",
+     "type": "string",
+     "required": true,
+     "description": "Which set to build",
+     "choices": [
+      "🏷 Pronouns",
+      "🎂 Age",
+      "🌍 Region",
+      "🔔 Notifications",
+      "🎨 Name colour",
+      "🎮 Platform",
+      "💬 DM preference"
+     ]
+    },
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "Where to post the panel",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/rolemenu template <template> <channel>",
+   "root": "rolemenu",
+   "cog": "role_menu",
+   "permissions": [
+    "Manage Roles"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "link",
+   "description": "Link your Discord account to your Torvex account.",
+   "params": [
+    {
+     "name": "torvex_username",
+     "type": "string",
+     "required": true,
+     "description": "Your Torvex username (case-sensitive)"
+    }
+   ],
+   "signature": "/link <torvex_username>",
+   "root": "link",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "market browse",
+   "description": "See all listings for a specific item, sorted by price.",
+   "params": [
+    {
+     "name": "item",
+     "type": "string",
+     "required": true,
+     "description": "Item to look up",
+     "autocomplete": true
+    }
+   ],
+   "signature": "/market browse <item>",
+   "root": "market",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "market buy",
+   "description": "Buy the cheapest listing for an item.",
+   "params": [
+    {
+     "name": "item",
+     "type": "string",
+     "required": true,
+     "description": "Item to buy",
+     "autocomplete": true
+    }
+   ],
+   "signature": "/market buy <item>",
+   "root": "market",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "market cancel",
+   "description": "Cancel one of your active listings and get the item back.",
+   "params": [
+    {
+     "name": "listing_id",
+     "type": "string",
+     "required": true,
+     "description": "Your listing (pick from list)",
+     "autocomplete": true
+    }
+   ],
+   "signature": "/market cancel <listing_id>",
+   "root": "market",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "market list",
+   "description": "List one of your items for sale.",
+   "params": [
+    {
+     "name": "item",
+     "type": "string",
+     "required": true,
+     "description": "Item to sell",
+     "autocomplete": true
+    },
+    {
+     "name": "price",
+     "type": "integer",
+     "required": true,
+     "description": "Price per unit (coins)"
+    },
+    {
+     "name": "quantity",
+     "type": "integer",
+     "required": false,
+     "description": "How many to list (default 1)"
+    }
+   ],
+   "signature": "/market list <item> <price> [quantity]",
+   "root": "market",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "market listings",
+   "description": "View your active market listings.",
+   "params": [],
+   "signature": "/market listings",
+   "root": "market",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "market search",
+   "description": "Browse all items currently listed on the market.",
+   "params": [
+    {
+     "name": "item",
+     "type": "string",
+     "required": false,
+     "description": "Filter by item name (optional)",
+     "autocomplete": true
+    }
+   ],
+   "signature": "/market search [item]",
+   "root": "market",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg attack",
+   "description": "Attack during combat.",
+   "params": [],
+   "signature": "/rpg attack",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg boss",
+   "description": "Challenge a boss encounter. Massive HP, massive rewards.",
+   "params": [
+    {
+     "name": "name",
+     "type": "string",
+     "required": false,
+     "description": "Boss name (leave blank to see all bosses)",
+     "autocomplete": true
+    }
+   ],
+   "signature": "/rpg boss [name]",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg buy",
+   "description": "Buy an item from the shop.",
+   "params": [
+    {
+     "name": "item",
+     "type": "string",
+     "required": true,
+     "description": "Item name",
+     "autocomplete": true
+    },
+    {
+     "name": "quantity",
+     "type": "integer",
+     "required": false,
+     "description": "How many to buy (default 1)"
+    }
+   ],
+   "signature": "/rpg buy <item> [quantity]",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg chop",
+   "description": "Chop wood. Higher Woodcutting level unlocks better logs. 30s cooldown.",
+   "params": [],
+   "signature": "/rpg chop",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg cook",
+   "description": "Cook a raw fish. Higher Cooking level reduces burn chance.",
+   "params": [
+    {
+     "name": "fish",
+     "type": "string",
+     "required": true,
+     "description": "Raw fish to cook — start typing to see options",
+     "autocomplete": true
+    }
+   ],
+   "signature": "/rpg cook <fish>",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg craft",
+   "description": "Craft an item.",
+   "params": [
+    {
+     "name": "item",
+     "type": "string",
+     "required": true,
+     "description": "Item to craft",
+     "autocomplete": true
+    }
+   ],
+   "signature": "/rpg craft <item>",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg defend",
+   "description": "Defend during combat (halves incoming damage).",
+   "params": [],
+   "signature": "/rpg defend",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg equip",
+   "description": "Equip an item.",
+   "params": [
+    {
+     "name": "item",
+     "type": "string",
+     "required": true,
+     "description": "Item name",
+     "autocomplete": true
+    }
+   ],
+   "signature": "/rpg equip <item>",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg fight",
+   "description": "Start a fight with a monster, or challenge a player to PvP.",
+   "params": [
+    {
+     "name": "monster",
+     "type": "string",
+     "required": false,
+     "description": "Monster name — start typing to get suggestions (leave blank for random)",
+     "autocomplete": true
+    },
+    {
+     "name": "opponent",
+     "type": "user",
+     "required": false,
+     "description": "Challenge a player to PvP instead of fighting a monster"
+    }
+   ],
+   "signature": "/rpg fight [monster] [opponent]",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg fish",
+   "description": "Go fishing. Higher Fishing level unlocks better fish. 30s cooldown.",
+   "params": [],
+   "signature": "/rpg fish",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg flee",
+   "description": "Attempt to flee from combat.",
+   "params": [],
+   "signature": "/rpg flee",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg help",
+   "description": "How to play the Torvex RPG.",
+   "params": [],
+   "signature": "/rpg help",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg inventory",
+   "description": "View your inventory.",
+   "params": [],
+   "signature": "/rpg inventory",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg item",
+   "description": "Use a consumable item in combat (potions, food, etc.).",
+   "params": [
+    {
+     "name": "item",
+     "type": "string",
+     "required": true,
+     "description": "Item to use (food restores HP, potions restore HP/MP)",
+     "autocomplete": true
+    }
+   ],
+   "signature": "/rpg item <item>",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg magic",
+   "description": "Cast a spell. Support spells can target another player.",
+   "params": [
+    {
+     "name": "spell",
+     "type": "string",
+     "required": false,
+     "description": "Spell to cast (type to filter by name)",
+     "autocomplete": true
+    },
+    {
+     "name": "target",
+     "type": "user",
+     "required": false,
+     "description": "Player to heal/buff (optional, defaults to yourself)"
+    }
+   ],
+   "signature": "/rpg magic [spell] [target]",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg mine",
+   "description": "Mine for ore. Higher Mining level unlocks better ores. 30s cooldown.",
+   "params": [],
+   "signature": "/rpg mine",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg recipes",
+   "description": "View available crafting recipes.",
+   "params": [],
+   "signature": "/rpg recipes",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg sell",
+   "description": "Sell an item back to the shop for 45% of its value.",
+   "params": [
+    {
+     "name": "item",
+     "type": "string",
+     "required": true,
+     "description": "Item to sell",
+     "autocomplete": true
+    },
+    {
+     "name": "quantity",
+     "type": "integer",
+     "required": false,
+     "description": "How many to sell (default 1)"
+    }
+   ],
+   "signature": "/rpg sell <item> [quantity]",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg shop",
+   "description": "Browse the item shop.",
+   "params": [
+    {
+     "name": "category",
+     "type": "string",
+     "required": false,
+     "description": "Main category",
+     "choices": [
+      "All",
+      "Potions",
+      "Food",
+      "Weapons",
+      "Armor"
+     ]
+    },
+    {
+     "name": "subcategory",
+     "type": "string",
+     "required": false,
+     "description": "Subcategory (optional)",
+     "autocomplete": true
+    }
+   ],
+   "signature": "/rpg shop [category] [subcategory]",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg stats",
+   "description": "View your (or another player's) character stats.",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": false,
+     "description": "Another member to view (optional)"
+    }
+   ],
+   "signature": "/rpg stats [user]",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "rpg unequip",
+   "description": "Unequip an item slot.",
+   "params": [
+    {
+     "name": "slot",
+     "type": "string",
+     "required": true,
+     "description": "Slot name (e.g. MainHand, Head, Chest)"
+    }
+   ],
+   "signature": "/rpg unequip <slot>",
+   "root": "rpg",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "unlink",
+   "description": "Unlink your Discord account from Torvex.",
+   "params": [],
+   "signature": "/unlink",
+   "root": "unlink",
+   "cog": "rpg",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "quarantine",
+   "description": "Hold a member — strip their roles and lock them out, whatever their verification status.",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": true,
+     "description": "Who to hold"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": false,
+     "description": "Why — goes in the log and in their DM"
+    },
+    {
+     "name": "notify",
+     "type": "boolean",
+     "required": false,
+     "description": "DM them what happened and how to get out (default: yes)"
+    }
+   ],
+   "signature": "/quarantine <member> [reason] [notify]",
+   "root": "quarantine",
+   "cog": "security",
+   "permissions": [
+    "Manage Roles"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "security accept-terms",
+   "description": "Server owner: accept the verification-gate terms for this server.",
+   "params": [
+    {
+     "name": "confirm",
+     "type": "boolean",
+     "required": false,
+     "description": "Yes — I've read /security terms and I accept for this server"
+    }
+   ],
+   "signature": "/security accept-terms [confirm]",
+   "root": "security",
+   "cog": "security",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "security audit",
+   "description": "Scan roles AND channel overrides for dangerous permissions.",
+   "params": [],
+   "signature": "/security audit",
+   "root": "security",
+   "cog": "security",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "security disable",
+   "description": "Turn off anti-nuke + quarantine-lock for this server.",
+   "params": [],
+   "signature": "/security disable",
+   "root": "security",
+   "cog": "security",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "security enforce",
+   "description": "Toggle whether anti-nuke actually acts (vs alert-only).",
+   "params": [
+    {
+     "name": "on",
+     "type": "boolean",
+     "required": true,
+     "description": "True = act (strip/timeout/ban) · False = shadow (alert only)"
+    }
+   ],
+   "signature": "/security enforce <on>",
+   "root": "security",
+   "cog": "security",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "security revoke-terms",
+   "description": "Server owner: withdraw consent and stop the gate screening this server.",
+   "params": [
+    {
+     "name": "confirm",
+     "type": "boolean",
+     "required": false,
+     "description": "Yes — withdraw consent and switch AltGuard off here"
+    }
+   ],
+   "signature": "/security revoke-terms [confirm]",
+   "root": "security",
+   "cog": "security",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "security setup",
+   "description": "Enable anti-nuke + quarantine-lock for this server.",
+   "params": [
+    {
+     "name": "modlog",
+     "type": "channel",
+     "required": true,
+     "description": "Channel for security alerts",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    },
+    {
+     "name": "verify_channel",
+     "type": "channel",
+     "required": true,
+     "description": "The ONE channel a quarantined member can still see",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    },
+    {
+     "name": "quarantine_role",
+     "type": "role",
+     "required": false,
+     "description": "Existing lockout role (leave blank to auto-create one)"
+    }
+   ],
+   "signature": "/security setup <modlog> <verify_channel> [quarantine_role]",
+   "root": "security",
+   "cog": "security",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "security status",
+   "description": "Show this server's protection settings.",
+   "params": [],
+   "signature": "/security status",
+   "root": "security",
+   "cog": "security",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "security terms",
+   "description": "Read the verification-gate terms and see if this server accepted them.",
+   "params": [],
+   "signature": "/security terms",
+   "root": "security",
+   "cog": "security",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "security verify-channel",
+   "description": "Change which channel quarantined members can still see.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "The one channel that stays visible (read-only) while quarantined",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/security verify-channel <channel>",
+   "root": "security",
+   "cog": "security",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "unquarantine",
+   "description": "Lift a hold and give back every role that was stripped.",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": true,
+     "description": "Who to release"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": false,
+     "description": "Why — goes in the log"
+    }
+   ],
+   "signature": "/unquarantine <member> [reason]",
+   "root": "unquarantine",
+   "cog": "security",
+   "permissions": [
+    "Manage Roles"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "member-activity",
+   "description": "Full join/leave/kick/ban log between snapshots (admin)",
+   "params": [
+    {
+     "name": "hours",
+     "type": "integer",
+     "required": false,
+     "description": "how far back to look (default 24)"
+    }
+   ],
+   "signature": "/member-activity [hours]",
+   "root": "member-activity",
+   "cog": "server_backup",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "recent-leaves",
+   "description": "Recent departures — leaves, kicks, bans, with who did them (admin)",
+   "params": [
+    {
+     "name": "hours",
+     "type": "integer",
+     "required": false,
+     "description": "how far back to look (default 24)"
+    }
+   ],
+   "signature": "/recent-leaves [hours]",
+   "root": "recent-leaves",
+   "cog": "server_backup",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "roster-missing",
+   "description": "Members on record who AREN'T in the server now — your re-invite list (admin)",
+   "params": [],
+   "signature": "/roster-missing",
+   "root": "roster-missing",
+   "cog": "server_backup",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "roster-snapshot",
+   "description": "Record the member roster right now (admin)",
+   "params": [],
+   "signature": "/roster-snapshot",
+   "root": "roster-snapshot",
+   "cog": "server_backup",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "structure-restore",
+   "description": "Recreate roles/channels deleted since the last backup (admin)",
+   "params": [
+    {
+     "name": "confirm",
+     "type": "boolean",
+     "required": false,
+     "description": "True = actually recreate; leave blank for a dry-run preview"
+    }
+   ],
+   "signature": "/structure-restore [confirm]",
+   "root": "structure-restore",
+   "cog": "server_backup",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "structure-status",
+   "description": "Show the channel/role backup + what's been deleted since (admin)",
+   "params": [],
+   "signature": "/structure-status",
+   "root": "structure-status",
+   "cog": "server_backup",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "server-info",
+   "description": "Server overview — members (humans vs bots), channels, roles, features.",
+   "params": [],
+   "signature": "/server-info",
+   "root": "server-info",
+   "cog": "server_info",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": false
+  },
+  {
+   "path": "setup loot-channel",
+   "description": "Channel for crate opens, rare drops, and boss kill announcements.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "The channel to post loot drop announcements",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/setup loot-channel <channel>",
+   "root": "setup",
+   "cog": "setup",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "setup mod-log",
+   "description": "Channel for mod action logs.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "The channel for mod logs",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/setup mod-log <channel>",
+   "root": "setup",
+   "cog": "setup",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "setup rpg-channel",
+   "description": "Channel where RPG fight results are posted.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "The channel for RPG combat output",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/setup rpg-channel <channel>",
+   "root": "setup",
+   "cog": "setup",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "setup status-channel",
+   "description": "Channel for bot online/offline notices.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "The channel to post bot status updates",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/setup status-channel <channel>",
+   "root": "setup",
+   "cog": "setup",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "setup suggestions-channel",
+   "description": "Channel where /suggest posts land.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "The channel for suggestions",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/setup suggestions-channel <channel>",
+   "root": "setup",
+   "cog": "setup",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "setup view",
+   "description": "View current channel configuration for this server.",
+   "params": [],
+   "signature": "/setup view",
+   "root": "setup",
+   "cog": "setup",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "setup welcome-channel",
+   "description": "Channel for new member welcome messages.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "The channel for welcome messages",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/setup welcome-channel <channel>",
+   "root": "setup",
+   "cog": "setup",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "stats-status",
+   "description": "Activity-tracking status — totals, date range, top channels (admin)",
+   "params": [],
+   "signature": "/stats-status",
+   "root": "stats-status",
+   "cog": "stats",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "suggest",
+   "description": "Submit a suggestion for the server.",
+   "params": [
+    {
+     "name": "suggestion",
+     "type": "string",
+     "required": true,
+     "description": "Your suggestion — be as detailed as possible"
+    }
+   ],
+   "signature": "/suggest <suggestion>",
+   "root": "suggest",
+   "cog": "suggestions",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "trade",
+   "description": "Offer an item/coin trade to another player.",
+   "params": [
+    {
+     "name": "recipient",
+     "type": "user",
+     "required": true,
+     "description": "The player you want to trade with"
+    }
+   ],
+   "signature": "/trade <recipient>",
+   "root": "trade",
+   "cog": "trading",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  },
+  {
+   "path": "prune-config",
+   "description": "Set what happens to members who never verify (admin).",
+   "params": [
+    {
+     "name": "enabled",
+     "type": "boolean",
+     "required": false,
+     "description": "Off = nobody is ever auto-removed; held members just stay held"
+    },
+    {
+     "name": "hours",
+     "type": "integer",
+     "required": false,
+     "description": "How long they get, in hours, from the moment they're held (1–8760)"
+    },
+    {
+     "name": "action",
+     "type": "string",
+     "required": false,
+     "description": "Kick lets them rejoin and try again; ban doesn't",
+     "choices": [
+      "Kick — they can rejoin and verify",
+      "Ban — permanent"
+     ]
+    },
+    {
+     "name": "enforce",
+     "type": "boolean",
+     "required": false,
+     "description": "Off = only name them in the mod-log, remove nobody"
+    },
+    {
+     "name": "spare_clean",
+     "type": "boolean",
+     "required": false,
+     "description": "Spare anyone the gate already scored clean off their link-open"
+    }
+   ],
+   "signature": "/prune-config [enabled] [hours] [action] [enforce] [spare_clean]",
+   "root": "prune-config",
+   "cog": "verify_prune",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "prune-run",
+   "description": "Run the verify-prune sweep right now (admin).",
+   "params": [],
+   "signature": "/prune-run",
+   "root": "prune-run",
+   "cog": "verify_prune",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "prune-status",
+   "description": "Show verify-prune config + who's currently overdue (admin).",
+   "params": [],
+   "signature": "/prune-status",
+   "root": "prune-status",
+   "cog": "verify_prune",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "wordle",
+   "description": "Start a Wordle game in a private thread.",
+   "params": [
+    {
+     "name": "difficulty",
+     "type": "string",
+     "required": false,
+     "description": "…",
+     "choices": [
+      "Easy (8 guesses, common words)",
+      "Normal (6 guesses)",
+      "Hard (6 guesses, obscure words)"
+     ]
+    }
+   ],
+   "signature": "/wordle [difficulty]",
+   "root": "wordle",
+   "cog": "wordle",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": true
+  }
+ ],
+ "access": {
+  "activity server": {
+   "cog": "activity",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "activity user": {
+   "cog": "activity",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "activity channel": {
+   "cog": "activity",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "activity heatmap": {
+   "cog": "activity",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "activity leaderboard": {
+   "cog": "activity",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "activity growth": {
+   "cog": "activity",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "activity voice": {
+   "cog": "activity",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "ask": {
+   "cog": "ai",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "ai-usage": {
+   "cog": "ai",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "ai-privacy": {
+   "cog": "ai",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "ai-status": {
+   "cog": "ai",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "verify": {
+   "cog": "altguard",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "altguard-verify-panel": {
+   "cog": "altguard",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "altguard-sweep": {
+   "cog": "altguard",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "altguard-gate": {
+   "cog": "altguard",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "altguard-check": {
+   "cog": "altguard",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "altguard-lookup": {
+   "cog": "altguard",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "altguard-release": {
+   "cog": "altguard",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "altguard-watch": {
+   "cog": "altguard",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "altguard-unwatch": {
+   "cog": "altguard",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "antinuke status": {
+   "cog": "antinuke",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "antinuke role-grants": {
+   "cog": "antinuke",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "antinuke role-removes": {
+   "cog": "antinuke",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "antinuke set-limit": {
+   "cog": "antinuke",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "antinuke window-open": {
+   "cog": "antinuke",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "antinuke window-close": {
+   "cog": "antinuke",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "antinuke messages-allowed": {
+   "cog": "antinuke",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "antinuke whitelist-channel": {
+   "cog": "antinuke",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "antinuke unwhitelist-channel": {
+   "cog": "antinuke",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "antinuke admin-lockdown": {
+   "cog": "antinuke",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "automation status": {
+   "cog": "auto_rules",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "automation enable": {
+   "cog": "auto_rules",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "welcome status": {
+   "cog": "automation",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "welcome enable": {
+   "cog": "automation",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "chess": {
+   "cog": "chess_cog",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "balance": {
+   "cog": "economy",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rank": {
+   "cog": "economy",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "store": {
+   "cog": "economy",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "redeem": {
+   "cog": "economy",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "chat-levels": {
+   "cog": "economy",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg-leaderboard": {
+   "cog": "economy",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "backfill-chat-levels": {
+   "cog": "economy",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "server-notifications": {
+   "cog": "economy",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "notifications": {
+   "cog": "economy",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "check-perms": {
+   "cog": "economy",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "steal-emoji": {
+   "cog": "emojis",
+   "visibility_permissions": [
+    "manage_emojis"
+   ],
+   "runtime_permissions": [
+    "manage_emojis"
+   ],
+   "server_owner_only": false
+  },
+  "backup_emojis": {
+   "cog": "emojis",
+   "visibility_permissions": [
+    "manage_emojis"
+   ],
+   "runtime_permissions": [
+    "manage_emojis"
+   ],
+   "server_owner_only": false
+  },
+  "roast": {
+   "cog": "fun",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "8ball": {
+   "cog": "fun",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "tictactoe": {
+   "cog": "fun",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "connect4": {
+   "cog": "fun",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "tictactoe_bot": {
+   "cog": "games",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "connect4_bot": {
+   "cog": "games",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "gear weapons": {
+   "cog": "gear",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "gear armor": {
+   "cog": "gear",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "gear elements": {
+   "cog": "gear",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "gear monsters": {
+   "cog": "gear",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "gift coins": {
+   "cog": "gifts",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "help": {
+   "cog": "help",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "dashboard": {
+   "cog": "help",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "add-bot": {
+   "cog": "help",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "invite": {
+   "cog": "invites",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "tracked-invite": {
+   "cog": "invites",
+   "visibility_permissions": [
+    "manage_guild"
+   ],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "invite-stats": {
+   "cog": "invites",
+   "visibility_permissions": [
+    "manage_guild"
+   ],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "invite-intel": {
+   "cog": "invites",
+   "visibility_permissions": [
+    "manage_guild"
+   ],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "invite-lockdown": {
+   "cog": "invites",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "invite-unlock": {
+   "cog": "invites",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "levelroles import-mee6": {
+   "cog": "level_roles",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "levelroles sync": {
+   "cog": "level_roles",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "levelroles list": {
+   "cog": "level_roles",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "levelroles set": {
+   "cog": "level_roles",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "levelroles remove": {
+   "cog": "level_roles",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "hitlist enable": {
+   "cog": "link_guard",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "hitlist enforce": {
+   "cog": "link_guard",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "hitlist disable": {
+   "cog": "link_guard",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "hitlist add": {
+   "cog": "link_guard",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "hitlist remove": {
+   "cog": "link_guard",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "hitlist test": {
+   "cog": "link_guard",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "hitlist list": {
+   "cog": "link_guard",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog enable": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog terms": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog accept-terms": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": true
+  },
+  "msglog revoke-terms": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": true
+  },
+  "msglog disable": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog ignore": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog media-channel": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog voice": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog names": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog history": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog automod": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog forget": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "msglog roles": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog channels": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog expressions": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog status": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog deleted": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "ban": {
+   "cog": "moderation",
+   "visibility_permissions": [
+    "ban_members"
+   ],
+   "runtime_permissions": [
+    "ban_members"
+   ],
+   "server_owner_only": false
+  },
+  "unban": {
+   "cog": "moderation",
+   "visibility_permissions": [
+    "ban_members"
+   ],
+   "runtime_permissions": [
+    "ban_members"
+   ],
+   "server_owner_only": false
+  },
+  "kick": {
+   "cog": "moderation",
+   "visibility_permissions": [
+    "kick_members"
+   ],
+   "runtime_permissions": [
+    "kick_members"
+   ],
+   "server_owner_only": false
+  },
+  "quiet-kick": {
+   "cog": "moderation",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "timeout": {
+   "cog": "moderation",
+   "visibility_permissions": [
+    "moderate_members"
+   ],
+   "runtime_permissions": [
+    "moderate_members"
+   ],
+   "server_owner_only": false
+  },
+  "untimeout": {
+   "cog": "moderation",
+   "visibility_permissions": [
+    "moderate_members"
+   ],
+   "runtime_permissions": [
+    "moderate_members"
+   ],
+   "server_owner_only": false
+  },
+  "prune-messages": {
+   "cog": "moderation",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "peepo market browse": {
+   "cog": "peepo",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "peepo market list": {
+   "cog": "peepo",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "peepo market buy": {
+   "cog": "peepo",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "peepo market cancel": {
+   "cog": "peepo",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "peepo shop": {
+   "cog": "peepo",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "peepo buy": {
+   "cog": "peepo",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "peepo collection": {
+   "cog": "peepo",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "peepo trade": {
+   "cog": "peepo",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "peepo crate": {
+   "cog": "peepo",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "peepo add": {
+   "cog": "peepo",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "peepo sync": {
+   "cog": "peepo",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "picount set-channel": {
+   "cog": "pi_count",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "picount recount": {
+   "cog": "pi_count",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "picount status": {
+   "cog": "pi_count",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "picount disable": {
+   "cog": "pi_count",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "challenge": {
+   "cog": "pvp",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "quarantine-lock": {
+   "cog": "quarantine_lock",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "recon-status": {
+   "cog": "recon_watch",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "recon-unblock": {
+   "cog": "recon_watch",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "rolemenu create": {
+   "cog": "role_menu",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rolemenu addrole": {
+   "cog": "role_menu",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rolemenu removerole": {
+   "cog": "role_menu",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rolemenu list": {
+   "cog": "role_menu",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rolemenu delete": {
+   "cog": "role_menu",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rolemenu set-emoji": {
+   "cog": "role_menu",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rolemenu template": {
+   "cog": "role_menu",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rolemenu bootstrap": {
+   "cog": "role_menu",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "link": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "unlink": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg stats": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg fight": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg boss": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg attack": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg defend": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg magic": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg item": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg shop": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg buy": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg sell": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg flee": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg inventory": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg equip": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg unequip": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg mine": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg fish": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg chop": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg cook": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg recipes": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg craft": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "rpg help": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "market search": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "market browse": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "market buy": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "market list": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "market listings": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "market cancel": {
+   "cog": "rpg",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "security audit": {
+   "cog": "security",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "security status": {
+   "cog": "security",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "security setup": {
+   "cog": "security",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "security verify-channel": {
+   "cog": "security",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "security enforce": {
+   "cog": "security",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "security disable": {
+   "cog": "security",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "security terms": {
+   "cog": "security",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "security accept-terms": {
+   "cog": "security",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": true
+  },
+  "security revoke-terms": {
+   "cog": "security",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": true
+  },
+  "quarantine": {
+   "cog": "security",
+   "visibility_permissions": [
+    "manage_roles"
+   ],
+   "runtime_permissions": [
+    "manage_roles"
+   ],
+   "server_owner_only": false
+  },
+  "unquarantine": {
+   "cog": "security",
+   "visibility_permissions": [
+    "manage_roles"
+   ],
+   "runtime_permissions": [
+    "manage_roles"
+   ],
+   "server_owner_only": false
+  },
+  "recent-leaves": {
+   "cog": "server_backup",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "member-activity": {
+   "cog": "server_backup",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "roster-snapshot": {
+   "cog": "server_backup",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "roster-missing": {
+   "cog": "server_backup",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "structure-status": {
+   "cog": "server_backup",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "structure-restore": {
+   "cog": "server_backup",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "server-info": {
+   "cog": "server_info",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "setup view": {
+   "cog": "setup",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "setup status-channel": {
+   "cog": "setup",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "setup loot-channel": {
+   "cog": "setup",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "setup rpg-channel": {
+   "cog": "setup",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "setup suggestions-channel": {
+   "cog": "setup",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "setup welcome-channel": {
+   "cog": "setup",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "setup mod-log": {
+   "cog": "setup",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "stats-status": {
+   "cog": "stats",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "suggest": {
+   "cog": "suggestions",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "trade": {
+   "cog": "trading",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "prune-status": {
+   "cog": "verify_prune",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "prune-config": {
+   "cog": "verify_prune",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "prune-run": {
+   "cog": "verify_prune",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "wordle": {
+   "cog": "wordle",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  }
+ }
+}
