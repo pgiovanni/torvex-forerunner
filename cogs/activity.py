@@ -2,7 +2,8 @@
 
 Renders matplotlib PNGs posted straight into the channel (`/activity …`):
 daily message lines for the server / a user / a channel, an hour×weekday
-heatmap, an activity leaderboard, and a member-growth curve. All message
+heatmap, an activity leaderboard, and a member-growth curve (humans and bots
+as separate stacked bands, so the headcount isn't inflated by apps). All message
 counts come from messages.db (the full-history archive the mod_log cog
 maintains — backfilled to server start), humans only (bot=0, webhook=0).
 stats.db's counters stay as the cheap forward feed; the archive is what makes
@@ -25,6 +26,7 @@ import os
 import sqlite3
 import sys
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -81,6 +83,25 @@ def heatmap_matrix(triples):
     for w, h, n in triples:
         m[(int(w) + 6) % 7][int(h)] = n
     return m
+
+
+def growth_series(human_dates, bot_dates):
+    """(human join dates, bot join dates) → (dates, human_totals, bot_totals).
+
+    Both running totals are carried forward on ONE shared date axis — every day
+    someone joined appears once, with each series' total as of that day — so the
+    two bands stack to the real headcount at every x. Plotting them on their own
+    axes would let a bot join shift the human curve sideways."""
+    hc, bc = Counter(human_dates), Counter(bot_dates)
+    dates = sorted(set(hc) | set(bc))
+    humans = bots = 0
+    hs, bs = [], []
+    for d in dates:
+        humans += hc[d]
+        bots += bc[d]
+        hs.append(humans)
+        bs.append(bots)
+    return dates, hs, bs
 
 
 def short_name(name, limit=18):
@@ -183,15 +204,24 @@ def render_heatmap(matrix, title, sub):
     return _png(fig)
 
 
-def render_growth(dates, totals, title, sub):
+def render_growth(dates, humans, bots, title, sub):
+    """Humans and bots stacked: the band boundary is the human headcount, the
+    top edge is the real total. Stacked (not two free lines) because a bot count
+    of ~10 against hundreds of humans would sit flat on the axis and read as
+    zero — as a band it stays visible at any scale."""
     fig = _fig(8.6, 4.0)
     ax = fig.add_subplot(111)
     _style(ax)
-    ax.plot(dates, totals, color=AQUA, linewidth=2)
-    if totals:
-        ax.annotate(f"{totals[-1]:,}", (dates[-1], totals[-1]),
+    if dates:
+        ax.stackplot(dates, humans, bots, colors=[AQUA, BLUE],
+                     labels=[f"Humans ({humans[-1]:,})", f"Bots ({bots[-1]:,})"])
+        total = humans[-1] + bots[-1]
+        ax.annotate(f"{total:,}", (dates[-1], total),
                     textcoords="offset points", xytext=(4, 6),
                     color=INK_2, fontsize=9, fontweight="bold")
+        leg = ax.legend(loc="upper left", frameon=False, fontsize=9,
+                        labelcolor=INK_2, handlelength=1.1, borderpad=0)
+        leg.set_zorder(5)
     loc = AutoDateLocator()
     ax.xaxis.set_major_locator(loc)
     ax.xaxis.set_major_formatter(ConciseDateFormatter(loc))
@@ -375,20 +405,25 @@ class Activity(commands.Cog):
         embed = discord.Embed(title=f"🏆 Leaderboard — last {days} days", color=EMBED_COLOR)
         await self._send_chart(interaction, buf, embed)
 
-    @activity.command(name="growth", description="Member growth — current members by join date.")
+    @activity.command(name="growth",
+                      description="Member growth — current humans vs bots by join date.")
     async def growth_cmd(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True)
-        joins = sorted(m.joined_at for m in interaction.guild.members if m.joined_at)
-        dates = [j.date() for j in joins]
-        totals = list(range(1, len(dates) + 1))
-        buf = await self._render(render_growth, dates, totals,
+        human_dates, bot_dates = [], []
+        for m in interaction.guild.members:
+            if m.joined_at:
+                (bot_dates if m.bot else human_dates).append(m.joined_at.date())
+        dates, humans, bots = growth_series(human_dates, bot_dates)
+        n_h, n_b = len(human_dates), len(bot_dates)
+        buf = await self._render(render_growth, dates, humans, bots,
                                  "Member growth",
                                  f"{interaction.guild.name} · current members by join date "
                                  f"(departed members not shown)")
         embed = discord.Embed(
             title="📈 Member growth",
-            description=f"**{len(dates):,}** current members. Survivor curve — members who "
-                        f"left aren't shown, so early history reads lower than it was.",
+            description=f"**{n_h + n_b:,}** current members — **{n_h:,}** humans, "
+                        f"**{n_b:,}** bots. Survivor curve — members who left aren't "
+                        f"shown, so early history reads lower than it was.",
             color=EMBED_COLOR)
         await self._send_chart(interaction, buf, embed)
 

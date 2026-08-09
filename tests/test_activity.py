@@ -41,6 +41,20 @@ check("heatmap shape", len(m) == 7 and all(len(r) == 24 for r in m))
 check("sunday maps to last row", m[6][23] == 7)
 check("monday maps to first row", m[0][0] == 3)
 
+# ---- growth_series (humans vs bots on one axis) ----
+D = lambda s: datetime.fromisoformat(s).date()  # noqa: E731
+g_dates, g_h, g_b = act.growth_series(
+    [D("2026-01-02"), D("2026-01-02"), D("2026-01-05")],   # humans
+    [D("2026-01-03"), D("2026-01-05")])                    # bots
+check("growth axis is the union of join days",
+      [d.isoformat() for d in g_dates] == ["2026-01-02", "2026-01-03", "2026-01-05"])
+check("human totals accumulate", g_h == [2, 2, 3])
+check("bot totals accumulate on the same axis", g_b == [0, 1, 2])
+check("bands stack to the headcount", [h + b for h, b in zip(g_h, g_b)] == [2, 3, 5])
+check("bot-only server has a flat human band",
+      act.growth_series([], [D("2026-01-02")]) == ([D("2026-01-02")], [0], [1]))
+check("no members = empty series", act.growth_series([], []) == ([], [], []))
+
 # ---- short_name ----
 check("discriminator stripped", act.short_name("olduser#1234") == "olduser")
 check("long name ellipsized", len(act.short_name("a" * 40)) == 18)
@@ -61,8 +75,10 @@ png = act.render_leaderboard([], [], "t", "s").getvalue()
 check("empty bars still render", png[:8] == b"\x89PNG\r\n\x1a\n")
 png = act.render_heatmap(act.heatmap_matrix([("3", "12", 44)]), "t", "s").getvalue()
 check("heatmap renders png", png[:8] == b"\x89PNG\r\n\x1a\n")
-png = act.render_growth(d, list(range(1, 31)), "t", "s").getvalue()
+png = act.render_growth(d, list(range(1, 31)), [2] * 30, "t", "s").getvalue()
 check("growth renders png", png[:8] == b"\x89PNG\r\n\x1a\n")
+png = act.render_growth([], [], [], "t", "s").getvalue()
+check("empty growth still renders", png[:8] == b"\x89PNG\r\n\x1a\n")
 
 print(f"\n{_total - len(_fails)}/{_total} passed")
 sys.exit(1 if _fails else 0)

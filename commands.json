@@ -240,6 +240,12 @@
       ]
     },
     {
+      "name": "server-info",
+      "description": "Server overview — members (humans vs bots), channels, roles, boosts, features",
+      "cog": "server_info",
+      "cooldown_seconds": 0
+    },
+    {
       "name": "quiet-kick",
       "description": "Kick with no goodbye message and no mod-log embed — still recorded (admin)",
       "cog": "moderation",
