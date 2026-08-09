@@ -136,3 +136,30 @@ def test_stale_cards_are_not_retried_forever():
         assert q.precap_cards_to_refresh() == []
     finally:
         _cleanup(path)
+
+
+# --- Private Relay is named, not reported as a gap --------------------------
+# It egresses via Fastly/Cloudflare and publishes no PTR, so it lands on
+# conn_class 'none' and used to render as "no rDNS published" — which reads
+# like missing data when it is a known, deliberately handled case. Both of the
+# only two unclassifiable precapture rows in the corpus are Private Relay.
+
+RELAY = {
+    "ip": "146.75.128.212", "scored_asn": 54113,
+    "scored_org": "iCloud Private Relay", "scored_isp": "iCloud Private Relay",
+    "scored_conn_class": "none", "scored_relay": 1, "scored_host": "146.75.128.212",
+}
+
+
+def test_private_relay_is_labelled_not_called_missing_rdns():
+    out = M._precap_conn(RELAY)
+    assert "iCloud Private Relay" in out
+    assert "no rDNS published" not in out
+
+
+def test_a_real_unclassified_row_still_says_so():
+    """The label must not swallow a genuine gap — only relay rows get renamed."""
+    out = M._precap_conn(dict(RELAY, scored_relay=0, scored_org="Some ISP",
+                              scored_isp="Some ISP"))
+    assert "no rDNS published" in out
+    assert "iCloud Private Relay" not in out

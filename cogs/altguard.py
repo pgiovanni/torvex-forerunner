@@ -221,6 +221,7 @@ _CONN_CLASS = {
     "business": "🏢 business/organisation line",
     "satellite": "🛰️ satellite ISP",
     "hosting": "🖥️ datacenter / hosting",
+    "relay": "🍏 iCloud Private Relay",
     "none": "no rDNS published",
     "unknown": "unclassified network",
 }
@@ -256,6 +257,17 @@ def _precap_conn(p: dict, ip: bool = True) -> str:
     asn = p.get("scored_asn") or p.get("cap_asn")
     org = p.get("scored_org") or p.get("cap_org")
     cls = p.get("scored_conn_class") or p.get("cap_conn_class")
+    # iCloud Private Relay egresses via Fastly/Cloudflare and publishes no PTR,
+    # so it lands on conn_class 'none' and used to render as "no rDNS published"
+    # — which reads like a gap in our data when it is actually a known, handled
+    # case. Name it. It also keeps the unknown-network tripwire honest: relay
+    # rows are excluded there, so the label and the alert agree.
+    if p.get("scored_relay"):
+        cls = "relay"
+        # the org string IS "iCloud Private Relay", so keeping it alongside the
+        # label prints the same words twice on one line
+        if (org or "").strip().lower() == "icloud private relay":
+            org = None
     if asn or org or cls:
         # IPQS echoes the bare IP in `host` when the range publishes no PTR —
         # printing that back as rDNS would read like a real hostname. Parsed, not
@@ -942,6 +954,7 @@ class AltGuard(commands.Cog):
             await self._poll_shares(guild)  # still surface link-sharing
             await self._poll_precaptures(guild)
             await self._refresh_precap_cards(guild)
+            await self._poll_unknown_networks(guild)
             await self._poll_hold_replies(guild)
             return
 
@@ -1022,6 +1035,7 @@ class AltGuard(commands.Cog):
         await self._poll_shares(guild)
         await self._poll_precaptures(guild)
         await self._refresh_precap_cards(guild)
+        await self._poll_unknown_networks(guild)
         await self._poll_hold_replies(guild)
 
     async def _poll_hold_replies(self, guild):
@@ -1253,6 +1267,70 @@ class AltGuard(commands.Cog):
                 qstore.mark_precap_refreshed(p["id"])       # card deleted by a mod
             except Exception:
                 log.exception("could not refresh precapture card %s", p.get("id"))
+
+    async def _poll_unknown_networks(self, guild):
+        """Surface connections the gate could NOT identify.
+
+        Every conn_class condition in the gate is `== "hosting"`, so a network
+        it cannot name is scored exactly like an ordinary home line — that is
+        how furkankgzz's Oracle VPS passed on 2026-07-28. This does not hold
+        anyone; it asks a human to name the network once, after which the ASN
+        lists or the vendor vocabulary answer it permanently.
+
+        Deliberately quiet: no @here, no ping. Its value is that it is normally
+        silent — 8/9, the first full day on the consensus classifier, was 3 for
+        3 classified — so when it does speak it means a network appeared that
+        six vendors and every list have never seen. iCloud Private Relay is
+        excluded gate-side; it is a deliberate exemption, not a blind spot.
+        """
+        try:
+            async with self.session.get(
+                f"{GATE_URL}/api/unknown-networks", headers=_hmac_headers(), timeout=10
+            ) as r:
+                if r.status != 200:
+                    return
+                rows = (await r.json()).get("unknown", [])
+        except Exception:
+            return
+        if not rows:
+            return
+        ch = guild.get_channel(MODLOG_CHANNEL_ID) if guild else None
+        acked = []
+        for u in rows:
+            acked.append({"kind": u["kind"], "row_id": u["row_id"]})
+            if not ch:
+                continue
+            try:
+                where = "verified" if u["kind"] == "result" else "opened a link"
+                embed = discord.Embed(
+                    title="❓ Unidentified network",
+                    color=0x5865F2,
+                    description=(
+                        f"<@{u['subject']}> (`{u['subject']}`) {where} from a connection "
+                        f"no ASN list, no rDNS pattern and no intel vendor could classify. "
+                        f"**Nobody was held for this** — it is scored exactly like a home "
+                        f"connection, which is the blind spot worth knowing about."))
+                net = [x for x in (f"AS{u['asn']}" if u.get("asn") else None,
+                                   u.get("isp") or None,
+                                   (u.get("host") or None),
+                                   f"class `{u.get('conn_class') or 'empty'}`") if x]
+                embed.add_field(name="🌐 Connection",
+                                value=" · ".join(net) + f"\n`{u.get('ip','?')}`", inline=False)
+                if u.get("environment") and u["environment"] != "clean":
+                    embed.add_field(name="🖥️ Environment", value=u["environment"], inline=False)
+                embed.set_footer(text="Name it once and the lists answer it forever — "
+                                      "/altguard-lookup for the full record")
+                await ch.send(embed=embed)
+            except Exception:
+                log.exception("could not post unknown-network card")
+        try:
+            async with self.session.post(
+                f"{GATE_URL}/api/unknown-networks/ack", headers=_hmac_headers(),
+                json={"items": acked}, timeout=10
+            ):
+                pass
+        except Exception:
+            pass
 
     async def _poll_shares(self, guild):
         """Surface link-sharing: a link issued for A opened by B (verified as B)."""
