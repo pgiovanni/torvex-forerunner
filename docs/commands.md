@@ -2,7 +2,7 @@
 
 Every slash command **Peepo's Reclaimer** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **187 commands** (84 top-level, the rest subcommands) across 34 cogs
+- **191 commands** (86 top-level, the rest subcommands) across 35 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -23,7 +23,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 ## Index
 
-**Moderation** — `/ban`, `/kick`, `/msglog`, `/prune-messages`, `/timeout`, `/unban`, `/untimeout`
+**Moderation** — `/ban`, `/kick`, `/msglog`, `/prune-messages`, `/quiet-kick`, `/timeout`, `/unban`, `/untimeout`
 
 **Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/member-activity`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recent-leaves`, `/recon-status`, `/recon-unblock`, `/roster-missing`, `/roster-snapshot`, `/security`, `/structure-restore`, `/structure-status`, `/unquarantine`, `/verify`
 
@@ -37,7 +37,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Help** — `/add-bot`, `/dashboard`, `/help`
 
-**Other** — `/automation`
+**Other** — `/automation`, `/server-info`
 
 ---
 
@@ -92,6 +92,22 @@ Bulk-delete the last N messages in this channel (count-based, not by date).
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `amount` | integer | Yes | How many recent messages to delete (1–1000). *(range 1–1000)* |
+
+#### `/quiet-kick`
+
+Kick a member with no goodbye message and no mod-log embed (still recorded).
+
+```
+/quiet-kick [member] [user_ids] [reason]
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `member` | user | No | The member to kick quietly |
+| `user_ids` | string | No | Or several at once — user IDs separated by spaces or commas |
+| `reason` | string | No | Why (still written to Discord's audit log and the identity ledger) |
 
 #### `/timeout`
 
@@ -630,6 +646,34 @@ Exempt a channel from flood limits (allowed to be spammed)
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `channel` | channel | Yes | … *(channel types: text, announcement)* |
+
+#### `/antinuke window-close`
+
+End the open maintenance window now
+
+```
+/antinuke window-close
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+*No parameters.*
+
+#### `/antinuke window-open`
+
+Give ONE person time-boxed headroom for bulk role work
+
+```
+/antinuke window-open <user> [minutes] [reason]
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `user` | user | Yes | who is doing the bulk work |
+| `minutes` | integer | No | 5-120 (default 30) *(range 5–120)* |
+| `reason` | string | No | what they're doing — shown in the mod-log card |
 
 ### Security config
 
@@ -1695,15 +1739,18 @@ Top 10 Torvex RPG players by level, coins, and kills.
 
 #### `/server-notifications`
 
-[Admin] Toggle level-up notifications for this server.
+[Admin] Where level-up notifications go in this server — or turn them off.
 
 ```
-/server-notifications
+/server-notifications [mode] [channel]
 ```
 
 **Access:** Requires **Administrator**
 
-*No parameters.*
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `mode` | string | No | Where announcements go. Leave blank to see the current setting. *(one of: `In the channel they were talking in`, `In one specific channel`, `Direct message to the member`, `Don't announce level-ups`)* |
+| `channel` | channel | No | The channel to send them to (only used with “In one specific channel”). *(channel types: text, announcement)* |
 
 #### `/store`
 
@@ -1738,7 +1785,7 @@ A channel's messages per day.
 
 #### `/activity growth`
 
-Member growth — current members by join date.
+Member growth — current humans vs bots by join date.
 
 ```
 /activity growth
@@ -2764,6 +2811,22 @@ Show this server's automation rules.
 ```
 
 **Access:** Requires **Administrator**
+
+*No parameters.*
+
+### server_info
+
+<sub>`cogs/server_info.py`</sub>
+
+#### `/server-info`
+
+Server overview — members (humans vs bots), channels, roles, features.
+
+```
+/server-info
+```
+
+**Access:** Everyone &nbsp;·&nbsp; Server only
 
 *No parameters.*
 
