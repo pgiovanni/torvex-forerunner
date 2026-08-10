@@ -119,6 +119,71 @@ async def _post_status(msg: str):
         except Exception:
             pass
 
+GUILD_EVENTS_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guild_events.db")
+
+
+def _record_guild_event(event: str, guild):
+    """Durably record the bot being added to / removed from a guild.
+
+    BlackEye Cafe (921423625112928286) removed the bot at 2026-08-07 04:00 and
+    nothing recorded it: the departure had to be reconstructed from the last
+    row in stats.db. A guild we are no longer in is unreadable — no audit log,
+    no member list, not even the name — so whatever we want to know afterwards
+    has to be written down at the moment it happens.
+    """
+    try:
+        import sqlite3
+        import time
+
+        # guild.me is gone on removal for an unavailable guild; joined_at is the
+        # only record of how long we were actually in there.
+        me = getattr(guild, "me", None)
+        joined_at = getattr(me, "joined_at", None)
+
+        con = sqlite3.connect(GUILD_EVENTS_DB, timeout=5)
+        try:
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS guild_events ("
+                "ts REAL, event TEXT, guild_id TEXT, guild_name TEXT, "
+                "member_count INTEGER, owner_id TEXT, joined_at TEXT)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_guild_events_gid ON guild_events(guild_id, ts)"
+            )
+            con.execute(
+                "INSERT INTO guild_events VALUES (?,?,?,?,?,?,?)",
+                (
+                    time.time(),
+                    event,
+                    str(guild.id),
+                    str(guild.name),
+                    getattr(guild, "member_count", None),
+                    str(getattr(guild, "owner_id", "") or ""),
+                    joined_at.isoformat() if joined_at else None,
+                ),
+            )
+            con.commit()
+        finally:
+            con.close()
+    except Exception as e:
+        # Never let bookkeeping take the bot down.
+        print(f"[WARN] guild event record failed: {e}")
+
+
+@bot.event
+async def on_guild_join(guild):
+    print(f"[GUILD] JOINED {guild.id} ({guild.name!r}) members={getattr(guild, 'member_count', '?')} — now in {len(bot.guilds)} guilds")
+    _record_guild_event("join", guild)
+
+
+@bot.event
+async def on_guild_remove(guild):
+    # Fires for a kick, a ban, an admin removing the integration, AND for the
+    # guild being deleted outright — Discord does not tell us which.
+    print(f"[GUILD] REMOVED FROM {guild.id} ({guild.name!r}) members={getattr(guild, 'member_count', '?')} — now in {len(bot.guilds)} guilds")
+    _record_guild_event("remove", guild)
+
+
 @bot.event
 async def on_disconnect():
     await _post_status("🔴 Bot is going offline for a restart. Back in a moment!")
