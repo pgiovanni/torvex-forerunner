@@ -25,10 +25,15 @@ UI invites default to 7-day expiry / optional max-uses; a maxed-out invite is
 DELETED by Discord the instant it's consumed, so attribution also watches for
 codes that vanish between snapshots (see `pick_used_invite`).
 
-Guild-scoped to ALTGUARD_GUILD_ID. Bot needs **Manage Server** (list/delete
-invites) + **Create Invite**, and **Manage Roles/Channels** for lockdown.
+ATTRIBUTION runs in every guild listed in INVITE_TRACK_GUILDS (defaults to
+ALTGUARD_GUILD_ID, i.e. unchanged for an existing deployment). LOCKDOWN stays
+pinned to the home guild — it denies @everyone Create-Invite server-wide, which
+is a policy call nobody should be able to trigger on someone else's server by
+being on a list. Bot needs **Manage Server** (list/delete invites) + **Create
+Invite**, and **Manage Roles/Channels** for lockdown.
 """
 import os
+import sys
 import time
 import hmac
 import hashlib
@@ -39,6 +44,9 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils.security_config import is_enabled  # noqa: E402
 
 log = logging.getLogger("invites")
 
@@ -51,6 +59,13 @@ def _env_int(name, default=0):
 
 
 GUILD_ID = _env_int("ALTGUARD_GUILD_ID")
+# Guilds whose joins we attribute. Recording who invited whom puts another
+# server's join data on the OPERATOR's disk, so this is an operator grant (same
+# reasoning as mod_log's MSGLOG_ARCHIVE_GUILDS) rather than something a guild
+# admin can switch on for us. Unset = home guild only = pre-existing behaviour.
+TRACK_GUILDS = {int(g) for g in os.environ.get(
+    "INVITE_TRACK_GUILDS", os.environ.get("ALTGUARD_GUILD_ID", "")
+).replace(",", " ").split() if g.strip().isdigit()}
 INVITE_CHANNEL_ID = _env_int("INVITE_CHANNEL_ID")          # where minted invites point (else system channel)
 # codes to never purge during lockdown (e.g. the Disboard listing invite), comma/space separated
 INVITE_KEEP = {c.strip() for c in os.environ.get("INVITE_KEEP", "").replace(",", " ").split() if c.strip()}
@@ -168,22 +183,37 @@ class Invites(commands.Cog):
                 pass
         return invites
 
+    def _tracked(self, guild) -> bool:
+        return bool(guild) and guild.id in TRACK_GUILDS
+
     @commands.Cog.listener()
     async def on_ready(self):
-        g = self.bot.get_guild(GUILD_ID)
-        if g:
+        # Prime every tracked guild we're actually in. Attribution is a diff
+        # against this snapshot, so a guild with no primed cache can never
+        # attribute anything — priming is not optional bookkeeping.
+        for gid in TRACK_GUILDS:
+            g = self.bot.get_guild(gid)
+            if g is None:
+                continue
             await self._refresh_cache(g)
             log.info("invite cache primed for %s (%d codes)", g.id, len(self._cache.get(g.id, {})))
 
     @commands.Cog.listener()
+    async def on_guild_join(self, guild):
+        """Prime on arrival — otherwise a tracked guild added between restarts
+        attributes nothing until the next boot."""
+        if self._tracked(guild):
+            await self._refresh_cache(guild)
+
+    @commands.Cog.listener()
     async def on_invite_create(self, invite):
-        if invite.guild and invite.guild.id == GUILD_ID:
+        if self._tracked(invite.guild):
             self._cache.setdefault(invite.guild.id, {})[invite.code] = (
                 invite.uses or 0, str(invite.inviter.id) if invite.inviter else None)
 
     @commands.Cog.listener()
     async def on_invite_delete(self, invite):
-        if invite.guild and invite.guild.id == GUILD_ID:
+        if self._tracked(invite.guild):
             cached = self._cache.get(invite.guild.id, {}).pop(invite.code, None)
             inviter = cached[1] if cached else (
                 str(invite.inviter.id) if getattr(invite, "inviter", None) else None)
@@ -194,7 +224,7 @@ class Invites(commands.Cog):
     # ---------------------------------------------------------------- attribution
     @commands.Cog.listener()
     async def on_member_join(self, member):
-        if member.guild.id != GUILD_ID or member.bot:
+        if not self._tracked(member.guild) or member.bot:
             return
         guild = member.guild
         before = dict(self._cache.get(guild.id, {}))
@@ -369,9 +399,16 @@ class Invites(commands.Cog):
             e.add_field(name="Joined via",
                         value="no invite attribution on record (joined before tracking, or bot was offline)", inline=False)
 
-        # 2) device / verdict from the gate (captured at verify, not at join)
+        # 2) device / verdict from the gate (captured at verify, not at join).
+        # Gate records are keyed by uid ALONE — they are not per-guild — so this
+        # lookup is restricted to a guild the gate actually screens for. Without
+        # that check, Manage-Server in ANY server the bot sits in would read the
+        # home guild's device/IP/verdict data on any user id someone types.
+        gate_ok = interaction.guild.id == GUILD_ID or is_enabled(interaction.guild.id, "altguard")
         dev = "gate not configured"
-        if GATE_URL and self.session:
+        if not gate_ok:
+            dev = "not available here — this server doesn't use the verification gate"
+        elif GATE_URL and self.session:
             try:
                 async with self.session.get(f"{GATE_URL}/api/lookup", params={"uid": uid},
                                             headers=_hmac_headers(), timeout=10) as r:

@@ -546,7 +546,8 @@ class AltGuard(commands.Cog):
         # a restore can't bypass the gate.
         bot_top = me.top_role if me else None
         for r in rejoin_roles.safe_restorable(
-                member.guild, rejoin_roles.last_known_role_ids(member.id),
+                member.guild,
+                rejoin_roles.last_known_role_ids(member.id, member.guild.id),
                 NO_RESTORE_ROLE_IDS, bot_top):
             if r not in restore:
                 restore.append(r)
@@ -677,7 +678,8 @@ class AltGuard(commands.Cog):
             bot_top = me.top_role if me else None
             grants = list(self._default_roles(member.guild))
             for r in rejoin_roles.safe_restorable(
-                    member.guild, rejoin_roles.last_known_role_ids(member.id),
+                    member.guild,
+                    rejoin_roles.last_known_role_ids(member.id, member.guild.id),
                     NO_RESTORE_ROLE_IDS, bot_top):
                 if r not in grants:
                     grants.append(r)
@@ -731,7 +733,10 @@ class AltGuard(commands.Cog):
                 if age_days < MIN_ACCOUNT_AGE_DAYS:
                     note.append(f"account only **{age_days}d** old")
                 if dm_failed:
-                    note.append("**DMs closed** — couldn't deliver link; tell them to run `/verify`")
+                    panel = (f" or click the verify panel in <#{VERIFY_CHANNEL_ID}>"
+                             if VERIFY_CHANNEL_ID else " or click the verify panel")
+                    note.append("**DMs closed** — couldn't deliver link; "
+                                f"tell them to run `/verify`{panel}")
                 await ch.send(f"👀 AltGuard: {member.mention} (`{member.id}`) joined — {', '.join(note)}.")
 
     @commands.Cog.listener()

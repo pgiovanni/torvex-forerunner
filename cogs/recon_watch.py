@@ -18,6 +18,15 @@ Shadow-first, exactly like anti-nuke: alerts only. RECON_ENFORCE=1 adds a 10-min
 timeout for a Discord sprayer (the gate side stays alert-only — IP bans belong to
 fail2ban/nginx, not the bot). Owner / admins / bots / RECON_WHITELIST are exempt.
 
+THE TWO SENSORS HAVE DIFFERENT SCOPES, deliberately:
+  * Sensor (1) is per-server — someone mapping the bot's commands is that
+    server's problem, so it runs in every guild in RECON_GUILDS (default:
+    ALTGUARD_GUILD_ID) and alerts into THAT guild's own mod-log.
+  * Sensor (2) is the operator's gate infrastructure — one shared box, IP-level,
+    no guild dimension at all. It stays home-only, and so do /recon-status and
+    /recon-unblock: those read the gate's live prober feed and LIFT ITS IP
+    BLOCKS, which is not something a guest server's admin should reach.
+
 Reuses ALTGUARD_GUILD_ID / ALTGUARD_MODLOG_CHANNEL_ID / ALTGUARD_SECRET /
 ALTGUARD_GATE_URL. Tunables:
     RECON_ENFORCE (0)            RECON_ALERT_COOLDOWN (1800s)
@@ -31,6 +40,7 @@ import hmac
 import logging
 import os
 import sqlite3
+import sys
 import time
 from collections import defaultdict, deque
 from datetime import timedelta
@@ -39,6 +49,9 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils.security_config import get_config  # noqa: E402
 
 log = logging.getLogger("recon_watch")
 
@@ -51,6 +64,11 @@ def _env_int(name, default=0):
 
 
 GUILD_ID = _env_int("ALTGUARD_GUILD_ID")
+# Guilds the command-probing sensor watches. The gate sensor ignores this — it
+# has no guild dimension and stays on the operator's own guild.
+RECON_GUILDS = {int(g) for g in os.environ.get(
+    "RECON_GUILDS", os.environ.get("ALTGUARD_GUILD_ID", "")
+).replace(",", " ").split() if g.strip().isdigit()}
 MODLOG_CHANNEL_ID = _env_int("ALTGUARD_MODLOG_CHANNEL_ID")
 SECRET = os.environ.get("ALTGUARD_SECRET", "")
 GATE_URL = os.environ.get("ALTGUARD_GATE_URL", "").rstrip("/")
@@ -116,7 +134,7 @@ def _load_recent_denials(window):
     try:
         with _db() as c:
             return c.execute(
-                "SELECT user_id, command, ts FROM command_denials WHERE ts>? ORDER BY ts ASC",
+                "SELECT guild_id, user_id, command, ts FROM command_denials WHERE ts>? ORDER BY ts ASC",
                 (time.time() - window,),
             ).fetchall()
     except Exception:
@@ -139,7 +157,9 @@ class ReconWatch(commands.Cog):
         self.bot = bot
         self.session: aiohttp.ClientSession | None = None
         self._orig_on_error = None
-        # Discord: uid -> deque[(command_name, ts)] of permission denials
+        # Discord: (guild_id, uid) -> deque[(command_name, ts)] of permission
+        # denials. Keyed by guild so probing two servers isn't summed into one
+        # threshold — and so an alert knows which mod-log it belongs in.
         self.denials = defaultdict(deque)
         # gate: (ip, kind) -> deque[{ts, route, ja4, ua}] within GATE_WINDOW
         self.gate_events = defaultdict(deque)
@@ -152,7 +172,8 @@ class ReconWatch(commands.Cog):
         # restart (a sprayer mid-window isn't handed a clean slate by bouncing us)
         for row in _load_recent_denials(CMD_WINDOW):
             try:
-                self.denials[int(row["user_id"])].append((row["command"], row["ts"]))
+                self.denials[(int(row["guild_id"]), int(row["user_id"]))].append(
+                    (row["command"], row["ts"]))
             except (TypeError, ValueError):
                 pass
         self.session = aiohttp.ClientSession()
@@ -194,7 +215,23 @@ class ReconWatch(commands.Cog):
         self.alerted[key] = now
         return False
 
-    def _modlog(self):
+    @staticmethod
+    def _gate_guild(guild) -> bool:
+        """Is this a guild recon watches at all? Gate-side data is narrower still
+        (home only) — see recon_status."""
+        return guild is not None and (guild.id == GUILD_ID or guild.id in RECON_GUILDS)
+
+    def _modlog(self, guild=None):
+        """Where an alert goes. A guest server's recon alert names THEIR members,
+        so it belongs in THEIR mod-log — never routed back into ours."""
+        if guild is not None and guild.id != GUILD_ID:
+            cfg = get_config(guild.id)
+            # Same resolution order the rest of the suite uses — a guild can have
+            # any one of these set depending on which card configured it, and
+            # picking only one key is how an alert ends up going nowhere.
+            cid = (cfg.get("modlog_channel_id") or cfg.get("mod_log_channel_id")
+                   or cfg.get("msglog_channel_id"))
+            return guild.get_channel(int(cid)) if cid else None
         return self.bot.get_channel(MODLOG_CHANNEL_ID)
 
     @property
@@ -214,8 +251,9 @@ class ReconWatch(commands.Cog):
     async def _note_denial(self, interaction: discord.Interaction, error):
         if not isinstance(error, app_commands.CheckFailure):
             return
-        if not interaction.guild or interaction.guild.id != GUILD_ID:
+        if not interaction.guild or interaction.guild.id not in RECON_GUILDS:
             return
+        guild = interaction.guild
         user = interaction.user
         cmd = interaction.command.qualified_name if interaction.command else "?"
         # persist EVERY denial as durable evidence (even exempt users) — full
@@ -225,13 +263,13 @@ class ReconWatch(commands.Cog):
         if self._exempt(user):
             return
         now = time.time()
-        dq = self.denials[user.id]
+        dq = self.denials[(guild.id, user.id)]
         dq.append((cmd, now))
         while dq and now - dq[0][1] > CMD_WINDOW:
             dq.popleft()
         distinct = {c for c, _ in dq}
-        if len(distinct) >= CMD_DISTINCT and not self._cooling(("cmd", user.id), now):
-            await self._alert_cmd(user, distinct, len(dq))
+        if len(distinct) >= CMD_DISTINCT and not self._cooling(("cmd", guild.id, user.id), now):
+            await self._alert_cmd(guild, user, distinct, len(dq))
             if ENFORCE and isinstance(user, discord.Member):
                 try:
                     await user.timeout(timedelta(minutes=10),
@@ -239,8 +277,8 @@ class ReconWatch(commands.Cog):
                 except discord.HTTPException:
                     pass
 
-    async def _alert_cmd(self, user, distinct_cmds, total):
-        ch = self._modlog()
+    async def _alert_cmd(self, guild, user, distinct_cmds, total):
+        ch = self._modlog(guild)
         if not ch:
             return
         cmds = ", ".join(f"`/{c}`" for c in sorted(distinct_cmds))
@@ -412,30 +450,39 @@ class ReconWatch(commands.Cog):
                           description="Recent reconnaissance signals against the bot and gate.")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def recon_status(self, interaction: discord.Interaction):
+        if not self._gate_guild(interaction.guild):
+            await interaction.response.send_message(
+                "🛰️ Recon watch isn't running for this server.", ephemeral=True)
+            return
         now = time.time()
-        # live Discord sprayers (within window)
+        gid = interaction.guild.id if interaction.guild else None
+        # live Discord sprayers in THIS guild (within window)
         cmd_lines = []
-        for uid, dq in self.denials.items():
+        for (g, uid), dq in self.denials.items():
+            if g != gid:
+                continue
             recent = [c for c, t in dq if now - t <= CMD_WINDOW]
             if recent:
                 cmd_lines.append(f"<@{uid}> — {len(set(recent))} distinct ({len(recent)} denials)")
-        # live gate IPs (within window)
-        gate_lines = []
-        for (ip, kind), dq in self.gate_events.items():
-            n = sum(1 for ev in dq if now - ev["ts"] <= GATE_WINDOW)
-            if n:
-                gate_lines.append(f"`{ip}` — {n}× {kind}")
-        # currently blocked IPs (ask the gate)
-        block_lines = []
-        try:
-            async with self.session.get(f"{GATE_URL}/api/blocks",
-                                        headers=self._hmac(), timeout=8) as r:
-                if r.status == 200:
-                    for b in (await r.json()).get("blocks", []):
-                        mins = max(0, int((b.get("expires", now) - now) / 60))
-                        block_lines.append(f"`{b['ip']}` — {b.get('reason', '?')} ({mins}m left)")
-        except Exception:
-            pass
+        # Gate-side data is the OPERATOR's infrastructure — raw prober IPs and the
+        # live block list. It is never shown outside the home guild, no matter
+        # what permissions the caller holds in their own server.
+        home = gid == GUILD_ID
+        gate_lines, block_lines = [], []
+        if home:
+            for (ip, kind), dq in self.gate_events.items():
+                n = sum(1 for ev in dq if now - ev["ts"] <= GATE_WINDOW)
+                if n:
+                    gate_lines.append(f"`{ip}` — {n}× {kind}")
+            try:
+                async with self.session.get(f"{GATE_URL}/api/blocks",
+                                            headers=self._hmac(), timeout=8) as r:
+                    if r.status == 200:
+                        for b in (await r.json()).get("blocks", []):
+                            mins = max(0, int((b.get("expires", now) - now) / 60))
+                            block_lines.append(f"`{b['ip']}` — {b.get('reason', '?')} ({mins}m left)")
+            except Exception:
+                pass
 
         e = discord.Embed(title="🛰️ Recon watch", color=0x5B8CFF)
         e.add_field(
@@ -443,20 +490,20 @@ class ReconWatch(commands.Cog):
             value=("**ENFORCE**" if ENFORCE else "**shadow** (alert-only)"),
             inline=True,
         )
-        e.add_field(
-            name="Thresholds",
-            value=(f"cmd: {CMD_DISTINCT} distinct / {CMD_WINDOW // 60}m\n"
-                   f"gate api: {GATE_THRESHOLDS['api_unauth']} · token: "
-                   f"{GATE_THRESHOLDS['bad_token']} / {GATE_WINDOW // 60}m\n"
-                   f"path_scan: log-only (not paged)"),
-            inline=True,
-        )
+        thresholds = f"cmd: {CMD_DISTINCT} distinct / {CMD_WINDOW // 60}m"
+        if home:
+            thresholds += (f"\ngate api: {GATE_THRESHOLDS['api_unauth']} · token: "
+                           f"{GATE_THRESHOLDS['bad_token']} / {GATE_WINDOW // 60}m\n"
+                           f"path_scan: log-only (not paged)")
+        e.add_field(name="Thresholds", value=thresholds, inline=True)
         e.add_field(name="Command probers (live)",
                     value=("\n".join(cmd_lines[:10]) or "none"), inline=False)
-        e.add_field(name="Gate probers (live)",
-                    value=("\n".join(gate_lines[:10]) or "none"), inline=False)
-        e.add_field(name="🚫 Blocked IPs",
-                    value=("\n".join(block_lines[:10]) or "none"), inline=False)
+        if home:
+            e.add_field(name="Gate probers (live)",
+                        value=("\n".join(gate_lines[:10]) or "none"), inline=False)
+        if home:
+            e.add_field(name="🚫 Blocked IPs",
+                        value=("\n".join(block_lines[:10]) or "none"), inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True)
 
     @app_commands.command(name="recon-unblock",
@@ -464,6 +511,12 @@ class ReconWatch(commands.Cog):
     @app_commands.describe(ip="The IP address to unblock")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def recon_unblock(self, interaction: discord.Interaction, ip: str):
+        # Lifting a block acts on the operator's shared gate box, not on this
+        # server — it is infrastructure control and stops at the home guild.
+        if not interaction.guild or interaction.guild.id != GUILD_ID:
+            await interaction.response.send_message(
+                "❌ Gate IP blocks are managed by the bot operator, not per server.", ephemeral=True)
+            return
         ok = False
         if self.session and GATE_URL:
             try:

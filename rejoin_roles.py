@@ -40,24 +40,28 @@ DANGEROUS = (
 )
 
 
-def _from_events(uid, kinds=("leave", "kick")):
+def _from_events(uid, kinds=("leave", "kick"), guild_id=None):
     marks = ",".join("?" * len(kinds))
+    scope = " AND guild_id=?" if guild_id is not None else ""
+    args = (str(uid), *kinds) + ((str(guild_id),) if guild_id is not None else ())
     try:
         with sqlite3.connect(DB_PATH, timeout=30) as c:
             c.row_factory = sqlite3.Row
             row = c.execute(
-                "SELECT roles FROM member_events WHERE uid=? AND kind IN (%s) "
-                "ORDER BY ts DESC LIMIT 1" % marks, (str(uid), *kinds)).fetchone()
+                "SELECT roles FROM member_events WHERE uid=? AND kind IN (%s)%s "
+                "ORDER BY ts DESC LIMIT 1" % (marks, scope), args).fetchone()
     except sqlite3.Error:
         return []
     return _parse(row)
 
 
-def _from_roster(uid):
+def _from_roster(uid, guild_id=None):
+    scope = " AND guild_id=?" if guild_id is not None else ""
+    args = (str(uid),) + ((str(guild_id),) if guild_id is not None else ())
     try:
         with sqlite3.connect(DB_PATH, timeout=30) as c:
             c.row_factory = sqlite3.Row
-            row = c.execute("SELECT roles FROM roster WHERE uid=?", (str(uid),)).fetchone()
+            row = c.execute("SELECT roles FROM roster WHERE uid=?" + scope, args).fetchone()
     except sqlite3.Error:
         return []
     return _parse(row)
@@ -72,10 +76,15 @@ def _parse(row):
         return []
 
 
-def last_known_role_ids(uid):
+def last_known_role_ids(uid, guild_id=None):
     """Role ids the member held when they last left/were kicked; falls back to
-    the most recent roster snapshot. [] if we have no record."""
-    return _from_events(uid) or _from_roster(uid)
+    the most recent roster snapshot. [] if we have no record.
+
+    Pass guild_id once the backup DB is multi-guild: role ids are per-server, so
+    an unscoped read hands one server's roles to another's restore path. Left
+    optional so a pre-migration DB (no guild_id column) still reads."""
+    return (_from_events(uid, guild_id=guild_id)
+            or _from_roster(uid, guild_id=guild_id))
 
 
 def is_restorable(perms_value, managed, is_default, rid, deny_ids, above_bot):

@@ -6,10 +6,18 @@ here. `/roster-missing` lists members on record who AREN'T in the server now —
 your re-invite candidates.
 
 Snapshots: on startup, every BACKUP_SNAPSHOT_HOURS (default 6), and on demand
-via /roster-snapshot. Guild-scoped to ALTGUARD_GUILD_ID. Members-only (skips bots).
+via /roster-snapshot. Members-only (skips bots).
 
-Next phases (not built yet): channel/role structure backup, auto-unban+reinvite
-on a detected mass-ban.
+MULTI-GUILD: recording happens for the guilds in BACKUP_GUILDS (defaults to
+ALTGUARD_GUILD_ID = unchanged for an existing deployment) — a roster is a list
+of real people held on the operator's disk, so which servers get one is an
+operator grant, not a per-admin toggle. Every row is keyed by guild_id and every
+read filters on it. That filtering is not cosmetic: before it, /structure-status
+and /roster-missing were `guild_only` but their SQL was not, so an admin in ANY
+server the bot sits in read the home guild's roster and channel/role backup, and
+/structure-restore would have recreated the home guild's channels in theirs.
+
+Next phases (not built yet): auto-unban+reinvite on a detected mass-ban.
 """
 import io
 import os
@@ -33,6 +41,11 @@ def _env_int(name, default=0):
 
 
 GUILD_ID = _env_int("ALTGUARD_GUILD_ID")
+# Guilds we keep a roster / structure backup for. Same operator-grant reasoning
+# as mod_log's MSGLOG_ARCHIVE_GUILDS and invites' INVITE_TRACK_GUILDS.
+BACKUP_GUILDS = {int(g) for g in os.environ.get(
+    "BACKUP_GUILDS", os.environ.get("ALTGUARD_GUILD_ID", "")
+).replace(",", " ").split() if g.strip().isdigit()}
 SNAPSHOT_HOURS = _env_int("BACKUP_SNAPSHOT_HOURS", 6)
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "server_backup.db"))
 
@@ -43,22 +56,74 @@ class ServerBackup(commands.Cog):
         with self._conn() as c:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS roster (
-                       uid          TEXT PRIMARY KEY,
+                       guild_id     TEXT,
+                       uid          TEXT,
                        username     TEXT,
                        display_name TEXT,
                        roles        TEXT,   -- json list of role ids held
                        joined_at    REAL,
                        first_seen   REAL,   -- first time WE recorded them
-                       last_seen    REAL    -- most recent snapshot they were present in
+                       last_seen    REAL,   -- most recent snapshot they were present in
+                       PRIMARY KEY (guild_id, uid)
                    )"""
             )
-            c.execute("CREATE TABLE IF NOT EXISTS snapshots (ts REAL, member_count INTEGER)")
-            c.execute("CREATE TABLE IF NOT EXISTS structure (ts REAL PRIMARY KEY, guild_name TEXT, roles TEXT, channels TEXT)")
+            c.execute("CREATE TABLE IF NOT EXISTS snapshots (guild_id TEXT, ts REAL, member_count INTEGER)")
+            c.execute("""CREATE TABLE IF NOT EXISTS structure (
+                             guild_id TEXT, ts REAL, guild_name TEXT, roles TEXT, channels TEXT,
+                             PRIMARY KEY (guild_id, ts))""")
             # the transaction log: every join/leave/kick/ban between snapshots
             c.execute("""CREATE TABLE IF NOT EXISTS member_events (
-                             ts REAL, uid TEXT, username TEXT, display_name TEXT,
+                             guild_id TEXT, ts REAL, uid TEXT, username TEXT, display_name TEXT,
                              roles TEXT, kind TEXT, by_uid TEXT)""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ev_ts ON member_events(ts)")
+            self._migrate(c)
+            c.execute("CREATE INDEX IF NOT EXISTS idx_ev_guild_ts ON member_events(guild_id, ts)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_ev_guild_uid ON member_events(guild_id, uid, ts)")
+
+    @staticmethod
+    def _cols(c, table):
+        return {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def _migrate(self, c):
+        """Add guild_id to the pre-multi-guild schema. Every existing row was
+        written by the home-guild-only code, so backfilling them with GUILD_ID is
+        exact, not a guess. Idempotent — each step is skipped once the column is
+        there, so a restart never re-runs it."""
+        home = str(GUILD_ID) if GUILD_ID else None
+
+        if "guild_id" not in self._cols(c, "roster"):
+            # PRIMARY KEY changes from (uid) to (guild_id, uid), which SQLite can
+            # only do by rebuilding: two servers sharing one uid PK would silently
+            # overwrite each other's row for anyone in both.
+            c.execute("ALTER TABLE roster RENAME TO roster_old")
+            c.execute(
+                """CREATE TABLE roster (
+                       guild_id TEXT, uid TEXT, username TEXT, display_name TEXT,
+                       roles TEXT, joined_at REAL, first_seen REAL, last_seen REAL,
+                       PRIMARY KEY (guild_id, uid))"""
+            )
+            c.execute(
+                "INSERT INTO roster(guild_id, uid, username, display_name, roles, joined_at, first_seen, last_seen) "
+                "SELECT ?, uid, username, display_name, roles, joined_at, first_seen, last_seen FROM roster_old",
+                (home,))
+            c.execute("DROP TABLE roster_old")
+            log.info("server_backup: roster migrated to per-guild keys (home=%s)", home)
+
+        for table in ("member_events", "snapshots"):
+            if "guild_id" not in self._cols(c, table):
+                c.execute(f"ALTER TABLE {table} ADD COLUMN guild_id TEXT")
+                c.execute(f"UPDATE {table} SET guild_id=? WHERE guild_id IS NULL", (home,))
+                log.info("server_backup: %s migrated to per-guild rows", table)
+
+        if "guild_id" not in self._cols(c, "structure"):
+            c.execute("ALTER TABLE structure RENAME TO structure_old")
+            c.execute("""CREATE TABLE structure (
+                             guild_id TEXT, ts REAL, guild_name TEXT, roles TEXT, channels TEXT,
+                             PRIMARY KEY (guild_id, ts))""")
+            c.execute("INSERT INTO structure(guild_id, ts, guild_name, roles, channels) "
+                      "SELECT ?, ts, guild_name, roles, channels FROM structure_old", (home,))
+            c.execute("DROP TABLE structure_old")
+            log.info("server_backup: structure migrated to per-guild keys")
 
     def _conn(self):
         c = sqlite3.connect(DB_PATH, timeout=30)
@@ -87,17 +152,18 @@ class ServerBackup(commands.Cog):
                 roles = json.dumps([r.id for r in m.roles if not r.is_default()])
                 joined = m.joined_at.timestamp() if m.joined_at else None
                 c.execute(
-                    """INSERT INTO roster(uid, username, display_name, roles, joined_at, first_seen, last_seen)
-                       VALUES (?,?,?,?,?,?,?)
-                       ON CONFLICT(uid) DO UPDATE SET
+                    """INSERT INTO roster(guild_id, uid, username, display_name, roles, joined_at, first_seen, last_seen)
+                       VALUES (?,?,?,?,?,?,?,?)
+                       ON CONFLICT(guild_id, uid) DO UPDATE SET
                            username=excluded.username, display_name=excluded.display_name,
                            roles=excluded.roles, joined_at=COALESCE(excluded.joined_at, roster.joined_at),
                            last_seen=excluded.last_seen""",
-                    (str(m.id), m.name, m.display_name, roles, joined, now, now),
+                    (str(guild.id), str(m.id), m.name, m.display_name, roles, joined, now, now),
                 )
                 n += 1
-            c.execute("INSERT INTO snapshots(ts, member_count) VALUES (?,?)", (now, n))
-        log.info("roster snapshot: %d members recorded", n)
+            c.execute("INSERT INTO snapshots(guild_id, ts, member_count) VALUES (?,?,?)",
+                      (str(guild.id), now, n))
+        log.info("roster snapshot: %d members recorded in %s", n, guild.id)
         return n
 
     def capture_structure(self, guild):
@@ -123,9 +189,13 @@ class ServerBackup(commands.Cog):
                              "slowmode": getattr(ch, "slowmode_delay", 0) or 0,
                              "overwrites": ov})
         with self._conn() as c:
-            c.execute("INSERT OR REPLACE INTO structure(ts, guild_name, roles, channels) VALUES (?,?,?,?)",
-                      (time.time(), guild.name, json.dumps(roles), json.dumps(channels)))
-            c.execute("DELETE FROM structure WHERE ts NOT IN (SELECT ts FROM structure ORDER BY ts DESC LIMIT 10)")
+            c.execute("INSERT OR REPLACE INTO structure(guild_id, ts, guild_name, roles, channels) VALUES (?,?,?,?,?)",
+                      (str(guild.id), time.time(), guild.name, json.dumps(roles), json.dumps(channels)))
+            # keep the last 10 PER GUILD — a global LIMIT 10 would let a busy
+            # server's snapshots evict a quiet one's only backup
+            c.execute("DELETE FROM structure WHERE guild_id=? AND ts NOT IN "
+                      "(SELECT ts FROM structure WHERE guild_id=? ORDER BY ts DESC LIMIT 10)",
+                      (str(guild.id), str(guild.id)))
         log.info("structure snapshot: %d roles, %d channels", len(roles), len(channels))
         return len(roles), len(channels)
 
@@ -147,15 +217,16 @@ class ServerBackup(commands.Cog):
     def _log_event(self, member, kind, by_uid=None):
         roles = json.dumps([r.id for r in getattr(member, "roles", []) if not r.is_default()])
         with self._conn() as c:
-            c.execute("INSERT INTO member_events(ts, uid, username, display_name, roles, kind, by_uid) "
-                      "VALUES (?,?,?,?,?,?,?)",
-                      (time.time(), str(member.id), member.name, member.display_name, roles, kind, by_uid))
+            c.execute("INSERT INTO member_events(guild_id, ts, uid, username, display_name, roles, kind, by_uid) "
+                      "VALUES (?,?,?,?,?,?,?,?)",
+                      (str(member.guild.id), time.time(), str(member.id), member.name,
+                       member.display_name, roles, kind, by_uid))
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
         """Real-time join log — completes the transaction log so a join-then-leave
         within a snapshot gap is still fully captured."""
-        if member.guild.id != GUILD_ID or member.bot:
+        if member.guild.id not in BACKUP_GUILDS or member.bot:
             return
         self._log_event(member, "join")
 
@@ -163,7 +234,7 @@ class ServerBackup(commands.Cog):
     async def on_member_remove(self, member):
         """Real-time departure log — captures every leave the instant it happens,
         with the member's roles and whether it was a voluntary leave / kick / ban."""
-        if member.guild.id != GUILD_ID or member.bot:
+        if member.guild.id not in BACKUP_GUILDS or member.bot:
             return
         kind, by_uid = "leave", None
         try:
@@ -191,7 +262,8 @@ class ServerBackup(commands.Cog):
         cutoff = time.time() - max(1, hours) * 3600
         with self._conn() as c:
             rows = c.execute("SELECT uid, username, kind, by_uid, ts FROM member_events "
-                             "WHERE ts>? AND kind!='join' ORDER BY ts DESC", (cutoff,)).fetchall()
+                             "WHERE guild_id=? AND ts>? AND kind!='join' ORDER BY ts DESC",
+                             (str(interaction.guild.id), cutoff)).fetchall()
         if not rows:
             await interaction.followup.send(f"No departures in the last {hours}h.", ephemeral=True)
             return
@@ -219,8 +291,9 @@ class ServerBackup(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         cutoff = time.time() - max(1, hours) * 3600
         with self._conn() as c:
-            rows = c.execute("SELECT ts, username, kind, by_uid FROM member_events WHERE ts>? ORDER BY ts DESC",
-                             (cutoff,)).fetchall()
+            rows = c.execute("SELECT ts, username, kind, by_uid FROM member_events "
+                             "WHERE guild_id=? AND ts>? ORDER BY ts DESC",
+                             (str(interaction.guild.id), cutoff)).fetchall()
         if not rows:
             await interaction.followup.send(f"No member activity in the last {hours}h.", ephemeral=True)
             return
@@ -241,13 +314,15 @@ class ServerBackup(commands.Cog):
 
     @tasks.loop(hours=SNAPSHOT_HOURS)
     async def auto_snapshot(self):
-        guild = self.bot.get_guild(GUILD_ID)
-        if guild:
+        for gid in BACKUP_GUILDS:
+            guild = self.bot.get_guild(gid)
+            if guild is None:
+                continue
             try:
                 await self.snapshot(guild)
                 self.capture_structure(guild)
             except Exception as e:
-                log.warning("auto snapshot failed: %s", e)
+                log.warning("auto snapshot failed for %s: %s", gid, e)
 
     @auto_snapshot.before_loop
     async def _before(self):
@@ -260,9 +335,17 @@ class ServerBackup(commands.Cog):
     @app_commands.guild_only()
     async def roster_snapshot(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        if interaction.guild.id not in BACKUP_GUILDS:
+            # A roster is a list of real people kept on the operator's machine.
+            # An admin can ask for one, but only the operator can grant it.
+            await interaction.followup.send(
+                "❌ Roster backups aren't enabled for this server. Ask the bot operator to turn them on.",
+                ephemeral=True)
+            return
         n = await self.snapshot(interaction.guild)
         with self._conn() as c:
-            total = c.execute("SELECT COUNT(*) FROM roster").fetchone()[0]
+            total = c.execute("SELECT COUNT(*) FROM roster WHERE guild_id=?",
+                              (str(interaction.guild.id),)).fetchone()[0]
         await interaction.followup.send(
             f"📸 Snapshot saved — **{n}** members present now; **{total}** total on record (all-time).",
             ephemeral=True)
@@ -285,7 +368,8 @@ class ServerBackup(commands.Cog):
         present = {str(m.id) for m in guild.members}
         with self._conn() as c:
             rows = c.execute(
-                "SELECT uid, username, last_seen FROM roster ORDER BY last_seen DESC").fetchall()
+                "SELECT uid, username, last_seen FROM roster WHERE guild_id=? ORDER BY last_seen DESC",
+                (str(guild.id),)).fetchall()
         if not rows:
             await interaction.followup.send(
                 "No roster on record yet — run `/roster-snapshot` first (auto-snapshots run every "
@@ -317,7 +401,8 @@ class ServerBackup(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild = interaction.guild
         with self._conn() as c:
-            row = c.execute("SELECT ts, roles, channels FROM structure ORDER BY ts DESC LIMIT 1").fetchone()
+            row = c.execute("SELECT ts, roles, channels FROM structure WHERE guild_id=? "
+                            "ORDER BY ts DESC LIMIT 1", (str(guild.id),)).fetchone()
         if not row:
             await interaction.followup.send(
                 f"No structure backup yet — auto-backups run on startup + every {SNAPSHOT_HOURS}h.", ephemeral=True)
@@ -347,7 +432,8 @@ class ServerBackup(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         guild = interaction.guild
         with self._conn() as c:
-            row = c.execute("SELECT ts, roles, channels FROM structure ORDER BY ts DESC LIMIT 1").fetchone()
+            row = c.execute("SELECT ts, roles, channels FROM structure WHERE guild_id=? "
+                            "ORDER BY ts DESC LIMIT 1", (str(guild.id),)).fetchone()
         if not row:
             await interaction.followup.send("No structure backup to restore from.", ephemeral=True)
             return
