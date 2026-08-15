@@ -270,6 +270,22 @@
       ]
     },
     {
+      "name": "lock",
+      "description": "Lock a channel — members can't talk until /unlock (mod)",
+      "cog": "moderation",
+      "required_permissions": [
+        "manage_channels"
+      ]
+    },
+    {
+      "name": "unlock",
+      "description": "Unlock a locked channel, restoring its previous permissions (mod)",
+      "cog": "moderation",
+      "required_permissions": [
+        "manage_channels"
+      ]
+    },
+    {
       "name": "prune-messages",
       "description": "Bulk-delete the last N messages in a channel by count (admin)",
       "cog": "moderation",

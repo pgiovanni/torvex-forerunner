@@ -3,6 +3,7 @@ import os
 import re
 import sys
 from datetime import timedelta
+from typing import Union
 
 import discord
 from discord import app_commands
@@ -11,6 +12,7 @@ from discord.ext import commands
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.security_config import get_config  # noqa: E402
 from utils.quiet_removals import mark, clear  # noqa: E402
+from utils import channel_locks  # noqa: E402
 
 # anti-nuke's kick vector is (5, 20); 6s spacing keeps a bulk quiet-kick well
 # under it without the operator having to think about it.
@@ -99,6 +101,19 @@ def _parse_duration(text: str):
         return None
     unit = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
     return sum((timedelta(**{unit[u]: int(n)}) for n, u in parts), timedelta())
+
+
+# channel types whose overwrites a lock can edit. Threads inherit the parent's
+# permissions and have no overwrites of their own.
+LOCKABLE = (discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel)
+LockableChannel = Union[discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel]
+
+
+def _lock_perm_names(channel):
+    perms = list(channel_locks.TEXT_PERMS)
+    if isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+        perms += list(channel_locks.VOICE_PERMS)
+    return perms
 
 
 def _fmt_duration(delta: timedelta):
@@ -507,6 +522,169 @@ class Moderation(commands.Cog):
         embed.set_footer(text=f"Removed by {interaction.user.display_name}")
         await interaction.followup.send(embed=embed)  # public confirmation
         await interaction.followup.send("✅ Done.", ephemeral=True)
+
+    @app_commands.command(name="lock", description="Lock a channel — members can't talk in it until /unlock.")
+    @app_commands.describe(
+        channel="The channel to lock (default: this one)",
+        reason="Why it's being locked (shown in the channel and the audit log)",
+    )
+    @app_commands.default_permissions(manage_channels=True)
+    @app_commands.checks.has_permissions(manage_channels=True)
+    @app_commands.guild_only()
+    async def lock(self, interaction: discord.Interaction,
+                   channel: LockableChannel = None, reason: str = None):
+        """Denies send_messages (+ threads; + connect/speak on voice) to
+        @everyone in ONE channel. Roles with an explicit allow overwrite in the
+        channel — usually staff — keep talking, which is the point.
+
+        The pre-lock @everyone tri-states are snapshotted to channel_locks.db
+        so /unlock restores what was actually there, not "neutral": a channel
+        that already carried a deny must not come out of the cycle open."""
+        await interaction.response.defer(ephemeral=True)
+        guild, me = interaction.guild, interaction.guild.me
+        channel = channel or interaction.channel
+
+        if not isinstance(channel, LOCKABLE):
+            msg = ("❌ Threads can't be locked directly — lock the parent channel instead."
+                   if isinstance(channel, discord.Thread)
+                   else "❌ I can't lock this channel type.")
+            await interaction.followup.send(msg, ephemeral=True)
+            return
+        if not channel.permissions_for(me).manage_roles:
+            await interaction.followup.send(
+                f"❌ I need the **Manage Permissions** ability in {channel.mention} to lock it.",
+                ephemeral=True)
+            return
+        if channel_locks.get_lock(guild.id, channel.id):
+            await interaction.followup.send(
+                f"⚠️ {channel.mention} is already locked. Use `/unlock` first.", ephemeral=True)
+            return
+
+        perms = _lock_perm_names(channel)
+        ow_e = channel.overwrites_for(guild.default_role)
+        ow_m = channel.overwrites_for(me)
+        prev = channel_locks.pack_prev(
+            {p: getattr(ow_e, p) for p in perms},
+            {"send_messages": ow_m.send_messages},
+        )
+
+        audit = f"/lock by {interaction.user} ({interaction.user.id}): {reason or 'No reason provided'}"
+        try:
+            # the bot's own allow goes in FIRST so the lock can never silence
+            # the announcement below (the bot may have no perms beyond @everyone)
+            ow_m.send_messages = True
+            await channel.set_permissions(me, overwrite=ow_m, reason=audit)
+            for p in perms:
+                setattr(ow_e, p, False)
+            await channel.set_permissions(guild.default_role, overwrite=ow_e, reason=audit)
+        except (discord.Forbidden, discord.HTTPException) as e:
+            # best effort: don't leave the stray bot allow behind
+            try:
+                ow_m.send_messages = channel_locks.unpack_prev(prev)["me"]["send_messages"]
+                await channel.set_permissions(
+                    me, overwrite=None if ow_m.is_empty() else ow_m, reason="lock failed — reverting")
+            except discord.HTTPException:
+                pass
+            what = ("Discord refused — I need **Manage Permissions** on that channel."
+                    if isinstance(e, discord.Forbidden) else f"Lock failed: {e}")
+            await interaction.followup.send(f"❌ {what}", ephemeral=True)
+            return
+
+        channel_locks.save_lock(guild.id, channel.id, interaction.user.id,
+                                str(interaction.user), reason, prev)
+
+        embed = discord.Embed(
+            title="🔒 Channel locked",
+            color=0xE8A33D,
+            description=f"{channel.mention} is locked — members can't talk here until a mod runs `/unlock`.",
+        )
+        embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+        embed.set_footer(text=f"Locked by {interaction.user.display_name}")
+        if hasattr(channel, "send"):   # forum channels have no .send
+            try:
+                await channel.send(embed=embed)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+        await _mod_log(self.bot, guild, _mod_cfg(guild.id), embed)
+        await interaction.followup.send(f"🔒 Locked {channel.mention}.", ephemeral=True)
+
+    @app_commands.command(name="unlock", description="Unlock a locked channel and restore its previous permissions.")
+    @app_commands.describe(
+        channel="The channel to unlock (default: this one)",
+        reason="Why (audit log)",
+    )
+    @app_commands.default_permissions(manage_channels=True)
+    @app_commands.checks.has_permissions(manage_channels=True)
+    @app_commands.guild_only()
+    async def unlock(self, interaction: discord.Interaction,
+                     channel: LockableChannel = None, reason: str = None):
+        await interaction.response.defer(ephemeral=True)
+        guild, me = interaction.guild, interaction.guild.me
+        channel = channel or interaction.channel
+
+        if not isinstance(channel, LOCKABLE):
+            await interaction.followup.send("❌ I can't unlock this channel type.", ephemeral=True)
+            return
+        if not channel.permissions_for(me).manage_roles:
+            await interaction.followup.send(
+                f"❌ I need the **Manage Permissions** ability in {channel.mention} to unlock it.",
+                ephemeral=True)
+            return
+
+        row = channel_locks.get_lock(guild.id, channel.id)
+        perms = _lock_perm_names(channel)
+        ow_e = channel.overwrites_for(guild.default_role)
+        ow_m = channel.overwrites_for(me)
+        note = ""
+        if row:
+            for p, v in row["prev"]["everyone"].items():
+                setattr(ow_e, p, v)
+            for p, v in row["prev"]["me"].items():
+                setattr(ow_m, p, v)
+        else:
+            # locked by hand, or before the state store existed — neutral reset
+            for p in perms:
+                setattr(ow_e, p, None)
+            ow_m.send_messages = None
+            note = "\n*(No saved lock state for this channel — reset the lock permissions to neutral.)*"
+
+        audit = f"/unlock by {interaction.user} ({interaction.user.id}): {reason or 'No reason provided'}"
+        try:
+            await channel.set_permissions(
+                guild.default_role, overwrite=None if ow_e.is_empty() else ow_e, reason=audit)
+            await channel.set_permissions(
+                me, overwrite=None if ow_m.is_empty() else ow_m, reason=audit)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ Discord refused — I need **Manage Permissions** on that channel.", ephemeral=True)
+            return
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ Unlock failed: {e}", ephemeral=True)
+            return
+
+        channel_locks.clear_lock(guild.id, channel.id)
+
+        embed = discord.Embed(
+            title="🔓 Channel unlocked",
+            color=0x3BA55D,
+            description=f"{channel.mention} is open again.{note}",
+        )
+        if row:
+            embed.add_field(
+                name="Was locked",
+                value=f"<t:{row['locked_ts']}:R> by **{row['locked_by_name']}** — "
+                      f"{row['reason'] or 'no reason given'}",
+                inline=False)
+        if reason:
+            embed.add_field(name="Reason", value=reason, inline=False)
+        embed.set_footer(text=f"Unlocked by {interaction.user.display_name}")
+        if hasattr(channel, "send"):
+            try:
+                await channel.send(embed=embed)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+        await _mod_log(self.bot, guild, _mod_cfg(guild.id), embed)
+        await interaction.followup.send(f"🔓 Unlocked {channel.mention}.", ephemeral=True)
 
     @app_commands.command(
         name="prune-messages",
