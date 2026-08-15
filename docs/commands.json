@@ -1256,9 +1256,17 @@
   },
   {
    "path": "help",
-   "description": "Show all available commands.",
-   "params": [],
-   "signature": "/help",
+   "description": "Show all available commands, or details for one.",
+   "params": [
+    {
+     "name": "command",
+     "type": "string",
+     "required": false,
+     "description": "A command to explain in detail (leave empty for the overview)",
+     "autocomplete": true
+    }
+   ],
+   "signature": "/help [command]",
    "root": "help",
    "cog": "help",
    "permissions": [],
@@ -2009,6 +2017,58 @@
    "dm_allowed": false
   },
   {
+   "path": "lock",
+   "description": "Lock a channel for ALL roles — nobody talks until /unlock (exempt roles to allow).",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": false,
+     "description": "The channel to lock (default: this one)",
+     "channel_types": [
+      "text",
+      "voice",
+      "announcement",
+      "stage",
+      "forum",
+      "16"
+     ]
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": false,
+     "description": "Why it's being locked (shown in the channel and the audit log)"
+    },
+    {
+     "name": "exempt",
+     "type": "role",
+     "required": false,
+     "description": "A role that can still talk while locked (e.g. staff)"
+    },
+    {
+     "name": "exempt2",
+     "type": "role",
+     "required": false,
+     "description": "Another role that can still talk"
+    },
+    {
+     "name": "exempt3",
+     "type": "role",
+     "required": false,
+     "description": "Another role that can still talk"
+    }
+   ],
+   "signature": "/lock [channel] [reason] [exempt] [exempt2] [exempt3]",
+   "root": "lock",
+   "cog": "moderation",
+   "permissions": [
+    "Manage Channels"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "prune-messages",
    "description": "Bulk-delete the last N messages in this channel (count-based, not by date).",
    "params": [
@@ -2116,6 +2176,40 @@
    "cog": "moderation",
    "permissions": [
     "Ban Members"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "unlock",
+   "description": "Unlock a locked channel and restore its previous permissions.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": false,
+     "description": "The channel to unlock (default: this one)",
+     "channel_types": [
+      "text",
+      "voice",
+      "announcement",
+      "stage",
+      "forum",
+      "16"
+     ]
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": false,
+     "description": "Why (audit log)"
+    }
+   ],
+   "signature": "/unlock [channel] [reason]",
+   "root": "unlock",
+   "cog": "moderation",
+   "permissions": [
+    "Manage Channels"
    ],
    "cooldown_seconds": null,
    "dm_allowed": false
@@ -4628,6 +4722,26 @@
    ],
    "runtime_permissions": [
     "moderate_members"
+   ],
+   "server_owner_only": false
+  },
+  "lock": {
+   "cog": "moderation",
+   "visibility_permissions": [
+    "manage_channels"
+   ],
+   "runtime_permissions": [
+    "manage_channels"
+   ],
+   "server_owner_only": false
+  },
+  "unlock": {
+   "cog": "moderation",
+   "visibility_permissions": [
+    "manage_channels"
+   ],
+   "runtime_permissions": [
+    "manage_channels"
    ],
    "server_owner_only": false
   },

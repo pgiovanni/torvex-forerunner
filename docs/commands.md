@@ -2,7 +2,7 @@
 
 Every slash command **Peepo's Reclaimer** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **191 commands** (86 top-level, the rest subcommands) across 35 cogs
+- **193 commands** (88 top-level, the rest subcommands) across 35 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -23,11 +23,11 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 ## Index
 
-**Moderation** — `/ban`, `/kick`, `/msglog`, `/prune-messages`, `/quiet-kick`, `/timeout`, `/unban`, `/untimeout`
-
 **Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/member-activity`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recent-leaves`, `/recon-status`, `/recon-unblock`, `/roster-missing`, `/roster-snapshot`, `/security`, `/structure-restore`, `/structure-status`, `/unquarantine`, `/verify`
 
-**Server setup** — `/backup_emojis`, `/picount`, `/rolemenu`, `/setup`, `/steal-emoji`, `/suggest`, `/welcome`
+**Moderation** — `/ban`, `/kick`, `/lock`, `/msglog`, `/prune-messages`, `/quiet-kick`, `/timeout`, `/unban`, `/unlock`, `/untimeout`
+
+**Server setup** — `/backup_emojis`, `/picount`, `/rolemenu`, `/server-info`, `/setup`, `/steal-emoji`, `/suggest`, `/welcome`
 
 **Members & invites** — `/activity`, `/backfill-chat-levels`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/invite`, `/levelroles`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/stats-status`, `/store`, `/tracked-invite`
 
@@ -37,360 +37,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Help** — `/add-bot`, `/dashboard`, `/help`
 
-**Other** — `/automation`, `/server-info`
-
----
-
-## Moderation
-
-### Moderation
-
-<sub>`cogs/moderation.py`</sub>
-
-#### `/ban`
-
-Ban a member, or pre-ban a user by ID (not in the server).
-
-```
-/ban [user] [user_id] [reason] [delete_days]
-```
-
-**Access:** Requires **Ban Members** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `user` | user | No | The member/user to ban (pick them here) |
-| `user_id` | string | No | ...or a raw Discord ID — for someone not in the server |
-| `reason` | string | No | Why they're being banned (shown in the audit log) |
-| `delete_days` | integer | No | Delete their messages from the last N days (0–7, default 0) *(range 0–7)* |
-
-#### `/kick`
-
-Kick a member from the server (they can rejoin with an invite).
-
-```
-/kick <member> [reason]
-```
-
-**Access:** Requires **Kick Members** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `member` | user | Yes | The member to kick |
-| `reason` | string | No | Why they're being kicked (shown in the audit log) |
-
-#### `/prune-messages`
-
-Bulk-delete the last N messages in this channel (count-based, not by date).
-
-```
-/prune-messages <amount>
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `amount` | integer | Yes | How many recent messages to delete (1–1000). *(range 1–1000)* |
-
-#### `/quiet-kick`
-
-Kick a member with no goodbye message and no mod-log embed (still recorded).
-
-```
-/quiet-kick [member] [user_ids] [reason]
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `member` | user | No | The member to kick quietly |
-| `user_ids` | string | No | Or several at once — user IDs separated by spaces or commas |
-| `reason` | string | No | Why (still written to Discord's audit log and the identity ledger) |
-
-#### `/timeout`
-
-Time out a member (mute + no reactions) for a duration.
-
-```
-/timeout <member> [duration] [reason]
-```
-
-**Access:** Requires **Timeout Members** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `member` | user | Yes | The member to time out |
-| `duration` | string | No | How long — e.g. 30m, 2h, 1d, 1h30m (max 28d). Blank = this server's default. |
-| `reason` | string | No | Why (shown in the audit log and the public embed) |
-
-#### `/unban`
-
-Unban a user by their Discord ID.
-
-```
-/unban <user_id> [reason]
-```
-
-**Access:** Requires **Ban Members** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `user_id` | string | Yes | The banned user's raw Discord ID |
-| `reason` | string | No | Why they're being unbanned (audit log) |
-
-#### `/untimeout`
-
-Remove a member's timeout early.
-
-```
-/untimeout <member> [reason]
-```
-
-**Access:** Requires **Timeout Members** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `member` | user | Yes | The timed-out member |
-| `reason` | string | No | Why (audit log) |
-
-### Mod log & message archive
-
-<sub>`cogs/mod_log.py`</sub>
-
-#### `/msglog accept-terms`
-
-Server owner: agree to the retention terms and turn the archive on.
-
-```
-/msglog accept-terms [confirm]
-```
-
-**Access:** **Server owner only** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `confirm` | boolean | No | Yes, I've read /msglog terms and I accept on behalf of this server |
-
-#### `/msglog automod`
-
-Toggle AutoMod block + rule-change logging.
-
-```
-/msglog automod <enabled>
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `enabled` | boolean | Yes | On = log what AutoMod blocks and any rule changes |
-
-#### `/msglog channels`
-
-Toggle channel-change logging on or off.
-
-```
-/msglog channels <enabled>
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `enabled` | boolean | Yes | On = log channel create/delete/edit + permission-overwrite changes |
-
-#### `/msglog deleted`
-
-A user's recently deleted messages, from the archive.
-
-```
-/msglog deleted <user> [limit]
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `user` | user | Yes | Whose deleted messages |
-| `limit` | integer | No | How many (default 10, max 25) *(range 1–25)* |
-
-#### `/msglog disable`
-
-Turn off archiving + logging.
-
-```
-/msglog disable
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-*No parameters.*
-
-#### `/msglog enable`
-
-Turn on the message archive + mod-log.
-
-```
-/msglog enable [channel]
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `channel` | channel | No | Where delete/edit logs go (defaults to the security mod-log) *(channel types: text, announcement)* |
-
-#### `/msglog expressions`
-
-Toggle emoji/sticker create/delete/edit logging on or off.
-
-```
-/msglog expressions <enabled>
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `enabled` | boolean | Yes | On = log custom emoji + sticker changes, with the image grabbed on deletion |
-
-#### `/msglog forget`
-
-Erase all identity records + stored avatars for a user ID.
-
-```
-/msglog forget <user_id>
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `user_id` | string | Yes | Numeric user ID to erase from the identity ledger |
-
-#### `/msglog history`
-
-Every recorded name, timeout and lifecycle event for a user ID.
-
-```
-/msglog history <user_id>
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `user_id` | string | Yes | Numeric user ID — works for users who already left or deleted their account |
-
-#### `/msglog ignore`
-
-Toggle a channel out of delete/edit LOGGING (still archived).
-
-```
-/msglog ignore <channel>
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `channel` | channel | Yes | … *(channel types: text, announcement)* |
-
-#### `/msglog media-channel`
-
-Route deleted-media re-posts to a separate channel (e.g. 18+ staff only).
-
-```
-/msglog media-channel [channel]
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `channel` | channel | No | Destination for media re-posts; omit to attach media to the log embeds again *(channel types: text, announcement)* |
-
-#### `/msglog names`
-
-Toggle nickname/username/timeout logging on or off.
-
-```
-/msglog names <enabled>
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `enabled` | boolean | Yes | On = log nickname, username and timeout changes |
-
-#### `/msglog revoke-terms`
-
-Server owner: stop storing this server's data and delete what's stored.
-
-```
-/msglog revoke-terms [confirm]
-```
-
-**Access:** **Server owner only** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `confirm` | boolean | No | Yes — stop retention and permanently delete this server's archive |
-
-#### `/msglog roles`
-
-Toggle role-change logging on or off.
-
-```
-/msglog roles <enabled>
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `enabled` | boolean | Yes | On = log member role add/remove + role create/delete/edit |
-
-#### `/msglog status`
-
-Archive totals + configuration.
-
-```
-/msglog status
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-*No parameters.*
-
-#### `/msglog terms`
-
-What the archive stores, and how to turn it on or off.
-
-```
-/msglog terms
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-*No parameters.*
-
-#### `/msglog voice`
-
-Toggle voice channel join/leave/move logging on or off.
-
-```
-/msglog voice <enabled>
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `enabled` | boolean | Yes | On = log voice join/leave/switch to the mod-log |
+**Other** — `/automation`
 
 ---
 
@@ -1104,6 +751,392 @@ Show the channel/role backup + what's been deleted since (admin)
 
 ---
 
+## Moderation
+
+### Moderation
+
+<sub>`cogs/moderation.py`</sub>
+
+#### `/ban`
+
+Ban a member, or pre-ban a user by ID (not in the server).
+
+```
+/ban [user] [user_id] [reason] [delete_days]
+```
+
+**Access:** Requires **Ban Members** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `user` | user | No | The member/user to ban (pick them here) |
+| `user_id` | string | No | ...or a raw Discord ID — for someone not in the server |
+| `reason` | string | No | Why they're being banned (shown in the audit log) |
+| `delete_days` | integer | No | Delete their messages from the last N days (0–7, default 0) *(range 0–7)* |
+
+#### `/kick`
+
+Kick a member from the server (they can rejoin with an invite).
+
+```
+/kick <member> [reason]
+```
+
+**Access:** Requires **Kick Members** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `member` | user | Yes | The member to kick |
+| `reason` | string | No | Why they're being kicked (shown in the audit log) |
+
+#### `/lock`
+
+Lock a channel for ALL roles — nobody talks until /unlock (exempt roles to allow).
+
+```
+/lock [channel] [reason] [exempt] [exempt2] [exempt3]
+```
+
+**Access:** Requires **Manage Channels** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `channel` | channel | No | The channel to lock (default: this one) *(channel types: text, voice, announcement, stage, forum, 16)* |
+| `reason` | string | No | Why it's being locked (shown in the channel and the audit log) |
+| `exempt` | role | No | A role that can still talk while locked (e.g. staff) |
+| `exempt2` | role | No | Another role that can still talk |
+| `exempt3` | role | No | Another role that can still talk |
+
+#### `/prune-messages`
+
+Bulk-delete the last N messages in this channel (count-based, not by date).
+
+```
+/prune-messages <amount>
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `amount` | integer | Yes | How many recent messages to delete (1–1000). *(range 1–1000)* |
+
+#### `/quiet-kick`
+
+Kick a member with no goodbye message and no mod-log embed (still recorded).
+
+```
+/quiet-kick [member] [user_ids] [reason]
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `member` | user | No | The member to kick quietly |
+| `user_ids` | string | No | Or several at once — user IDs separated by spaces or commas |
+| `reason` | string | No | Why (still written to Discord's audit log and the identity ledger) |
+
+#### `/timeout`
+
+Time out a member (mute + no reactions) for a duration.
+
+```
+/timeout <member> [duration] [reason]
+```
+
+**Access:** Requires **Timeout Members** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `member` | user | Yes | The member to time out |
+| `duration` | string | No | How long — e.g. 30m, 2h, 1d, 1h30m (max 28d). Blank = this server's default. |
+| `reason` | string | No | Why (shown in the audit log and the public embed) |
+
+#### `/unban`
+
+Unban a user by their Discord ID.
+
+```
+/unban <user_id> [reason]
+```
+
+**Access:** Requires **Ban Members** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `user_id` | string | Yes | The banned user's raw Discord ID |
+| `reason` | string | No | Why they're being unbanned (audit log) |
+
+#### `/unlock`
+
+Unlock a locked channel and restore its previous permissions.
+
+```
+/unlock [channel] [reason]
+```
+
+**Access:** Requires **Manage Channels** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `channel` | channel | No | The channel to unlock (default: this one) *(channel types: text, voice, announcement, stage, forum, 16)* |
+| `reason` | string | No | Why (audit log) |
+
+#### `/untimeout`
+
+Remove a member's timeout early.
+
+```
+/untimeout <member> [reason]
+```
+
+**Access:** Requires **Timeout Members** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `member` | user | Yes | The timed-out member |
+| `reason` | string | No | Why (audit log) |
+
+### Mod log & message archive
+
+<sub>`cogs/mod_log.py`</sub>
+
+#### `/msglog accept-terms`
+
+Server owner: agree to the retention terms and turn the archive on.
+
+```
+/msglog accept-terms [confirm]
+```
+
+**Access:** **Server owner only** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `confirm` | boolean | No | Yes, I've read /msglog terms and I accept on behalf of this server |
+
+#### `/msglog automod`
+
+Toggle AutoMod block + rule-change logging.
+
+```
+/msglog automod <enabled>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `enabled` | boolean | Yes | On = log what AutoMod blocks and any rule changes |
+
+#### `/msglog channels`
+
+Toggle channel-change logging on or off.
+
+```
+/msglog channels <enabled>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `enabled` | boolean | Yes | On = log channel create/delete/edit + permission-overwrite changes |
+
+#### `/msglog deleted`
+
+A user's recently deleted messages, from the archive.
+
+```
+/msglog deleted <user> [limit]
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `user` | user | Yes | Whose deleted messages |
+| `limit` | integer | No | How many (default 10, max 25) *(range 1–25)* |
+
+#### `/msglog disable`
+
+Turn off archiving + logging.
+
+```
+/msglog disable
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+*No parameters.*
+
+#### `/msglog enable`
+
+Turn on the message archive + mod-log.
+
+```
+/msglog enable [channel]
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `channel` | channel | No | Where delete/edit logs go (defaults to the security mod-log) *(channel types: text, announcement)* |
+
+#### `/msglog expressions`
+
+Toggle emoji/sticker create/delete/edit logging on or off.
+
+```
+/msglog expressions <enabled>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `enabled` | boolean | Yes | On = log custom emoji + sticker changes, with the image grabbed on deletion |
+
+#### `/msglog forget`
+
+Erase all identity records + stored avatars for a user ID.
+
+```
+/msglog forget <user_id>
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `user_id` | string | Yes | Numeric user ID to erase from the identity ledger |
+
+#### `/msglog history`
+
+Every recorded name, timeout and lifecycle event for a user ID.
+
+```
+/msglog history <user_id>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `user_id` | string | Yes | Numeric user ID — works for users who already left or deleted their account |
+
+#### `/msglog ignore`
+
+Toggle a channel out of delete/edit LOGGING (still archived).
+
+```
+/msglog ignore <channel>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `channel` | channel | Yes | … *(channel types: text, announcement)* |
+
+#### `/msglog media-channel`
+
+Route deleted-media re-posts to a separate channel (e.g. 18+ staff only).
+
+```
+/msglog media-channel [channel]
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `channel` | channel | No | Destination for media re-posts; omit to attach media to the log embeds again *(channel types: text, announcement)* |
+
+#### `/msglog names`
+
+Toggle nickname/username/timeout logging on or off.
+
+```
+/msglog names <enabled>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `enabled` | boolean | Yes | On = log nickname, username and timeout changes |
+
+#### `/msglog revoke-terms`
+
+Server owner: stop storing this server's data and delete what's stored.
+
+```
+/msglog revoke-terms [confirm]
+```
+
+**Access:** **Server owner only** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `confirm` | boolean | No | Yes — stop retention and permanently delete this server's archive |
+
+#### `/msglog roles`
+
+Toggle role-change logging on or off.
+
+```
+/msglog roles <enabled>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `enabled` | boolean | Yes | On = log member role add/remove + role create/delete/edit |
+
+#### `/msglog status`
+
+Archive totals + configuration.
+
+```
+/msglog status
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+*No parameters.*
+
+#### `/msglog terms`
+
+What the archive stores, and how to turn it on or off.
+
+```
+/msglog terms
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+*No parameters.*
+
+#### `/msglog voice`
+
+Toggle voice channel join/leave/move logging on or off.
+
+```
+/msglog voice <enabled>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `enabled` | boolean | Yes | On = log voice join/leave/switch to the mod-log |
+
+---
+
 ## Server setup
 
 ### Setup
@@ -1462,6 +1495,22 @@ Submit a suggestion for the server.
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `suggestion` | string | Yes | Your suggestion — be as detailed as possible |
+
+### Server info
+
+<sub>`cogs/server_info.py`</sub>
+
+#### `/server-info`
+
+Server overview — members (humans vs bots), channels, roles, features.
+
+```
+/server-info
+```
+
+**Access:** Everyone &nbsp;·&nbsp; Server only
+
+*No parameters.*
 
 ---
 
@@ -2770,15 +2819,17 @@ Open the web dashboard to configure the bot.
 
 #### `/help`
 
-Show all available commands.
+Show all available commands, or details for one.
 
 ```
-/help
+/help [command]
 ```
 
 **Access:** Everyone
 
-*No parameters.*
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `command` | string | No | A command to explain in detail (leave empty for the overview) *(autocomplete)* |
 
 ---
 
@@ -2811,22 +2862,6 @@ Show this server's automation rules.
 ```
 
 **Access:** Requires **Administrator**
-
-*No parameters.*
-
-### server_info
-
-<sub>`cogs/server_info.py`</sub>
-
-#### `/server-info`
-
-Server overview — members (humans vs bots), channels, roles, features.
-
-```
-/server-info
-```
-
-**Access:** Everyone &nbsp;·&nbsp; Server only
 
 *No parameters.*
 
