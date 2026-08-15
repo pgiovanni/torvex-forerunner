@@ -43,7 +43,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 MSG_DB = os.path.join(ROOT, "messages.db")
-STATS_DB = os.path.join(ROOT, "stats.db")
+# Shared with cogs/stats.py and READ by the dashboard, so it can live outside
+# the bot dir (/var/lib/torvex, group torvexcfg) — same arrangement as
+# role_menus.db. Unset = the old in-repo path.
+STATS_DB = os.environ.get("TORVEX_STATS_DB") or os.path.join(ROOT, "stats.db")
 
 # ---- chart chrome (Discord dark chat surface + ink tokens) ----
 SURFACE = "#313338"

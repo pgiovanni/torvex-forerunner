@@ -44,7 +44,12 @@ from utils.security_config import get_config, set_config  # noqa: E402
 
 log = logging.getLogger("stats")
 
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "stats.db"))
+# The dashboard renders its stats pages straight from this file, so it lives
+# where the dashboard user can read it (/var/lib/torvex, group torvexcfg) —
+# the role_menus.db arrangement. Unset = the old in-repo path. cogs/activity.py
+# (voice_sessions) reads the same variable; keep them in step.
+DB_PATH = os.environ.get("TORVEX_STATS_DB") or os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "stats.db"))
 FLUSH_SECONDS = 60
 
 # Backfill crawl tuning. 100 is Discord's per-request maximum for channel
@@ -56,10 +61,25 @@ CHECKPOINT_EVERY = 5000          # messages seen between progress writes
 SUMMARY_MINUTES = 10             # how often per-guild totals are republished
 
 
+def utc_day(ts=None) -> str:
+    """The day bucket every table here is keyed by. UTC on purpose: a bucket
+    that moved with a server's timezone setting would re-key history every time
+    the setting changed. The dashboard says 'UTC' next to its charts."""
+    return time.strftime("%Y-%m-%d", time.gmtime(ts))
+
+
+def human_count(members) -> int:
+    """How many of these members are people. `guild.member_count` counts apps
+    as members, which inflated every headline figure this server ever quoted
+    (see /server-info); the dashboard's Members chart plots both."""
+    return sum(1 for m in members if not getattr(m, "bot", False))
+
+
 class Stats(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._pending = Counter()  # (day, guild_id, channel_id, user_id) -> count
+        self._members = Counter()  # (day, guild_id, 'joins'|'leaves') -> count
         with self._conn() as c:
             c.execute(
                 """CREATE TABLE IF NOT EXISTS message_counts (
@@ -72,6 +92,21 @@ class Stats(commands.Cog):
                    )"""
             )
             c.execute("CREATE INDEX IF NOT EXISTS idx_mc_guild_day ON message_counts(guild_id, day)")
+            # One row per guild per day: how many people arrived and left, and
+            # how big the server was when last looked at. Feeds the dashboard's
+            # Members chart (Statbot parity). Joins/leaves exclude bots, like
+            # message counts; the size columns keep both so the gap is visible.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS member_daily (
+                       day           TEXT,
+                       guild_id      TEXT,
+                       joins         INTEGER NOT NULL DEFAULT 0,
+                       leaves        INTEGER NOT NULL DEFAULT 0,
+                       members_total INTEGER,
+                       members_human INTEGER,
+                       PRIMARY KEY (day, guild_id)
+                   )"""
+            )
 
     def _conn(self):
         c = sqlite3.connect(DB_PATH, timeout=30)
@@ -114,10 +149,29 @@ class Stats(commands.Cog):
         parent = getattr(message.channel, "parent_id", None) or message.channel.id
         if not self._tracked(message.guild.id, parent):
             return
-        day = time.strftime("%Y-%m-%d", time.gmtime())
-        self._pending[(day, str(message.guild.id), str(parent), str(message.author.id))] += 1
+        self._pending[(utc_day(), str(message.guild.id), str(parent), str(message.author.id))] += 1
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        if member.bot:
+            return
+        if get_config(member.guild.id).get("stats_enabled", 1):
+            self._members[(utc_day(), str(member.guild.id), "joins")] += 1
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member):
+        # leave, kick and ban all land here — the Members chart wants departures,
+        # and the reason is mod_log's business, not a count's
+        if member.bot:
+            return
+        if get_config(member.guild.id).get("stats_enabled", 1):
+            self._members[(utc_day(), str(member.guild.id), "leaves")] += 1
 
     def _flush(self):
+        self._flush_messages()
+        self._flush_members()
+
+    def _flush_messages(self):
         if not self._pending:
             return
         items = list(self._pending.items())
@@ -138,6 +192,56 @@ class Stats(commands.Cog):
                 self._pending[k] += n
             log.warning("stats flush failed, re-queued %d rows: %s", len(items), e)
 
+    def _flush_members(self):
+        if not self._members:
+            return
+        items = list(self._members.items())
+        self._members.clear()
+        per_day = {}                                   # (day, gid) -> [joins, leaves]
+        for (day, gid, kind), n in items:
+            jl = per_day.setdefault((day, gid), [0, 0])
+            jl[0 if kind == "joins" else 1] += n
+        try:
+            with self._conn() as c:
+                c.executemany(
+                    """INSERT INTO member_daily(day, guild_id, joins, leaves)
+                       VALUES (?,?,?,?)
+                       ON CONFLICT(day, guild_id)
+                       DO UPDATE SET joins = joins + excluded.joins,
+                                     leaves = leaves + excluded.leaves""",
+                    [(d, g, j, l) for (d, g), (j, l) in per_day.items()],
+                )
+        except Exception as e:
+            for k, n in items:
+                self._members[k] += n
+            log.warning("member_daily flush failed, re-queued: %s", e)
+
+    def _snapshot_members(self):
+        """Stamp today's row for every guild with how big it is right now.
+
+        Runs on the summary loop, not on every flush — the size only needs to be
+        right by end of day, and counting humans means walking the member cache
+        (fine every ten minutes, wasteful every sixty seconds). Snapshotting
+        UPDATEs only the size columns so it can never wipe the joins/leaves that
+        _flush_members has been accumulating into the same row.
+        """
+        today = utc_day()
+        rows = []
+        for g in self.bot.guilds:
+            if not get_config(g.id).get("stats_enabled", 1):
+                continue
+            rows.append((today, str(g.id), g.member_count or 0, human_count(g.members)))
+        if not rows:
+            return
+        with self._conn() as c:
+            c.executemany(
+                """INSERT INTO member_daily(day, guild_id, members_total, members_human)
+                   VALUES (?,?,?,?)
+                   ON CONFLICT(day, guild_id)
+                   DO UPDATE SET members_total = excluded.members_total,
+                                 members_human = excluded.members_human""",
+                rows)
+
     @tasks.loop(seconds=FLUSH_SECONDS)
     async def flusher(self):
         self._flush()
@@ -154,6 +258,10 @@ class Stats(commands.Cog):
         than on every flush — the figure it feeds is a size estimate on a
         settings page, which does not need to be up to the second.
         """
+        try:
+            self._snapshot_members()
+        except sqlite3.Error as e:
+            log.warning("member snapshot failed: %s", e)
         try:
             with self._conn() as c:
                 rows = c.execute(
@@ -218,7 +326,7 @@ class Stats(commands.Cog):
         """
         cfg = get_config(guild.id)
         ignore = {str(x) for x in (cfg.get("stats_ignore_channels") or [])}
-        today = time.strftime("%Y-%m-%d", time.gmtime())
+        today = utc_day()
         cursor = {}
         if job.get("cursor"):
             try:
