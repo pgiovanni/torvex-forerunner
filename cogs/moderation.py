@@ -523,23 +523,32 @@ class Moderation(commands.Cog):
         await interaction.followup.send(embed=embed)  # public confirmation
         await interaction.followup.send("✅ Done.", ephemeral=True)
 
-    @app_commands.command(name="lock", description="Lock a channel — members can't talk in it until /unlock.")
+    @app_commands.command(name="lock", description="Lock a channel for ALL roles — nobody talks until /unlock (exempt roles to allow).")
     @app_commands.describe(
         channel="The channel to lock (default: this one)",
         reason="Why it's being locked (shown in the channel and the audit log)",
+        exempt="A role that can still talk while locked (e.g. staff)",
+        exempt2="Another role that can still talk",
+        exempt3="Another role that can still talk",
     )
     @app_commands.default_permissions(manage_channels=True)
     @app_commands.checks.has_permissions(manage_channels=True)
     @app_commands.guild_only()
     async def lock(self, interaction: discord.Interaction,
-                   channel: LockableChannel = None, reason: str = None):
-        """Denies send_messages (+ threads; + connect/speak on voice) to
-        @everyone in ONE channel. Roles with an explicit allow overwrite in the
-        channel — usually staff — keep talking, which is the point.
+                   channel: LockableChannel = None, reason: str = None,
+                   exempt: discord.Role = None, exempt2: discord.Role = None,
+                   exempt3: discord.Role = None):
+        """Denies the talk perms (+ connect/speak on voice) to @everyone AND
+        every role/member overwrite in the channel — a role's channel allow
+        does not survive the lock. Exempt roles get an explicit allow instead,
+        so "staff can still talk" is the mod's choice, not an accident.
+        Administrators bypass overwrites entirely and always keep talking.
 
-        The pre-lock @everyone tri-states are snapshotted to channel_locks.db
+        Every pre-lock tri-state we touch is snapshotted to channel_locks.db
         so /unlock restores what was actually there, not "neutral": a channel
-        that already carried a deny must not come out of the cycle open."""
+        that already carried a deny must not come out of the cycle open. The
+        snapshot is saved BEFORE applying, so a half-applied lock is always
+        rolled back by /unlock."""
         await interaction.response.defer(ephemeral=True)
         guild, me = interaction.guild, interaction.guild.me
         channel = channel or interaction.channel
@@ -560,53 +569,94 @@ class Moderation(commands.Cog):
                 f"⚠️ {channel.mention} is already locked. Use `/unlock` first.", ephemeral=True)
             return
 
+        exempts = {r.id: r for r in (exempt, exempt2, exempt3)
+                   if r is not None and r != guild.default_role}
         perms = _lock_perm_names(channel)
-        ow_e = channel.overwrites_for(guild.default_role)
+
+        # the bot's own allow, so the lock can never silence the announcement
+        # below (member overwrites beat role denies, so this always wins)
         ow_m = channel.overwrites_for(me)
-        prev = channel_locks.pack_prev(
-            {p: getattr(ow_e, p) for p in perms},
-            {"send_messages": ow_m.send_messages},
-        )
+        me_prev = {"send_messages": ow_m.send_messages}
+        ow_m.send_messages = True
+
+        targets = {}                      # snapshot: key -> {perm: tri-state}
+        work = []                         # [(discord target, new overwrite)]
+
+        ow_e = channel.overwrites_for(guild.default_role)
+        targets["everyone"] = {p: getattr(ow_e, p) for p in perms}
+        for p in perms:
+            setattr(ow_e, p, False)
+
+        for tgt, ow in channel.overwrites.items():
+            if isinstance(tgt, discord.Role):
+                if tgt == guild.default_role or tgt.id in exempts:
+                    continue
+                key = f"role:{tgt.id}"
+            elif isinstance(tgt, discord.Member):
+                if tgt.id == me.id:
+                    continue
+                key = f"member:{tgt.id}"
+            else:
+                continue   # overwrite for a deleted role/member — leave it be
+            snap = {p: getattr(ow, p) for p in perms}
+            if all(v is False for v in snap.values()):
+                continue   # already fully denied — nothing to change or restore
+            targets[key] = snap
+            for p in perms:
+                setattr(ow, p, False)
+            work.append((tgt, ow))
+
+        for r in exempts.values():
+            ow = channel.overwrites_for(r)
+            targets[f"role:{r.id}"] = {p: getattr(ow, p) for p in perms}
+            for p in perms:
+                setattr(ow, p, True)
+            work.append((r, ow))
+
+        # saved BEFORE applying: a failure partway through leaves a row that
+        # /unlock can use to roll everything back to the snapshot
+        channel_locks.save_lock(guild.id, channel.id, interaction.user.id,
+                                str(interaction.user), reason,
+                                channel_locks.pack_prev(targets, me_prev))
 
         audit = f"/lock by {interaction.user} ({interaction.user.id}): {reason or 'No reason provided'}"
         try:
-            # the bot's own allow goes in FIRST so the lock can never silence
-            # the announcement below (the bot may have no perms beyond @everyone)
-            ow_m.send_messages = True
             await channel.set_permissions(me, overwrite=ow_m, reason=audit)
-            for p in perms:
-                setattr(ow_e, p, False)
             await channel.set_permissions(guild.default_role, overwrite=ow_e, reason=audit)
-        except (discord.Forbidden, discord.HTTPException) as e:
-            # best effort: don't leave the stray bot allow behind
-            try:
-                ow_m.send_messages = channel_locks.unpack_prev(prev)["me"]["send_messages"]
+            for tgt, ow in work:
                 await channel.set_permissions(
-                    me, overwrite=None if ow_m.is_empty() else ow_m, reason="lock failed — reverting")
-            except discord.HTTPException:
-                pass
+                    tgt, overwrite=None if ow.is_empty() else ow, reason=audit)
+        except (discord.Forbidden, discord.HTTPException) as e:
             what = ("Discord refused — I need **Manage Permissions** on that channel."
                     if isinstance(e, discord.Forbidden) else f"Lock failed: {e}")
-            await interaction.followup.send(f"❌ {what}", ephemeral=True)
+            await interaction.followup.send(
+                f"❌ {what}\nThe lock may be partly applied — run `/unlock` to roll it back.",
+                ephemeral=True)
             return
-
-        channel_locks.save_lock(guild.id, channel.id, interaction.user.id,
-                                str(interaction.user), reason, prev)
 
         embed = discord.Embed(
             title="🔒 Channel locked",
             color=0xE8A33D,
-            description=f"{channel.mention} is locked — members can't talk here until a mod runs `/unlock`.",
+            description=f"{channel.mention} is locked — nobody can talk here until a mod runs `/unlock`.",
         )
         embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+        if exempts:
+            embed.add_field(name="Can still talk",
+                            value=" ".join(r.mention for r in exempts.values()), inline=False)
         embed.set_footer(text=f"Locked by {interaction.user.display_name}")
         if hasattr(channel, "send"):   # forum channels have no .send
             try:
-                await channel.send(embed=embed)
+                await channel.send(embed=embed,
+                                   allowed_mentions=discord.AllowedMentions.none())
             except (discord.Forbidden, discord.HTTPException):
                 pass
         await _mod_log(self.bot, guild, _mod_cfg(guild.id), embed)
-        await interaction.followup.send(f"🔒 Locked {channel.mention}.", ephemeral=True)
+        n_denied = len(work) - len(exempts)
+        await interaction.followup.send(
+            f"🔒 Locked {channel.mention} — @everyone plus **{n_denied}** role/member "
+            f"override{'' if n_denied == 1 else 's'} denied"
+            + (f", **{len(exempts)}** exempt." if exempts else "."),
+            ephemeral=True)
 
     @app_commands.command(name="unlock", description="Unlock a locked channel and restore its previous permissions.")
     @app_commands.describe(
@@ -633,34 +683,54 @@ class Moderation(commands.Cog):
 
         row = channel_locks.get_lock(guild.id, channel.id)
         perms = _lock_perm_names(channel)
-        ow_e = channel.overwrites_for(guild.default_role)
-        ow_m = channel.overwrites_for(me)
         note = ""
+        audit = f"/unlock by {interaction.user} ({interaction.user.id}): {reason or 'No reason provided'}"
+
+        # (target, {perm: tri-state}) pairs to restore
+        restores = []
         if row:
-            for p, v in row["prev"]["everyone"].items():
-                setattr(ow_e, p, v)
-            for p, v in row["prev"]["me"].items():
-                setattr(ow_m, p, v)
+            for key, snap in row["prev"]["targets"].items():
+                if key == "everyone":
+                    tgt = guild.default_role
+                elif key.startswith("role:"):
+                    tgt = guild.get_role(int(key.split(":", 1)[1]))
+                elif key.startswith("member:"):
+                    tgt = guild.get_member(int(key.split(":", 1)[1]))
+                else:
+                    tgt = None
+                if tgt is not None:   # a deleted role/member's overwrite died with it
+                    restores.append((tgt, snap))
+            restores.append((me, row["prev"]["me"]))
         else:
             # locked by hand, or before the state store existed — neutral reset
-            for p in perms:
-                setattr(ow_e, p, None)
-            ow_m.send_messages = None
+            restores.append((guild.default_role, {p: None for p in perms}))
+            restores.append((me, {"send_messages": None}))
             note = "\n*(No saved lock state for this channel — reset the lock permissions to neutral.)*"
 
-        audit = f"/unlock by {interaction.user} ({interaction.user.id}): {reason or 'No reason provided'}"
-        try:
-            await channel.set_permissions(
-                guild.default_role, overwrite=None if ow_e.is_empty() else ow_e, reason=audit)
-            await channel.set_permissions(
-                me, overwrite=None if ow_m.is_empty() else ow_m, reason=audit)
-        except discord.Forbidden:
+        done, failed = 0, []
+        for tgt, snap in restores:
+            ow = channel.overwrites_for(tgt)
+            for p, v in snap.items():
+                setattr(ow, p, v)
+            try:
+                await channel.set_permissions(
+                    tgt, overwrite=None if ow.is_empty() else ow, reason=audit)
+                done += 1
+            except discord.Forbidden:
+                failed.append(getattr(tgt, "name", str(tgt)))
+                break   # a permission problem won't fix itself target-to-target
+            except discord.HTTPException:
+                failed.append(getattr(tgt, "name", str(tgt)))
+
+        if failed and not done:
             await interaction.followup.send(
-                "❌ Discord refused — I need **Manage Permissions** on that channel.", ephemeral=True)
+                "❌ Discord refused — I need **Manage Permissions** on that channel. "
+                "The lock record was kept; run `/unlock` again once I have it.",
+                ephemeral=True)
             return
-        except discord.HTTPException as e:
-            await interaction.followup.send(f"❌ Unlock failed: {e}", ephemeral=True)
-            return
+        if failed:
+            note += ("\n⚠️ Couldn't restore: " + ", ".join(failed[:10])
+                     + " — check the channel's permission overrides by hand.")
 
         channel_locks.clear_lock(guild.id, channel.id)
 

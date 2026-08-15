@@ -24,13 +24,24 @@ def main():
     db = os.path.join(tempfile.mkdtemp(), "locks_test.db")
 
     # tri-state round trip — the null (=inherit) surviving is the whole point
-    prev = cl.pack_prev({"send_messages": None, "create_public_threads": False,
-                         "send_messages_in_threads": True}, {"send_messages": None})
+    prev = cl.pack_prev(
+        {"everyone": {"send_messages": None, "create_public_threads": False},
+         "role:123": {"send_messages": True},
+         "member:456": {"send_messages": False}},
+        {"send_messages": None})
     out = cl.unpack_prev(prev)
-    check("None survives json round trip", out["everyone"]["send_messages"] is None)
-    check("False survives", out["everyone"]["create_public_threads"] is False)
-    check("True survives", out["everyone"]["send_messages_in_threads"] is True)
+    check("None survives json round trip", out["targets"]["everyone"]["send_messages"] is None)
+    check("False survives", out["targets"]["everyone"]["create_public_threads"] is False)
+    check("role target round trips", out["targets"]["role:123"]["send_messages"] is True)
+    check("member target round trips", out["targets"]["member:456"]["send_messages"] is False)
     check("me scope round trips", out["me"]["send_messages"] is None)
+
+    # v1 rows (@everyone-only locks from 2026-08-14) lift into the targets shape
+    v1 = '{"everyone": {"send_messages": null, "connect": false}, "me": {"send_messages": true}}'
+    out = cl.unpack_prev(v1)
+    check("v1 lifts to targets", out["targets"]["everyone"]["connect"] is False)
+    check("v1 keeps tri-state", out["targets"]["everyone"]["send_messages"] is None)
+    check("v1 me survives", out["me"]["send_messages"] is True)
 
     # save / get / clear
     check("no lock yet", cl.get_lock(1, 10, db=db) is None)
@@ -39,7 +50,7 @@ def main():
     check("lock stored", row is not None)
     check("who", row["locked_by"] == 999 and row["locked_by_name"] == "mod#1")
     check("reason", row["reason"] == "raid")
-    check("prev restored through storage", row["prev"]["everyone"]["send_messages"] is None)
+    check("prev restored through storage", row["prev"]["targets"]["everyone"]["send_messages"] is None)
     check("ts present", isinstance(row["locked_ts"], int) and row["locked_ts"] > 0)
 
     # guild scoping — same channel id in another guild is NOT the same lock

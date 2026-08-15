@@ -271,7 +271,7 @@
     },
     {
       "name": "lock",
-      "description": "Lock a channel — members can't talk until /unlock (mod)",
+      "description": "Lock a channel for all roles — exempted roles can still talk (mod)",
       "cog": "moderation",
       "required_permissions": [
         "manage_channels"

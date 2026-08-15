@@ -44,15 +44,21 @@ def _conn(db=None):
     return c
 
 
-def pack_prev(everyone: dict, me: dict) -> str:
-    """Serialize the pre-lock tri-states. Values must be True/False/None."""
-    return json.dumps({"everyone": everyone, "me": me})
+def pack_prev(targets: dict, me: dict) -> str:
+    """Serialize the pre-lock tri-states. `targets` maps a target key —
+    "everyone", "role:<id>" or "member:<id>" — to {perm: True/False/None};
+    `me` is the bot's own member overwrite ditto."""
+    return json.dumps({"v": 2, "targets": targets, "me": me})
 
 
 def unpack_prev(raw: str) -> dict:
-    """Inverse of pack_prev. json null round-trips back to None (=inherit)."""
+    """Inverse of pack_prev. json null round-trips back to None (=inherit).
+    v1 rows (2026-08-14, @everyone-only locks) had {"everyone": ..., "me": ...}
+    and are lifted into the targets shape so unlock has one code path."""
     out = json.loads(raw)
-    return {"everyone": out.get("everyone", {}), "me": out.get("me", {})}
+    if "targets" not in out:
+        out = {"targets": {"everyone": out.get("everyone", {})}, "me": out.get("me", {})}
+    return {"targets": out.get("targets", {}), "me": out.get("me", {})}
 
 
 def save_lock(guild_id: int, channel_id: int, locked_by: int, locked_by_name: str,
