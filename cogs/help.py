@@ -6,6 +6,7 @@ mentioned the security suite at all. So the honest path for a new owner was
 /help -> /setup -> error -> give up, while the working configuration surface
 (the dashboard) was invisible unless someone told you it existed.
 """
+import json
 import logging
 import os
 import sys
@@ -18,6 +19,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.links import (  # noqa: E402
     DASHBOARD_URL, SUPPORT_INVITE, config_view, dashboard_url, invite_url,
 )
+from utils.command_sections import (  # noqa: E402
+    FRIENDLY, SECTIONS, SECTION_ICONS, section_of,
+)
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DOCS_URL = os.environ.get("COMMAND_DOCS_URL", DASHBOARD_URL.rstrip("/") + "/docs/commands")
 
 log = logging.getLogger("help")
 
@@ -28,91 +35,131 @@ class Help(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="Show all available commands.")
-    async def help(self, interaction: discord.Interaction):
+    # ------------------------------------------------------------------ /help
+    # Built from the LIVE command tree, not prose: a hand-written list drifted
+    # within weeks (it never mentioned /activity, /server-info, /lock, /invite,
+    # /ask…). Grouping comes from utils/command_sections.py — the same table
+    # the docs generator uses — and cog ownership from commands.json, the same
+    # manifest bot.py loads cogs from. Nothing here can name a command that
+    # doesn't exist, and a new cog shows up the moment it's registered.
+    def _manifest(self):
+        try:
+            with open(os.path.join(ROOT, "commands.json"), encoding="utf-8") as fh:
+                data = json.load(fh)
+            return {c["name"]: c for c in data.get("commands", []) if c.get("name")}
+        except (OSError, ValueError):
+            return {}
+
+    def _roots(self):
+        """Top-level slash commands, sorted, context menus excluded."""
+        out = []
+        for c in self.bot.tree.get_commands():
+            if isinstance(c, (app_commands.Command, app_commands.Group)):
+                out.append(c)
+        return sorted(out, key=lambda c: c.name)
+
+    def _grouped(self):
+        man = self._manifest()
+        buckets = {}
+        for c in self._roots():
+            cog = (man.get(c.name) or {}).get("cog", "?")
+            buckets.setdefault(section_of(cog), []).append(c)
+        order = [t for t, _ in SECTIONS] + ["Other"]
+        return [(t, buckets[t]) for t in order if buckets.get(t)]
+
+    @staticmethod
+    def _sig(cmd, prefix=""):
+        """/root sub <required> [optional] — the shape Discord's picker shows."""
+        parts = [f"/{prefix}{cmd.qualified_name}"]
+        for p in getattr(cmd, "parameters", []):
+            parts.append(f"<{p.name}>" if p.required else f"[{p.name}]")
+        return " ".join(parts)
+
+    @staticmethod
+    def _leaves(cmd):
+        if isinstance(cmd, app_commands.Group):
+            out = []
+            for sub in cmd.commands:
+                out.extend(Help._leaves(sub))
+            return out
+        return [cmd]
+
+    @app_commands.command(name="help", description="Show all available commands, or details for one.")
+    @app_commands.describe(command="A command to explain in detail (leave empty for the overview)")
+    async def help(self, interaction: discord.Interaction, command: str = None):
         gid = interaction.guild.id if interaction.guild else None
+        if command:
+            return await self._help_one(interaction, command.lstrip("/").strip().lower(), gid)
+
+        groups = self._grouped()
+        total = sum(len(self._leaves(c)) for _, cs in groups for c in cs)
         embed = discord.Embed(
             title="🐸 Peepo's Reclaimer — Commands",
-            description=f"Here's everything the bot can do. Use `/` to get started.\n\n"
-                        f"⚙️ **Configure everything at [{DASHBOARD_URL.split('//')[1]}]"
-                        f"({dashboard_url(gid)})** — every setting below, in one place.",
-            color=0x5865F2
-        )
-
-        # Security first: it's the reason most servers add the bot, and it was
-        # the section /help never had.
-        embed.add_field(
-            name="🛡️ Security — `/security` *(Admin)*",
-            value="**Free.** Anti-Nuke (mass ban/delete protection), AltGuard (alt + VPN "
-                  "detection), LinkGuard (IP-grabber and canary links), and quarantine "
-                  "lockdown.\n`/security setup` wires it up in one command · `/security status` "
-                  "to check · `/security audit` scans your roles for dangerous permissions.",
-            inline=False
-        )
-        embed.add_field(
-            name="📜 Mod Logs — `/msglog` *(Manage Server)*",
-            value="Deletions with who-deleted-them, edit history, member and role changes. "
-                  "`/msglog enable` to start · `/msglog terms` for what gets stored.",
-            inline=False
-        )
-        embed.add_field(
-            name="🔨 Moderation — `/ban` `/kick` `/timeout` `/prune-messages`",
-            value="Standard moderation, gated on real Discord permissions.",
-            inline=False
-        )
-        embed.add_field(
-            name="🎭 Reaction Roles — `/rolemenu` *(Manage Roles)*",
-            value="Button panels members click to give themselves roles.\n"
-                  "**`/rolemenu template`** builds a whole set in one go — pronouns, age, "
-                  "regions, colours, notifications, platforms, DM preference — and creates any "
-                  "roles you don't have yet. Any emoji works, including your own.",
-            inline=False
-        )
-        embed.add_field(
-            name="⚙️ Automation — `/automation` *(Admin)*",
-            value="Roles granted automatically on join, plus welcome and goodbye messages. "
-                  "Separate from reaction roles: this is what the bot does *to* a member, "
-                  "not what they pick for themselves.",
-            inline=False
-        )
-        embed.add_field(
-            name="⚔️ RPG — `/rpg`",
-            value="Fight monsters, level up, earn orbs, craft gear, fish, mine, and more. "
-                  "Full Torvex Lescala RPG experience.",
-            inline=False
-        )
-        embed.add_field(
-            name="🐸 Peepo Collectibles — `/peepo`",
-            value="Collect and trade rare Peepo emotes. Browse the shop, check your "
-                  "collection, or hit the marketplace.",
-            inline=False
-        )
-        embed.add_field(
-            name="💰 Economy & Levels — `/economy` `/rank` `/chat-levels`",
-            value="Earn Peepo Bucks by chatting, climb the leaderboard, and unlock level roles.",
-            inline=False
-        )
-        embed.add_field(
-            name="🎮 Games — `/fun` `/games` `/wordle` `/chess` `/pvp` `/gear`",
-            value="Roast someone, play 8ball, Tic Tac Toe, Connect 4, Wordle, chess, or duel "
-                  "another member. `/gear` browses the item and monster dictionary.",
-            inline=False
-        )
-        embed.add_field(
-            name="🤝 Social — `/gift` `/trade` `/suggest`",
-            value="Gift coins, trade RPG items, or submit a suggestion for the server.",
-            inline=False
-        )
-        embed.add_field(
-            name="⚙️ Channels — `/setup` *(Admin)*",
-            value="Set channels for status, RPG, loot drops, suggestions, welcome and mod logs. "
-                  f"The [dashboard]({dashboard_url(gid)}) does the same thing with menus.",
-            inline=False
-        )
-
-        embed.set_footer(text=f"Questions? Join Peepo's Redemption — {SUPPORT_INVITE}")
+            description=(f"**{total} commands** in {len(groups)} groups. "
+                         f"`/help command:<name>` explains one; the full reference with every "
+                         f"option is at **[{DOCS_URL.split('//')[1]}]({DOCS_URL})**.\n"
+                         f"⚙️ Configure everything at **[{DASHBOARD_URL.split('//')[1]}]"
+                         f"({dashboard_url(gid)})**."),
+            color=0x5865F2)
+        for title, cmds in groups:
+            names = []
+            for c in cmds:
+                n = len(self._leaves(c))
+                names.append(f"`/{c.name}`" + (f" ({n})" if n > 1 else ""))
+            value = " · ".join(names)
+            if len(value) > 1000:                       # embed field cap is 1024
+                value = value[:990].rsplit(" · ", 1)[0] + " · …"
+            embed.add_field(name=f"{SECTION_ICONS.get(title, '📦')} {title}",
+                            value=value, inline=False)
+        embed.set_footer(text=f"(n) = subcommands · Questions? {SUPPORT_INVITE}")
         await interaction.response.send_message(
             embed=embed, view=config_view(gid), ephemeral=True)
+
+    async def _help_one(self, interaction, name, gid):
+        root = next((c for c in self._roots() if c.name == name), None)
+        if root is None:
+            # maybe they typed a subcommand path: "activity user"
+            first = name.split(" ")[0]
+            root = next((c for c in self._roots() if c.name == first), None)
+        if root is None:
+            await interaction.response.send_message(
+                f"No command called `/{name}`. Try `/help` for the list.", ephemeral=True)
+            return
+        man = self._manifest().get(root.name, {})
+        cog = man.get("cog", "?")
+        embed = discord.Embed(
+            title=f"/{root.name}",
+            description=root.description or "—",
+            color=0x5865F2)
+        embed.add_field(name="Group", value=f"{FRIENDLY.get(cog, cog)} · {section_of(cog)}",
+                        inline=True)
+        perms = man.get("required_permissions") or []
+        if perms:
+            embed.add_field(name="Needs", value=", ".join(p.replace("_", " ").title() for p in perms),
+                            inline=True)
+        leaves = self._leaves(root)
+        lines = []
+        for leaf in leaves:
+            line = f"`{self._sig(leaf)}`"
+            if leaf.description and leaf is not root:
+                line += f" — {leaf.description}"
+            lines.append(line)
+        # parameters of a single command get their own explanations
+        if len(leaves) == 1 and getattr(root, "parameters", None):
+            for p in root.parameters:
+                lines.append(f"• `{p.name}`{'' if p.required else ' *(optional)*'} — {p.description or '—'}")
+        text = "\n".join(lines)
+        for i in range(0, max(len(text), 1), 1000):
+            embed.add_field(name="Usage" if i == 0 else "​", value=text[i:i + 1000] or "—", inline=False)
+        embed.set_footer(text=f"Full reference: {DOCS_URL}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @help.autocomplete("command")
+    async def _help_ac(self, interaction: discord.Interaction, current: str):
+        cur = current.lstrip("/").lower()
+        names = [c.name for c in self._roots()]
+        hits = [n for n in names if n.startswith(cur)] + [n for n in names if cur in n and not n.startswith(cur)]
+        return [app_commands.Choice(name=f"/{n}", value=n) for n in hits[:25]]
 
     @app_commands.command(name="dashboard", description="Open the web dashboard to configure the bot.")
     async def dashboard_cmd(self, interaction: discord.Interaction):
