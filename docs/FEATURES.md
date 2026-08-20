@@ -1,4 +1,4 @@
-# Peepo's Reclaimer — Feature Index
+# Torvex Forerunner — Feature Index
 
 All-in-one Discord bot. Moderation, security, events, and Torvex Lescala integration.
 

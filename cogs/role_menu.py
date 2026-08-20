@@ -440,7 +440,7 @@ class RoleMenu(commands.Cog):
                 return
             if role >= interaction.guild.me.top_role:
                 await interaction.followup.send(
-                    f"{role.mention} is above my top role — move **Peepo's Reclaimer** higher or I can't assign it.", ephemeral=True)
+                    f"{role.mention} is above my top role — move **Torvex Forerunner** higher or I can't assign it.", ephemeral=True)
                 return
             c.execute("INSERT INTO panel_roles(panel_id,role_id,label,emoji,pos) VALUES(?,?,?,?,?)",
                       (panel, str(role.id), label or role.name, emoji, n))

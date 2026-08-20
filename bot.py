@@ -96,7 +96,7 @@ async def on_ready():
         except Exception as e:
             print(f"[WARN] Peepo auto-sync failed: {e}")
 
-    await _post_status("✅ Peepo's Reclaimer is back online and ready!")
+    await _post_status("✅ Torvex Forerunner is back online and ready!")
 
 async def _post_status(msg: str):
     """Post a status message to every guild's configured status channel."""

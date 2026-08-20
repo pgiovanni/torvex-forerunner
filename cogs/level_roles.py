@@ -426,7 +426,7 @@ class LevelRoles(commands.Cog):
     async def set_reward(self, interaction: discord.Interaction, level: int, role: discord.Role):
         if role >= interaction.guild.me.top_role:
             await interaction.response.send_message(
-                f"{role.mention} is above my top role — move **Peepo's Reclaimer** higher first.", ephemeral=True)
+                f"{role.mention} is above my top role — move **Torvex Forerunner** higher first.", ephemeral=True)
             return
         await self.pool.execute("""
             INSERT INTO level_roles (guild_id, level, role_id) VALUES ($1, $2, $3)

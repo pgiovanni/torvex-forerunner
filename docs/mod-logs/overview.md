@@ -13,7 +13,7 @@ mod-log replaces the three third-party log bots running today.**
 | `#mod-logs-2` | **Carl-bot Logging** | role add/remove (the bulk of volume), join/leave, message deleted (no WHO), voice join/leave, name/nick changes, bans, role/channel create/delete, server updates, timeouts |
 | `#mod-logs-3` | **Quark** | the gold standard: message edited (before/after), **Message Deleted vs modDelete = attributed mod deletion**, mention flag on deleted msgs, reaction removed, role given/taken, join/leave, kick/ban, voice join/leave w/ mute state, boosts, role/channel permission diffs, nickname, streams |
 | `#modlogs` | Wick (dead since 6/20) | old quarantine/kick/automod-filter logs |
-| `#torvex-mod-logs` | **Peepo's Reclaimer** | security suite alerts (AltGuard, LinkGuard, anti-nuke, verify-prune, recon) |
+| `#torvex-mod-logs` | **Torvex Forerunner** | security suite alerts (AltGuard, LinkGuard, anti-nuke, verify-prune, recon) |
 
 Quark's differentiators we must match: audit-log delete attribution, before/after
 edits, and (ours goes further) **re-posting the actual deleted media** — Quark

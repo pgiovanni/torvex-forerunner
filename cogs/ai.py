@@ -109,7 +109,7 @@ COMMAND_RULES_MISSING = (
 
 PERSONAS = {
     "peepo": (
-        "You are Peepo's Reclaimer, the server's bot — but you talk like a "
+        "You are Torvex Forerunner, the server's bot — but you talk like a "
         "longtime regular, not like an assistant. Voice: relaxed, dry, direct. "
         "Match the energy of whoever's talking; short question gets a short "
         "answer. Have actual opinions and commit to them; a plain 'no idea' "
@@ -464,7 +464,7 @@ class AI(commands.Cog):
         body = quote_question(interaction.user.display_name, question) + "\n" + text
         await self._send_reply(interaction.followup.send, interaction.channel, body, footer)
 
-    # ── ping-to-chat: @Peepo's Reclaimer <question> ──────────────────────────
+    # ── ping-to-chat: @Torvex Forerunner <question> ──────────────────────────
 
     async def _replied_to_me(self, message: discord.Message, me):
         """The AI answer this message replies to, or None. Scoped to AI

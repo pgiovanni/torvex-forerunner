@@ -94,7 +94,7 @@ class Help(commands.Cog):
         groups = self._grouped()
         total = sum(len(self._leaves(c)) for _, cs in groups for c in cs)
         embed = discord.Embed(
-            title="🐸 Peepo's Reclaimer — Commands",
+            title="🐸 Torvex Forerunner — Commands",
             description=(f"**{total} commands** in {len(groups)} groups. "
                          f"`/help command:<name>` explains one; the full reference with every "
                          f"option is at **[{DOCS_URL.split('//')[1]}]({DOCS_URL})**.\n"
@@ -182,10 +182,10 @@ class Help(commands.Cog):
         await interaction.response.send_message(
             embed=embed, view=config_view(gid), ephemeral=True)
 
-    @app_commands.command(name="add-bot", description="Add Peepo's Reclaimer to your server.")
+    @app_commands.command(name="add-bot", description="Add Torvex Forerunner to your server.")
     async def add_bot(self, interaction: discord.Interaction):
         embed = discord.Embed(
-            title="🐸 Add Peepo's Reclaimer",
+            title="🐸 Add Torvex Forerunner",
             description=f"[Invite the bot to your server]({invite_url()})\n\n"
                         f"Free security suite (Anti-Nuke, AltGuard, LinkGuard), mod logs, "
                         f"levels, the full Torvex RPG, Peepo collectibles, economy and games.\n\n"
@@ -207,7 +207,7 @@ class Help(commands.Cog):
         only prompt an owner gets that the bot needs setting up at all.
         """
         embed = discord.Embed(
-            title="🐸 Thanks for adding Peepo's Reclaimer",
+            title="🐸 Thanks for adding Torvex Forerunner",
             description=f"Everything ships **off** until you turn it on.\n\n"
                         f"⚙️ **[Configure it here]({dashboard_url(guild.id)})** — or run "
                         f"`/security setup` for the security suite and `/help` for the rest.",
