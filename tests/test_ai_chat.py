@@ -81,10 +81,6 @@ class TestQuoteQuestion(unittest.TestCase):
         self.assertTrue(q.endswith("…"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestNeedInfoSentinels(unittest.TestCase):
     """The on-demand reference protocol: the model's whole reply is a sentinel."""
 
@@ -122,3 +118,7 @@ class TestEnergyInfoBlock(unittest.TestCase):
         self.assertIn(str(BUCKS_PRICE["quick"]), block)
         self.assertIn(f"${MONTHLY_BUDGET_USD:.0f}", block)
         self.assertIn("midnight UTC", block)
+
+
+if __name__ == "__main__":
+    unittest.main()
