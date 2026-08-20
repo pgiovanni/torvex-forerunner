@@ -191,3 +191,24 @@ def test_real_generated_artifact_if_present():
     block = build_block(data)
     assert block.count("\n") == len(data["commands"])
     assert unknown_citations("/help", paths, roots) == set()
+
+
+# ── mentioned_in: the pre-gate for on-demand index attachment ────────────────
+
+def test_mentioned_in_real_command_citation():
+    idx = CommandIndex(_write(SAMPLE))
+    assert idx.mentioned_in("how do I use /ask here")
+    assert idx.mentioned_in("run /activity user @me")
+
+
+def test_mentioned_in_ignores_prose_urls_and_unknown_commands():
+    idx = CommandIndex(_write(SAMPLE))
+    assert not idx.mentioned_in("what's the weather like")
+    assert not idx.mentioned_in("this and/or that, see 8/9 notes")
+    assert not idx.mentioned_in("dashboard.torvex.app/docs/commands")
+    assert not idx.mentioned_in("try /notarealcommand maybe")
+
+
+def test_mentioned_in_missing_file_is_false():
+    idx = CommandIndex("/nonexistent/commands.json")
+    assert not idx.mentioned_in("how do I use /ask here")

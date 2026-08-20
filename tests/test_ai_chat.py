@@ -83,3 +83,25 @@ class TestQuoteQuestion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNeedCommandsSentinel(unittest.TestCase):
+    """The on-demand index protocol: the model's whole reply is the sentinel."""
+
+    def _match(self, text):
+        from cogs.ai import _NEED_COMMANDS
+        return bool(_NEED_COMMANDS.fullmatch(text.strip()))
+
+    def test_bare_sentinel_matches(self):
+        self.assertTrue(self._match("NEED_COMMANDS"))
+
+    def test_case_and_punctuation_tolerated(self):
+        self.assertTrue(self._match("need_commands."))
+        self.assertTrue(self._match("  NEED_COMMANDS!  "))
+
+    def test_sentinel_inside_prose_does_not_match(self):
+        self.assertFalse(self._match("I would reply NEED_COMMANDS but here goes"))
+        self.assertFalse(self._match("NEED_COMMANDS — the list says /rank works"))
+
+    def test_ordinary_answer_does_not_match(self):
+        self.assertFalse(self._match("Use the leaderboard to check levels."))

@@ -21,6 +21,7 @@ private/staff channels contribute no context. No database access, no archive,
 no tools. What the code doesn't fetch, no prompt injection can leak.
 """
 import os
+import re
 import sys
 import time
 import sqlite3
@@ -98,6 +99,24 @@ COMMAND_RULES = (
     "feature is switched on or off, or say which channel anything is set to. "
     "Point them at the relevant status command instead."
 )
+
+# The on-demand half of the index protocol (see _generate): most questions
+# never need the command list, so it stays in docs/commands.json instead of
+# riding along in every prompt. The sentinel is all-caps and must be the
+# entire reply so a fullmatch can catch it without ever false-firing on prose.
+COMMAND_RULES_ONDEMAND = (
+    "You do not currently have this bot's command list, but it exists and can "
+    "be loaded for you. If — and only if — answering properly requires knowing "
+    "this bot's own slash commands (exact names, arguments, who can run them, "
+    "or whether this bot has a command for something), reply with exactly "
+    "NEED_COMMANDS and nothing else; the list will be attached and the "
+    "question asked again. Never name, guess, or invent one of this bot's "
+    "commands from memory. Questions about anything else — other bots, "
+    "Discord itself, general topics — are answered normally without the list."
+)
+
+# The whole reply, give or take whitespace/punctuation, is the sentinel.
+_NEED_COMMANDS = re.compile(r"\W*need_commands\W*", re.IGNORECASE)
 
 # The honest degradation when docs/commands.json is missing: no list means the
 # model must refuse to name commands, not improvise them.
@@ -238,19 +257,22 @@ class AI(commands.Cog):
                         "name commands. Regenerate with tools/gen_command_docs.py "
                         "--json", COMMAND_DOCS_PATH)
 
-    def _system_prompt(self, character: str) -> str:
-        """Persona + hard rules + the command index.
+    def _system_prompt(self, character: str, with_commands: bool = False) -> str:
+        """Persona + hard rules, plus the command index only when asked for.
 
-        Order matters twice over. The whole string is IDENTICAL on every call —
-        the volatile parts (channel glance, the question) live in user_content —
-        so it is a stable cacheable prefix. And it sits in `system`, where a
-        member typing "ignore your command list" lands underneath it rather
-        than over it."""
+        The index lives in docs/commands.json and is attached on demand —
+        pre-gated on the question, or fetched via the NEED_COMMANDS retry in
+        _generate — so ordinary chat never pays for the ~4k-token list.
+        Volatile parts (channel glance, the question) live in user_content,
+        and the rules sit in `system`, where a member typing "ignore your
+        command list" lands underneath them rather than over them."""
         parts = [PERSONAS.get(character, PERSONAS["peepo"]), BASE_RULES]
-        if self._commands.available:
+        if not self._commands.available:
+            parts.append(COMMAND_RULES_MISSING)
+        elif with_commands:
             parts += [self._commands.block(), COMMAND_RULES]
         else:
-            parts.append(COMMAND_RULES_MISSING)
+            parts.append(COMMAND_RULES_ONDEMAND)
         return "\n\n".join(parts)
 
     # ── accounting helpers ────────────────────────────────────────────────────
@@ -360,7 +382,14 @@ class AI(commands.Cog):
                if replied_to else "")
             + f"{user.display_name} asks: {question}"
         )
-        system = self._system_prompt(character)
+        # The command index is on-demand (Paul, 8/19): attach it up front only
+        # when the question plainly cites one of this bot's commands or talks
+        # about commands; otherwise the model asks for it with the
+        # NEED_COMMANDS sentinel and the call runs once more with the list.
+        attach = self._commands.available and (
+            "command" in (question or "").lower()
+            or self._commands.mentioned_in(question))
+        system = self._system_prompt(character, with_commands=attach)
 
         try:
             result = await self.provider.chat(
@@ -378,10 +407,32 @@ class AI(commands.Cog):
         self._record(guild.id, user_id, model,
                      result.tokens_in, result.tokens_out, micro, bucks_charged)
 
+        if (not attach and self._commands.available and result.text
+                and _NEED_COMMANDS.fullmatch(result.text.strip())):
+            system = self._system_prompt(character, with_commands=True)
+            try:
+                result = await self.provider.chat(
+                    model=model, system=system,
+                    user_content=user_content, max_tokens=MAX_OUT_TOKENS)
+            except Exception as e:
+                log.error("AI command-list retry failed: %s", e)
+                if bucks_charged:
+                    await self._refund_bucks(user, bucks_charged)
+                return None, None, (
+                    "😵 The AI didn't answer — try again in a minute."
+                    + (f" Your {bucks_charged} 💰 was refunded." if bucks_charged else ""))
+            micro = cost_micro(model, result.tokens_in, result.tokens_out)
+            self._record(guild.id, user_id, model,
+                         result.tokens_in, result.tokens_out, micro, 0)
+
         if result.refusal:
             return None, None, "🙅 That's not something I'll answer. Try something else."
 
         text = result.text or "…I've got nothing. Try rephrasing?"
+        if _NEED_COMMANDS.fullmatch(text.strip()):
+            # both passes asked for the list (or it vanished mid-flight) —
+            # a member must never see the sentinel
+            text = "Check `/help` — I couldn't pull up the command list just now."
 
         # Prompt rules are a request; this is the check. Every /command in the
         # answer is resolved against the real command set, so a hallucinated

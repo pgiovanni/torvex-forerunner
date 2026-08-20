@@ -7,11 +7,14 @@ to answer from — and a model with no grounding does not say "I don't know", it
 invents a plausible-looking slash command. A wrong /command coming from the
 bot itself reads as authoritative, which is worse than silence.
 
-So every request now carries a one-line-per-command index built from
+So the AI can be handed a one-line-per-command index built from
 `docs/commands.json`, the artifact `tools/gen_command_docs.py` generates from
 the LIVE registered command tree plus an AST pass over `cogs/`. That provenance
 is the point: the list cannot drift from what Discord actually enforces, and it
-is regenerated rather than hand-maintained.
+is regenerated rather than hand-maintained. The index is attached ON DEMAND
+(Paul, 8/19): it lives in this file's JSON, not in every prompt — the cog
+pre-attaches it when the question plainly cites a command (`mentioned_in`) and
+otherwise lets the model request it via the NEED_COMMANDS sentinel retry.
 
 Two halves, both pure (no discord import, so this runs in the local venv):
 
@@ -172,3 +175,14 @@ class CommandIndex:
         if not self._paths:
             return set()
         return unknown_citations(text, self._paths, self._roots)
+
+    def mentioned_in(self, text):
+        """True when `text` plainly cites one of this bot's real commands
+        (any /name whose first word is a known root). The cog uses this to
+        attach the index up front and skip the NEED_COMMANDS round-trip on
+        the obvious cases."""
+        self._refresh()
+        if not self._roots:
+            return False
+        return any(m.group(1).split()[0] in self._roots
+                   for m in _CITE.finditer((text or "").lower()))
