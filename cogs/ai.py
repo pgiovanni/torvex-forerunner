@@ -117,14 +117,17 @@ COMMAND_RULES_ONDEMAND = (
 )
 
 # Same protocol for the energy/usage reference: on demand, never per-prompt.
+# Deliberately content-free — an earlier draft summarized what the reference
+# covers and the model answered by paraphrasing the summary instead of
+# requesting the real thing.
 ENERGY_RULES_ONDEMAND = (
-    "A reference explaining how your energy and usage system works (the free "
-    "daily energy, what answers cost, the bucks overflow, cooldowns, the "
-    "monthly budget) exists and can be loaded for you the same way: if "
-    "answering properly requires those details, reply with exactly "
-    "NEED_ENERGY and nothing else. Without it, never guess or invent the "
-    "numbers — the footer under your answers and /ai-usage are the safe "
-    "things to point at."
+    "A reference explaining your energy and usage metering exists and can be "
+    "loaded for you. Any question about what asking you costs, whether "
+    "you're free or paid, energy, usage limits, cooldowns, or budgets MUST "
+    "NOT be answered from memory or from this rule — reply with exactly "
+    "NEED_ENERGY and nothing else, and the reference will be attached. The "
+    "only safe pointers without it: the footer under your answers, and "
+    "/ai-usage."
 )
 
 # The whole reply, give or take whitespace/punctuation, is a sentinel.
@@ -457,7 +460,8 @@ class AI(commands.Cog):
         qlow = (question or "").lower()
         attach_cmds = self._commands.available and (
             "command" in qlow or self._commands.mentioned_in(question))
-        attach_energy = "energy" in qlow or "ai-usage" in qlow
+        attach_energy = any(w in qlow for w in (
+            "energy", "ai-usage", "ai usage", "cooldown", "bucks", "cost", "pay"))
         system = self._system_prompt(character, with_commands=attach_cmds,
                                      with_energy=attach_energy)
 
