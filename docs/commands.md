@@ -1,6 +1,6 @@
 # Command reference
 
-Every slash command **Peepo's Reclaimer** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
+Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
 - **193 commands** (88 top-level, the rest subcommands) across 35 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
@@ -2795,7 +2795,7 @@ Ask the AI — it knows the server 🤖
 
 #### `/add-bot`
 
-Add Peepo's Reclaimer to your server.
+Add Torvex Forerunner to your server.
 
 ```
 /add-bot

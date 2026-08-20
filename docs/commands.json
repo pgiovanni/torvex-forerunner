@@ -1,5 +1,5 @@
 {
- "bot": "Peepo's Reclaimer",
+ "bot": "Torvex Forerunner",
  "commands": [
   {
    "path": "activity channel",
@@ -1234,7 +1234,7 @@
   },
   {
    "path": "add-bot",
-   "description": "Add Peepo's Reclaimer to your server.",
+   "description": "Add Torvex Forerunner to your server.",
    "params": [],
    "signature": "/add-bot",
    "root": "add-bot",
