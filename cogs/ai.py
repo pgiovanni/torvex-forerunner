@@ -23,6 +23,7 @@ no tools. What the code doesn't fetch, no prompt injection can leak.
 import os
 import re
 import sys
+import json
 import time
 import sqlite3
 import logging
@@ -115,8 +116,19 @@ COMMAND_RULES_ONDEMAND = (
     "Discord itself, general topics — are answered normally without the list."
 )
 
-# The whole reply, give or take whitespace/punctuation, is the sentinel.
-_NEED_COMMANDS = re.compile(r"\W*need_commands\W*", re.IGNORECASE)
+# Same protocol for the energy/usage reference: on demand, never per-prompt.
+ENERGY_RULES_ONDEMAND = (
+    "A reference explaining how your energy and usage system works (the free "
+    "daily energy, what answers cost, the bucks overflow, cooldowns, the "
+    "monthly budget) exists and can be loaded for you the same way: if "
+    "answering properly requires those details, reply with exactly "
+    "NEED_ENERGY and nothing else. Without it, never guess or invent the "
+    "numbers — the footer under your answers and /ai-usage are the safe "
+    "things to point at."
+)
+
+# The whole reply, give or take whitespace/punctuation, is a sentinel.
+_NEED_INFO = re.compile(r"\W*(need_commands|need_energy)\W*", re.IGNORECASE)
 
 # The honest degradation when docs/commands.json is missing: no list means the
 # model must refuse to name commands, not improvise them.
@@ -256,8 +268,62 @@ class AI(commands.Cog):
             log.warning("AI command index MISSING at %s — the AI will refuse to "
                         "name commands. Regenerate with tools/gen_command_docs.py "
                         "--json", COMMAND_DOCS_PATH)
+        self._export_energy_docs()
 
-    def _system_prompt(self, character: str, with_commands: bool = False) -> str:
+    def _export_energy_docs(self):
+        """Publish the live energy config for the dashboard's AI docs page —
+        the same no-drift pipe as commands.json: written from the running
+        config on every start, never hand-maintained. Best-effort: the bot
+        must never fail to load over a docs artifact."""
+        path = os.getenv("TORVEX_AI_DOCS_JSON", "/var/lib/torvex/ai-energy.json")
+        try:
+            payload = {
+                "daily_free_energy": DAILY_FREE_ENERGY,
+                "bucks_smart": BUCKS_PRICE["smart"],
+                "bucks_quick": BUCKS_PRICE["quick"],
+                "cooldown_seconds": int(CHAT_COOLDOWN_S),
+                "monthly_budget_usd": MONTHLY_BUDGET_USD,
+                "context_messages": CONTEXT_MESSAGES,
+                "enabled_guilds": sorted(str(g) for g in AI_GUILD_IDS),
+                "generated_at": int(time.time()),
+            }
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=1)
+            os.replace(tmp, path)
+            log.info("AI energy docs exported to %s", path)
+        except OSError as e:
+            log.warning("AI energy docs not exported (%s): %s", path, e)
+
+    @staticmethod
+    def _energy_info_block() -> str:
+        """How the metering works, built from the LIVE constants so the
+        explanation can never drift from what the meter actually charges —
+        same rule as the generated command docs. Loaded on demand via the
+        NEED_ENERGY sentinel or the 'energy' pre-gate in _generate."""
+        return (
+            "HOW YOUR ENERGY / USAGE SYSTEM WORKS (relay it in your own "
+            "voice when asked; these numbers come from live config, never "
+            "guess past them):\n"
+            f"- Every member gets {DAILY_FREE_ENERGY} free energy per day, "
+            "resetting at midnight UTC.\n"
+            "- Each answer costs energy based on what it actually cost to "
+            "generate — longer questions and answers cost more. The footer "
+            "under every answer shows the asker's remaining energy.\n"
+            "- Out of energy, extra answers cost peepo bucks, charged up "
+            f"front: {BUCKS_PRICE['smart']} bucks normally, "
+            f"{BUCKS_PRICE['quick']} bucks in quick mode; automatically "
+            "refunded if the AI fails to answer.\n"
+            "- /ai-usage shows a member their own usage; there is a "
+            f"{CHAT_COOLDOWN_S:.0f}-second cooldown between asks.\n"
+            f"- The whole server shares a ${MONTHLY_BUDGET_USD:.0f}/month AI "
+            "budget; if it's ever hit, the AI pauses until the 1st.\n"
+            "- You cannot change any of these numbers — never promise free "
+            "energy, discounts, or exceptions."
+        )
+
+    def _system_prompt(self, character: str, with_commands: bool = False,
+                       with_energy: bool = False) -> str:
         """Persona + hard rules, plus the command index only when asked for.
 
         The index lives in docs/commands.json and is attached on demand —
@@ -273,6 +339,8 @@ class AI(commands.Cog):
             parts += [self._commands.block(), COMMAND_RULES]
         else:
             parts.append(COMMAND_RULES_ONDEMAND)
+        parts.append(self._energy_info_block() if with_energy
+                     else ENERGY_RULES_ONDEMAND)
         return "\n\n".join(parts)
 
     # ── accounting helpers ────────────────────────────────────────────────────
@@ -382,14 +450,16 @@ class AI(commands.Cog):
                if replied_to else "")
             + f"{user.display_name} asks: {question}"
         )
-        # The command index is on-demand (Paul, 8/19): attach it up front only
-        # when the question plainly cites one of this bot's commands or talks
-        # about commands; otherwise the model asks for it with the
-        # NEED_COMMANDS sentinel and the call runs once more with the list.
-        attach = self._commands.available and (
-            "command" in (question or "").lower()
-            or self._commands.mentioned_in(question))
-        system = self._system_prompt(character, with_commands=attach)
+        # The command index and the energy reference are both on-demand
+        # (Paul, 8/19): attached up front only when the question plainly
+        # needs them; otherwise the model requests one by replying with a
+        # NEED_* sentinel and the call runs once more with that block.
+        qlow = (question or "").lower()
+        attach_cmds = self._commands.available and (
+            "command" in qlow or self._commands.mentioned_in(question))
+        attach_energy = "energy" in qlow or "ai-usage" in qlow
+        system = self._system_prompt(character, with_commands=attach_cmds,
+                                     with_energy=attach_energy)
 
         try:
             result = await self.provider.chat(
@@ -407,9 +477,13 @@ class AI(commands.Cog):
         self._record(guild.id, user_id, model,
                      result.tokens_in, result.tokens_out, micro, bucks_charged)
 
-        if (not attach and self._commands.available and result.text
-                and _NEED_COMMANDS.fullmatch(result.text.strip())):
-            system = self._system_prompt(character, with_commands=True)
+        m = _NEED_INFO.fullmatch(result.text.strip()) if result.text else None
+        new_cmds = attach_cmds or (m and m.group(1).lower() == "need_commands"
+                                   and self._commands.available)
+        new_energy = attach_energy or (m and m.group(1).lower() == "need_energy")
+        if (new_cmds, new_energy) != (attach_cmds, attach_energy):
+            system = self._system_prompt(character, with_commands=new_cmds,
+                                         with_energy=new_energy)
             try:
                 result = await self.provider.chat(
                     model=model, system=system,
@@ -429,10 +503,11 @@ class AI(commands.Cog):
             return None, None, "🙅 That's not something I'll answer. Try something else."
 
         text = result.text or "…I've got nothing. Try rephrasing?"
-        if _NEED_COMMANDS.fullmatch(text.strip()):
-            # both passes asked for the list (or it vanished mid-flight) —
-            # a member must never see the sentinel
-            text = "Check `/help` — I couldn't pull up the command list just now."
+        if _NEED_INFO.fullmatch(text.strip()):
+            # a sentinel survived both passes (or the reference vanished
+            # mid-flight) — a member must never see it
+            text = ("Check `/help` for commands — and the footer under my "
+                    "answers shows energy. I couldn't pull up the details just now.")
 
         # Prompt rules are a request; this is the check. Every /command in the
         # answer is resolved against the real command set, so a hallucinated

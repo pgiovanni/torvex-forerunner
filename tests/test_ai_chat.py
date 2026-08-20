@@ -85,23 +85,40 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TestNeedCommandsSentinel(unittest.TestCase):
-    """The on-demand index protocol: the model's whole reply is the sentinel."""
+class TestNeedInfoSentinels(unittest.TestCase):
+    """The on-demand reference protocol: the model's whole reply is a sentinel."""
 
     def _match(self, text):
-        from cogs.ai import _NEED_COMMANDS
-        return bool(_NEED_COMMANDS.fullmatch(text.strip()))
+        from cogs.ai import _NEED_INFO
+        m = _NEED_INFO.fullmatch(text.strip())
+        return m.group(1).lower() if m else None
 
-    def test_bare_sentinel_matches(self):
-        self.assertTrue(self._match("NEED_COMMANDS"))
+    def test_bare_sentinels_match(self):
+        self.assertEqual(self._match("NEED_COMMANDS"), "need_commands")
+        self.assertEqual(self._match("NEED_ENERGY"), "need_energy")
 
     def test_case_and_punctuation_tolerated(self):
-        self.assertTrue(self._match("need_commands."))
-        self.assertTrue(self._match("  NEED_COMMANDS!  "))
+        self.assertEqual(self._match("need_commands."), "need_commands")
+        self.assertEqual(self._match("  NEED_ENERGY!  "), "need_energy")
 
     def test_sentinel_inside_prose_does_not_match(self):
-        self.assertFalse(self._match("I would reply NEED_COMMANDS but here goes"))
-        self.assertFalse(self._match("NEED_COMMANDS — the list says /rank works"))
+        self.assertIsNone(self._match("I would reply NEED_COMMANDS but here goes"))
+        self.assertIsNone(self._match("NEED_ENERGY — energy resets daily"))
 
     def test_ordinary_answer_does_not_match(self):
-        self.assertFalse(self._match("Use the leaderboard to check levels."))
+        self.assertIsNone(self._match("Use the leaderboard to check levels."))
+
+
+class TestEnergyInfoBlock(unittest.TestCase):
+    """The energy explanation is built from the LIVE constants — pin that the
+    numbers in the text are the numbers the meter actually charges."""
+
+    def test_block_carries_live_numbers(self):
+        from cogs.ai import AI, MONTHLY_BUDGET_USD
+        from utils.ai_meter import DAILY_FREE_ENERGY, BUCKS_PRICE
+        block = AI._energy_info_block()
+        self.assertIn(str(DAILY_FREE_ENERGY), block)
+        self.assertIn(str(BUCKS_PRICE["smart"]), block)
+        self.assertIn(str(BUCKS_PRICE["quick"]), block)
+        self.assertIn(f"${MONTHLY_BUDGET_USD:.0f}", block)
+        self.assertIn("midnight UTC", block)
