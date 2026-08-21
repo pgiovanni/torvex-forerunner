@@ -37,7 +37,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.ai_meter import (
     BUCKS_PRICE, DAILY_FREE_ENERGY,
     cost_micro, month_key, budget_micro, remaining_energy,
-    GUILD_BUDGET_USD, parse_guild_budgets,
 )
 from utils.ai_provider import build_provider
 from utils.command_index import CommandIndex
@@ -74,14 +73,12 @@ COMMAND_DOCS_PATH = os.getenv("AI_COMMAND_DOCS", os.path.join(
 
 MONTHLY_BUDGET_USD = float(os.getenv("AI_MONTHLY_BUDGET_USD", "20"))
 
-# The home guild runs on the global budget; every other (paid) guild gets its
-# own monthly allowance so one busy server can't drain the shared API pool.
+# The home guild runs on the global budget; every other (paid) guild runs on
+# PREPAID CREDIT — a $15 pack is $15 of compute, no expiry ("their $15 is
+# their $15 of claude"), so one busy server can't drain the shared API pool.
 HOME_GUILD_ID = int(os.getenv("AI_HOME_GUILD_ID", "1215140346800119868"))
-GUILD_BUDGETS = parse_guild_budgets(os.getenv("AI_GUILD_BUDGETS", ""))
-
-
-def guild_budget_usd(guild_id: int) -> float:
-    return GUILD_BUDGETS.get(guild_id, GUILD_BUDGET_USD)
+# Pack size for copy/docs only — enforcement is the credit balance.
+CREDIT_PACK_USD = float(os.getenv("AI_CREDIT_PACK_USD", "15"))
 AI_GUILD_IDS = {
     int(g) for g in os.getenv("AI_GUILD_IDS", "1215140346800119868").split(",") if g.strip()
 }
@@ -273,6 +270,18 @@ class AI(commands.Cog):
             c.execute("CREATE INDEX IF NOT EXISTS idx_ai_user_day ON ai_usage(user_id, day)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ai_day ON ai_usage(day)")
             c.execute("CREATE TABLE IF NOT EXISTS ai_optout (user_id TEXT PRIMARY KEY)")
+            # Prepaid AI credit for non-home guilds: an append-only grant
+            # ledger. Balance = grants minus that guild's ai_usage spend, so
+            # the two tables can never drift apart.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS ai_credit (
+                       ts       INTEGER,
+                       guild_id TEXT,
+                       micro    INTEGER,
+                       note     TEXT
+                   )"""
+            )
+            c.execute("CREATE INDEX IF NOT EXISTS idx_ai_credit_guild ON ai_credit(guild_id)")
         self._optout = self._load_optout()
 
     def _load_optout(self) -> set:
@@ -308,7 +317,7 @@ class AI(commands.Cog):
                 "bucks_quick": BUCKS_PRICE["quick"],
                 "cooldown_seconds": int(CHAT_COOLDOWN_S),
                 "monthly_budget_usd": MONTHLY_BUDGET_USD,
-                "guild_budget_usd": GUILD_BUDGET_USD,
+                "credit_pack_usd": CREDIT_PACK_USD,
                 "context_messages": CONTEXT_MESSAGES,
                 "enabled_guilds": sorted(str(g) for g in AI_GUILD_IDS),
                 "generated_at": int(time.time()),
@@ -342,10 +351,11 @@ class AI(commands.Cog):
             "refunded if the AI fails to answer.\n"
             "- /ai-usage shows a member their own usage; there is a "
             f"{CHAT_COOLDOWN_S:.0f}-second cooldown between asks.\n"
-            "- Every server has its own monthly AI budget as a hard ceiling "
-            f"(the paid add-on includes ${GUILD_BUDGET_USD:.0f}/month of AI "
-            "usage); if it's hit, the AI pauses in that server until the "
-            "1st.\n"
+            "- Paid servers run on prepaid AI credit: a "
+            f"${CREDIT_PACK_USD:.0f} pack is ${CREDIT_PACK_USD:.0f} of AI "
+            "usage, no expiry — when it runs out the AI pauses until the "
+            "server tops up. The home community has its own monthly "
+            "budget.\n"
             "- You cannot change any of these numbers — never promise free "
             "energy, discounts, or exceptions."
         )
@@ -400,6 +410,17 @@ class AI(commands.Cog):
                     (month_key(self._today()) + "-%", str(guild_id)),
                 ).fetchone()
         return row[0]
+
+    def _credit_balance(self, guild_id) -> int:
+        """Prepaid credit remaining (µ$): lifetime grants minus lifetime spend."""
+        with self._conn() as c:
+            granted = c.execute(
+                "SELECT COALESCE(SUM(micro),0) FROM ai_credit WHERE guild_id=?",
+                (str(guild_id),)).fetchone()[0]
+            spent = c.execute(
+                "SELECT COALESCE(SUM(micro),0) FROM ai_usage WHERE guild_id=?",
+                (str(guild_id),)).fetchone()[0]
+        return granted - spent
 
     def _record(self, guild_id, user_id, model, tokens_in, tokens_out, micro, bucks=0):
         with self._conn() as c:
@@ -461,12 +482,13 @@ class AI(commands.Cog):
         (0, error_message) on stop. Debits bucks up front when past free energy."""
         if self._month_spent() >= budget_micro(MONTHLY_BUDGET_USD):
             return 0, "🧯 The AI hit this month's server-wide budget. Back on the 1st!"
-        # Paid guilds spend against their OWN monthly allowance — their $15 is
-        # their $15 of compute, and can't drain anyone else's.
+        # Paid guilds spend against their own PREPAID credit — what they paid
+        # for is what they can use, and it can't drain anyone else's.
         if guild_id is not None and guild_id != HOME_GUILD_ID:
-            if self._month_spent(guild_id) >= budget_micro(guild_budget_usd(guild_id)):
-                return 0, ("🧯 This server's monthly AI budget is used up — "
-                           "the AI is back on the 1st.")
+            if self._credit_balance(guild_id) <= 0:
+                return 0, ("🧯 This server's prepaid AI credit is used up — "
+                           "top up at <https://torvex.app/Packages> to keep "
+                           "the AI going.")
         if remaining_energy(self._user_spent_today(str(user.id))) <= 0:
             price = BUCKS_PRICE[tier]
             debited = await self._debit_bucks(user, price)
@@ -793,12 +815,17 @@ class AI(commands.Cog):
                 "SELECT guild_id, COUNT(*) AS n, SUM(micro) AS m FROM ai_usage "
                 "WHERE day LIKE ? GROUP BY guild_id ORDER BY m DESC",
                 (month + "-%",)).fetchall()
-        cap = MONTHLY_BUDGET_USD if gid == HOME_GUILD_ID else guild_budget_usd(gid)
         spent_usd = totals[1] / 1_000_000
+        if gid == HOME_GUILD_ID:
+            budget_line = f"Spend: **${spent_usd:.2f} / ${MONTHLY_BUDGET_USD:.0f}** budget\n"
+        else:
+            bal = self._credit_balance(gid) / 1_000_000
+            budget_line = (f"Spend this month: **${spent_usd:.2f}** · prepaid credit "
+                           f"remaining: **${bal:.2f}**\n")
         lines = [f"• <@{r['user_id']}> — {r['n']} asks, ${r['m'] / 1_000_000:.2f}" for r in top]
         msg = (
             f"🤖 **AI — {month} (this server)**\n"
-            f"Spend: **${spent_usd:.2f} / ${cap:.0f}** budget\n"
+            + budget_line +
             f"Requests: {totals[0]:,} · tokens in/out: {totals[2]:,}/{totals[3]:,} · bucks sunk: {totals[4]:,} 💰\n"
             + ("**Top users:**\n" + "\n".join(lines) if lines else "No usage yet."))
         # Operator view: the home guild also sees the pool split per server,
@@ -813,6 +840,39 @@ class AI(commands.Cog):
             msg += (f"\n**All servers (${total_usd:.2f} / "
                     f"${MONTHLY_BUDGET_USD:.0f} global cap):**\n" + "\n".join(gl))
         await interaction.response.send_message(msg, ephemeral=True)
+
+    @app_commands.command(
+        name="ai-credit-grant",
+        description="[Operator] Grant prepaid AI credit to a server (negative = correction)")
+    @app_commands.describe(guild_id="Server to credit", usd="Dollars of credit (e.g. 15)",
+                           note="Why — order ref, correction, comp")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def ai_credit_grant(self, interaction: discord.Interaction,
+                              guild_id: str, usd: float, note: str = ""):
+        # Fulfillment is operator-only, from the home guild — this moves real
+        # money's worth of compute.
+        if interaction.guild_id != HOME_GUILD_ID:
+            await interaction.response.send_message("Home-server only.", ephemeral=True)
+            return
+        try:
+            gid = str(int(guild_id.strip()))
+        except ValueError:
+            await interaction.response.send_message("That's not a guild id.", ephemeral=True)
+            return
+        micro = int(usd * 1_000_000)
+        with self._conn() as c:
+            c.execute("INSERT INTO ai_credit(ts, guild_id, micro, note) VALUES (?,?,?,?)",
+                      (int(time.time()), gid, micro, note or None))
+        bal = self._credit_balance(gid) / 1_000_000
+        g = self.bot.get_guild(int(gid))
+        await interaction.response.send_message(
+            f"✅ ${usd:.2f} credit → **{g.name if g else gid}** — balance now "
+            f"**${bal:.2f}**." + ("" if int(gid) in {int(x) for x in AI_GUILD_IDS} else
+                                  "\n⚠️ This guild is NOT in AI_GUILD_IDS — the AI won't "
+                                  "answer there until it's enabled in the .env."),
+            ephemeral=True)
 
     @ask.error
     async def ask_error(self, interaction: discord.Interaction, error):
