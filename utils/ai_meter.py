@@ -38,6 +38,27 @@ BUCKS_PRICE = {
 }
 
 
+# Monthly per-guild AI budget for servers OUTSIDE the home guild ("their $15
+# is their $15 of claude") — the paid add-on's compute allowance. Per-guild
+# overrides via AI_GUILD_BUDGETS ("gid=usd,gid=usd").
+GUILD_BUDGET_USD = float(os.getenv("AI_GUILD_BUDGET_USD", "15"))
+
+
+def parse_guild_budgets(raw: str) -> dict:
+    """'123=15,456=30' -> {123: 15.0, 456: 30.0}. Malformed entries skipped."""
+    out = {}
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry or "=" not in entry:
+            continue
+        gid, _, usd = entry.partition("=")
+        try:
+            out[int(gid.strip())] = float(usd)
+        except ValueError:
+            continue
+    return out
+
+
 def parse_prices_env(raw: str) -> dict:
     """'model=0.14/0.28,model2=1/3' ($/MTok) -> {model: (µ$/kTok in, out)}.
 

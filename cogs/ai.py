@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.ai_meter import (
     BUCKS_PRICE, DAILY_FREE_ENERGY,
     cost_micro, month_key, budget_micro, remaining_energy,
+    GUILD_BUDGET_USD, parse_guild_budgets,
 )
 from utils.ai_provider import build_provider
 from utils.command_index import CommandIndex
@@ -72,6 +73,15 @@ COMMAND_DOCS_PATH = os.getenv("AI_COMMAND_DOCS", os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "docs", "commands.json"))
 
 MONTHLY_BUDGET_USD = float(os.getenv("AI_MONTHLY_BUDGET_USD", "20"))
+
+# The home guild runs on the global budget; every other (paid) guild gets its
+# own monthly allowance so one busy server can't drain the shared API pool.
+HOME_GUILD_ID = int(os.getenv("AI_HOME_GUILD_ID", "1215140346800119868"))
+GUILD_BUDGETS = parse_guild_budgets(os.getenv("AI_GUILD_BUDGETS", ""))
+
+
+def guild_budget_usd(guild_id: int) -> float:
+    return GUILD_BUDGETS.get(guild_id, GUILD_BUDGET_USD)
 AI_GUILD_IDS = {
     int(g) for g in os.getenv("AI_GUILD_IDS", "1215140346800119868").split(",") if g.strip()
 }
@@ -298,6 +308,7 @@ class AI(commands.Cog):
                 "bucks_quick": BUCKS_PRICE["quick"],
                 "cooldown_seconds": int(CHAT_COOLDOWN_S),
                 "monthly_budget_usd": MONTHLY_BUDGET_USD,
+                "guild_budget_usd": GUILD_BUDGET_USD,
                 "context_messages": CONTEXT_MESSAGES,
                 "enabled_guilds": sorted(str(g) for g in AI_GUILD_IDS),
                 "generated_at": int(time.time()),
@@ -331,8 +342,10 @@ class AI(commands.Cog):
             "refunded if the AI fails to answer.\n"
             "- /ai-usage shows a member their own usage; there is a "
             f"{CHAT_COOLDOWN_S:.0f}-second cooldown between asks.\n"
-            f"- The whole server shares a ${MONTHLY_BUDGET_USD:.0f}/month AI "
-            "budget; if it's ever hit, the AI pauses until the 1st.\n"
+            "- Every server has its own monthly AI budget as a hard ceiling "
+            f"(the paid add-on includes ${GUILD_BUDGET_USD:.0f}/month of AI "
+            "usage); if it's hit, the AI pauses in that server until the "
+            "1st.\n"
             "- You cannot change any of these numbers — never promise free "
             "energy, discounts, or exceptions."
         )
@@ -372,12 +385,20 @@ class AI(commands.Cog):
             ).fetchone()
         return row[0]
 
-    def _month_spent(self) -> int:
+    def _month_spent(self, guild_id=None) -> int:
+        """This month's spend — global, or one guild's when guild_id is given."""
         with self._conn() as c:
-            row = c.execute(
-                "SELECT COALESCE(SUM(micro),0) FROM ai_usage WHERE day LIKE ?",
-                (month_key(self._today()) + "-%",),
-            ).fetchone()
+            if guild_id is None:
+                row = c.execute(
+                    "SELECT COALESCE(SUM(micro),0) FROM ai_usage WHERE day LIKE ?",
+                    (month_key(self._today()) + "-%",),
+                ).fetchone()
+            else:
+                row = c.execute(
+                    "SELECT COALESCE(SUM(micro),0) FROM ai_usage "
+                    "WHERE day LIKE ? AND guild_id=?",
+                    (month_key(self._today()) + "-%", str(guild_id)),
+                ).fetchone()
         return row[0]
 
     def _record(self, guild_id, user_id, model, tokens_in, tokens_out, micro, bucks=0):
@@ -435,11 +456,17 @@ class AI(commands.Cog):
 
     # ── shared request pipeline (used by /ask and ping-to-chat) ──────────────
 
-    async def _precheck(self, user, tier):
+    async def _precheck(self, user, tier, guild_id=None):
         """Budget + energy gate. Returns (bucks_charged, None) on go,
         (0, error_message) on stop. Debits bucks up front when past free energy."""
         if self._month_spent() >= budget_micro(MONTHLY_BUDGET_USD):
             return 0, "🧯 The AI hit this month's server-wide budget. Back on the 1st!"
+        # Paid guilds spend against their OWN monthly allowance — their $15 is
+        # their $15 of compute, and can't drain anyone else's.
+        if guild_id is not None and guild_id != HOME_GUILD_ID:
+            if self._month_spent(guild_id) >= budget_micro(guild_budget_usd(guild_id)):
+                return 0, ("🧯 This server's monthly AI budget is used up — "
+                           "the AI is back on the 1st.")
         if remaining_energy(self._user_spent_today(str(user.id))) <= 0:
             price = BUCKS_PRICE[tier]
             debited = await self._debit_bucks(user, price)
@@ -589,7 +616,8 @@ class AI(commands.Cog):
             return
 
         tier = "quick" if quick else "smart"
-        bucks_charged, err = await self._precheck(interaction.user, tier)
+        bucks_charged, err = await self._precheck(interaction.user, tier,
+                                                  interaction.guild_id)
         if err:
             await interaction.response.send_message(err, ephemeral=True)
             return
@@ -673,7 +701,8 @@ class AI(commands.Cog):
             return
         self._chat_last[message.author.id] = now
 
-        bucks_charged, err = await self._precheck(message.author, "smart")
+        bucks_charged, err = await self._precheck(message.author, "smart",
+                                                  message.guild.id)
         if err:
             await message.reply(err, mention_author=False, allowed_mentions=none)
             return
@@ -749,23 +778,41 @@ class AI(commands.Cog):
     @app_commands.guild_only()
     async def ai_status(self, interaction: discord.Interaction):
         month = month_key(self._today())
+        gid = interaction.guild_id
         with self._conn() as c:
             totals = c.execute(
                 "SELECT COUNT(*), COALESCE(SUM(micro),0), COALESCE(SUM(tokens_in),0), "
                 "COALESCE(SUM(tokens_out),0), COALESCE(SUM(bucks),0) "
-                "FROM ai_usage WHERE day LIKE ?", (month + "-%",)).fetchone()
+                "FROM ai_usage WHERE day LIKE ? AND guild_id=?",
+                (month + "-%", str(gid))).fetchone()
             top = c.execute(
                 "SELECT user_id, COUNT(*) AS n, SUM(micro) AS m FROM ai_usage "
-                "WHERE day LIKE ? GROUP BY user_id ORDER BY m DESC LIMIT 5",
+                "WHERE day LIKE ? AND guild_id=? GROUP BY user_id ORDER BY m DESC LIMIT 5",
+                (month + "-%", str(gid))).fetchall()
+            by_guild = c.execute(
+                "SELECT guild_id, COUNT(*) AS n, SUM(micro) AS m FROM ai_usage "
+                "WHERE day LIKE ? GROUP BY guild_id ORDER BY m DESC",
                 (month + "-%",)).fetchall()
+        cap = MONTHLY_BUDGET_USD if gid == HOME_GUILD_ID else guild_budget_usd(gid)
         spent_usd = totals[1] / 1_000_000
         lines = [f"• <@{r['user_id']}> — {r['n']} asks, ${r['m'] / 1_000_000:.2f}" for r in top]
-        await interaction.response.send_message(
-            f"🤖 **AI — {month}**\n"
-            f"Spend: **${spent_usd:.2f} / ${MONTHLY_BUDGET_USD:.0f}** budget\n"
+        msg = (
+            f"🤖 **AI — {month} (this server)**\n"
+            f"Spend: **${spent_usd:.2f} / ${cap:.0f}** budget\n"
             f"Requests: {totals[0]:,} · tokens in/out: {totals[2]:,}/{totals[3]:,} · bucks sunk: {totals[4]:,} 💰\n"
-            + ("**Top users:**\n" + "\n".join(lines) if lines else "No usage yet."),
-            ephemeral=True)
+            + ("**Top users:**\n" + "\n".join(lines) if lines else "No usage yet."))
+        # Operator view: the home guild also sees the pool split per server,
+        # since the global kill switch protects the whole API account.
+        if gid == HOME_GUILD_ID and len(by_guild) > 1:
+            gl = []
+            for r in by_guild:
+                g = self.bot.get_guild(int(r["guild_id"])) if r["guild_id"] else None
+                gname = g.name if g else r["guild_id"]
+                gl.append(f"• {gname} — {r['n']} asks, ${r['m'] / 1_000_000:.2f}")
+            total_usd = sum(r["m"] for r in by_guild) / 1_000_000
+            msg += (f"\n**All servers (${total_usd:.2f} / "
+                    f"${MONTHLY_BUDGET_USD:.0f} global cap):**\n" + "\n".join(gl))
+        await interaction.response.send_message(msg, ephemeral=True)
 
     @ask.error
     async def ask_error(self, interaction: discord.Interaction, error):

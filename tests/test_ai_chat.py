@@ -110,13 +110,13 @@ class TestEnergyInfoBlock(unittest.TestCase):
     numbers in the text are the numbers the meter actually charges."""
 
     def test_block_carries_live_numbers(self):
-        from cogs.ai import AI, MONTHLY_BUDGET_USD
-        from utils.ai_meter import DAILY_FREE_ENERGY, BUCKS_PRICE
+        from cogs.ai import AI
+        from utils.ai_meter import DAILY_FREE_ENERGY, BUCKS_PRICE, GUILD_BUDGET_USD
         block = AI._energy_info_block()
         self.assertIn(str(DAILY_FREE_ENERGY), block)
         self.assertIn(str(BUCKS_PRICE["smart"]), block)
         self.assertIn(str(BUCKS_PRICE["quick"]), block)
-        self.assertIn(f"${MONTHLY_BUDGET_USD:.0f}", block)
+        self.assertIn(f"${GUILD_BUDGET_USD:.0f}", block)
         self.assertIn("midnight UTC", block)
 
 

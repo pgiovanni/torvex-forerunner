@@ -85,3 +85,19 @@ def test_bucks_prices_are_tiered():
     assert BUCKS_PRICE["smart"] >= 2 * BUCKS_PRICE["quick"]
     smart_chat_energy = energy_for(cost_micro("claude-sonnet-5", 2000, 400))
     assert BUCKS_PRICE["smart"] >= smart_chat_energy * 2
+
+
+def test_parse_guild_budgets():
+    from utils.ai_meter import parse_guild_budgets
+    assert parse_guild_budgets("123=15,456=30.5") == {123: 15.0, 456: 30.5}
+
+
+def test_parse_guild_budgets_skips_malformed():
+    from utils.ai_meter import parse_guild_budgets
+    assert parse_guild_budgets("nope,=,abc=x,789=20,") == {789: 20.0}
+
+
+def test_parse_guild_budgets_empty():
+    from utils.ai_meter import parse_guild_budgets
+    assert parse_guild_budgets("") == {}
+    assert parse_guild_budgets(None) == {}
