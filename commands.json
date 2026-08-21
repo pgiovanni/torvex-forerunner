@@ -1,6 +1,22 @@
 {
   "commands": [
     {
+      "name": "simpleverify",
+      "description": "Role-swap verify with no AltGuard gate \u2014 Unverified on join, button to Verified (Admin)",
+      "cog": "simpleverify",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
+      "name": "honeypot",
+      "description": "Trap channel that punishes intruders \u2014 timeout, kick, or ban (Admin)",
+      "cog": "honeypot",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
       "name": "close",
       "description": "Close the current ticket channel.",
       "cog": "tickets",
