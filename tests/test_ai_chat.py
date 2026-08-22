@@ -111,14 +111,28 @@ class TestEnergyInfoBlock(unittest.TestCase):
 
     def test_block_carries_live_numbers(self):
         from cogs.ai import AI, CREDIT_PACK_USD
-        from utils.ai_meter import DAILY_FREE_ENERGY, BUCKS_PRICE
-        block = AI._energy_info_block()
+        from utils.ai_meter import DAILY_FREE_ENERGY, BUCKS_PRICE, policy_from_config
+        block = AI._energy_info_block(policy_from_config({}, is_home=True))
         self.assertIn(str(DAILY_FREE_ENERGY), block)
         self.assertIn(str(BUCKS_PRICE["smart"]), block)
         self.assertIn(str(BUCKS_PRICE["quick"]), block)
         self.assertIn(f"${CREDIT_PACK_USD:.0f}", block)
         self.assertIn("prepaid", block)
         self.assertIn("midnight UTC", block)
+
+    def test_block_follows_the_servers_policy(self):
+        """A paid server's block must describe THAT server: its allowance,
+        no bucks, and unlimited when that's the mode — the block is the only
+        thing allowed to answer cost questions, so it can't be home-shaped."""
+        from cogs.ai import AI
+        from utils.ai_meter import policy_from_config, BUCKS_PRICE
+        paid = AI._energy_info_block(policy_from_config({"ai_daily_energy": 150}, is_home=False))
+        self.assertIn("150 energy", paid)
+        self.assertIn("not part of AI in this server", paid)
+        self.assertNotIn(f"{BUCKS_PRICE['smart']} bucks normally", paid)
+        unlimited = AI._energy_info_block(policy_from_config({"ai_mode": "unlimited"}, is_home=False))
+        self.assertIn("UNLIMITED", unlimited)
+        self.assertNotIn("energy per day", unlimited)
 
 
 class TestBilledMicro(unittest.TestCase):

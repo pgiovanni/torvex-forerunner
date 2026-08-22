@@ -148,10 +148,14 @@ DEFAULTS = {
     "mod_require_reason": 0,         # refuse ban/kick/timeout with no reason given
     "mod_default_timeout_min": 60,   # /timeout default when no duration is passed
     "mod_ban_delete_days": 0,        # delete this many days of the banned user's messages (0-7)
-    # ── AI chat (/ask + characters) ───────────────────────────────────────────
-    # Not launchable yet — the dashboard shows the card as "coming soon" and
-    # refuses its settings page. Present here so the key exists before launch.
-    "ai_enabled": 0,
+    # ── AI chat (/ask + ping-to-chat) — cogs/ai.py ────────────────────────────
+    # Enablement is NOT this key: the home community is always on and any
+    # other server is on once it holds prepaid credit (ai_credit ledger).
+    # These govern how members may SPEND it; set via /ai-config, read per ask.
+    "ai_enabled": 0,                 # unused — kept so older dashboard builds don't choke
+    "ai_mode": "energy",             # energy = per-member daily allowance · unlimited = straight drawdown of the server's pool
+    "ai_daily_energy": 100,          # per-member energy per UTC day in energy mode (10–2000)
+    "ai_max_paid_asks": 10,          # HOME ONLY: bucks-paid asks per member per day once energy is gone (0 = no paid tier)
     # ── automation (join roles + welcome/goodbye) ─────────────────────────────
     "auto_enabled": 0,               # master opt-in
     "autorole_ids": [],              # roles granted automatically on join
