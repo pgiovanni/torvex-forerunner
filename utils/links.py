@@ -9,10 +9,13 @@ DASHBOARD_URL = "https://dashboard.torvex.app"
 SUPPORT_INVITE = "https://discord.gg/scpwTFGVkz"
 SITE_URL = "https://torvex.app"
 
-# 13 permissions, deliberately NO Administrator — see cogs/help.py history.
+# 17 permissions, deliberately NO Administrator — see cogs/help.py history.
+# 2026-08-21: added Kick, Ban, Timeout (Moderate Members) and View Audit Log —
+# anti-nuke enforce, quarantine bans, honeypot/linkguard punishments and the
+# mod-log "deleted by" attribution all silently no-op without them.
 INVITE_URL = (
     "https://discord.com/api/oauth2/authorize"
-    "?client_id=1372003518667558952&permissions=310580210768"
+    "?client_id=1372003518667558952&permissions=1410091838678"
     "&scope=bot%20applications.commands"
 )
 
