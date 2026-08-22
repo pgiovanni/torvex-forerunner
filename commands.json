@@ -558,6 +558,14 @@
       ]
     },
     {
+      "name": "ai-config",
+      "description": "How members may use AI in this server — daily energy or unlimited (Manage Server)",
+      "cog": "ai",
+      "required_permissions": [
+        "manage_guild"
+      ]
+    },
+    {
       "name": "ai-privacy",
       "description": "Toggle whether your messages can appear as AI context 🔒",
       "cog": "ai",

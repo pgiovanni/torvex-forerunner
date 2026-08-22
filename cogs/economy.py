@@ -468,7 +468,6 @@ class Economy(commands.Cog):
         if message.author.bot:
             return
         guild_id = message.guild.id if message.guild else None
-        print(f"[economy] on_message: user={message.author.id} guild={guild_id}", flush=True)
         try:
             new_level, leveled_up, user_notifs, g_level, g_leveled_up = await self.record_message(message.author, guild_id)
 

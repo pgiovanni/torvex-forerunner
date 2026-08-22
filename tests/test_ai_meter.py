@@ -87,17 +87,15 @@ def test_bucks_prices_are_tiered():
     assert BUCKS_PRICE["smart"] >= smart_chat_energy * 2
 
 
-def test_parse_guild_budgets():
-    from utils.ai_meter import parse_guild_budgets
-    assert parse_guild_budgets("123=15,456=30.5") == {123: 15.0, 456: 30.5}
+def test_remaining_energy_default_allowance():
+    assert remaining_energy(0) == DAILY_FREE_ENERGY
+    assert remaining_energy(DAILY_FREE_ENERGY * MICRO_PER_ENERGY) == 0
+    # partial energy rounds UP to a whole unit spent
+    assert remaining_energy(1) == DAILY_FREE_ENERGY - 1
 
 
-def test_parse_guild_budgets_skips_malformed():
-    from utils.ai_meter import parse_guild_budgets
-    assert parse_guild_budgets("nope,=,abc=x,789=20,") == {789: 20.0}
-
-
-def test_parse_guild_budgets_empty():
-    from utils.ai_meter import parse_guild_budgets
-    assert parse_guild_budgets("") == {}
-    assert parse_guild_budgets(None) == {}
+def test_remaining_energy_server_allowance():
+    # a server that set 150/day: the same spend leaves more on the table
+    assert remaining_energy(0, 150) == 150
+    assert remaining_energy(120 * MICRO_PER_ENERGY, 150) == 30
+    assert remaining_energy(120 * MICRO_PER_ENERGY, 100) == -20

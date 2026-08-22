@@ -10,10 +10,13 @@ Provider-agnostic: the model backend is an .env choice (see utils/ai_provider.py
 Swapping providers is a config change plus optionally AI_PRICES for the meter.
 
 Cost model (see utils/ai_meter.py): every request's real microdollar cost is
-recorded in ai_usage.db. Users get DAILY_FREE_ENERGY per day; past that a
-request costs flat peepo bucks (atomic debit via the Economy cog's pool, same
-pattern as /redeem, refunded if the API call fails). A monthly global budget
-(AI_MONTHLY_BUDGET_USD) is the hard kill switch on top of everything.
+recorded in ai_usage.db. Each server sets how members spend it (/ai-config):
+`energy` gives every member a daily allowance in that server, `unlimited`
+draws straight from the server's pool. The home community runs energy → peepo
+bucks (atomic debit via the Economy cog's pool, same pattern as /redeem,
+refunded if the API call fails, capped per member per day) on its own monthly
+budget (AI_HOME_MONTHLY_BUDGET_USD); every other server runs on the prepaid
+credit it bought, and nothing about the home community can gate it.
 
 Data scoping: the model only ever sees the question plus recent messages from
 the invoking channel, and ONLY when that channel is visible to @everyone —
@@ -37,11 +40,14 @@ from discord.ext import commands, tasks
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.ai_meter import (
-    BUCKS_PRICE, DAILY_FREE_ENERGY,
+    BUCKS_PRICE, DAILY_FREE_ENERGY, AI_MODES, ENERGY_MIN, ENERGY_MAX,
+    PAID_CAP_MIN, PAID_CAP_MAX, DEFAULT_PAID_ASK_CAP, GuildAiPolicy,
+    policy_from_config, energy_usd,
     cost_micro, month_key, budget_micro, remaining_energy,
 )
 from utils.ai_provider import build_provider
 from utils.command_index import CommandIndex
+from utils.security_config import get_config, set_config
 
 log = logging.getLogger("ai")
 
@@ -74,7 +80,12 @@ QUOTE_CAP = 500  # chars of the question echoed back in the /ask reply
 COMMAND_DOCS_PATH = os.getenv("AI_COMMAND_DOCS", os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "docs", "commands.json"))
 
-MONTHLY_BUDGET_USD = float(os.getenv("AI_MONTHLY_BUDGET_USD", "20"))
+# The HOME community's monthly budget — its own spend only. It is not an
+# account-wide kill switch any more (a paying server's usage never counts
+# against it and is never blocked by it); the OpenRouter key limits are the
+# fence around real money. Old env name still honoured.
+MONTHLY_BUDGET_USD = float(os.getenv("AI_HOME_MONTHLY_BUDGET_USD",
+                                     os.getenv("AI_MONTHLY_BUDGET_USD", "20")))
 
 # The home guild runs on the global budget; every other (paid) guild runs on
 # PREPAID CREDIT, no expiry, so one busy server can't drain the shared API
@@ -270,6 +281,7 @@ class AI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.provider = None  # built in cog_load from .env (see utils/ai_provider)
+        self.provider_paid = None  # second key for credit servers; falls back to provider
         self._chat_last = {}  # user_id -> monotonic ts of last ping-chat (cooldown)
         self._ad_last = {}    # guild_id -> monotonic ts of last paid-AI pitch
         self._ai_msgs = deque(maxlen=400)  # ids of AI answers (reply-to-continue)
@@ -289,6 +301,9 @@ class AI(commands.Cog):
                    )"""
             )
             c.execute("CREATE INDEX IF NOT EXISTS idx_ai_user_day ON ai_usage(user_id, day)")
+            # energy is per (member, server, day) — the allowance is the server's
+            c.execute("CREATE INDEX IF NOT EXISTS idx_ai_user_guild_day "
+                      "ON ai_usage(user_id, guild_id, day)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ai_day ON ai_usage(day)")
             c.execute("CREATE TABLE IF NOT EXISTS ai_optout (user_id TEXT PRIMARY KEY)")
             # Prepaid AI credit for non-home guilds: an append-only grant
@@ -323,6 +338,13 @@ class AI(commands.Cog):
 
     async def cog_load(self):
         self.provider = build_provider()  # None (with a log line) if unconfigured
+        # Paid servers answer on their own key so their spend and the home
+        # community's sit behind separate OpenRouter limits. Missing second
+        # key = everything on the home key, loudly, rather than paid AI dying.
+        self.provider_paid = build_provider("AI_API_KEY_PAID")
+        if self.provider_paid is None and self.provider is not None:
+            log.warning("AI_API_KEY_PAID unset — paid servers will answer on the HOME key")
+            self.provider_paid = self.provider
         if self._commands.available:
             log.info("AI command index: %d commands from %s",
                      self._commands.count, COMMAND_DOCS_PATH)
@@ -420,7 +442,15 @@ class AI(commands.Cog):
                 "bucks_smart": BUCKS_PRICE["smart"],
                 "bucks_quick": BUCKS_PRICE["quick"],
                 "cooldown_seconds": int(CHAT_COOLDOWN_S),
+                # per-server policy (set with /ai-config); these are the defaults
+                "default_daily_energy": DAILY_FREE_ENERGY,
+                "energy_range": [ENERGY_MIN, ENERGY_MAX],
+                "modes": list(AI_MODES),
+                "paid_ask_cap": DEFAULT_PAID_ASK_CAP,
+                # home community's own budget (kept under the old key for the
+                # dashboard template; it was never an account-wide cap)
                 "monthly_budget_usd": MONTHLY_BUDGET_USD,
+                "home_monthly_budget_usd": MONTHLY_BUDGET_USD,
                 "credit_pack_usd": CREDIT_PACK_USD,
                 # kept for template compat; face value == price by design now
                 "credit_compute_usd": CREDIT_PACK_USD,
@@ -437,37 +467,60 @@ class AI(commands.Cog):
             log.warning("AI energy docs not exported (%s): %s", path, e)
 
     @staticmethod
-    def _energy_info_block() -> str:
-        """How the metering works, built from the LIVE constants so the
-        explanation can never drift from what the meter actually charges —
-        same rule as the generated command docs. Loaded on demand via the
-        NEED_ENERGY sentinel or the 'energy' pre-gate in _generate."""
-        return (
-            "HOW YOUR ENERGY / USAGE SYSTEM WORKS (relay it in your own "
-            "voice when asked; these numbers come from live config, never "
-            "guess past them):\n"
-            f"- Every member gets {DAILY_FREE_ENERGY} free energy per day, "
-            "resetting at midnight UTC.\n"
-            "- Each answer costs energy based on what it actually cost to "
-            "generate — longer questions and answers cost more. The footer "
-            "under every answer shows the asker's remaining energy.\n"
-            "- Out of energy, extra answers cost peepo bucks, charged up "
-            f"front: {BUCKS_PRICE['smart']} bucks normally, "
-            f"{BUCKS_PRICE['quick']} bucks in quick mode; automatically "
-            "refunded if the AI fails to answer.\n"
+    def _energy_info_block(policy: GuildAiPolicy) -> str:
+        """How the metering works IN THIS SERVER, built from the live constants
+        and the server's own policy so the explanation can never drift from
+        what the meter actually charges — same rule as the generated command
+        docs. Loaded on demand via the NEED_ENERGY sentinel or the 'energy'
+        pre-gate in _generate."""
+        lines = [
+            "HOW YOUR ENERGY / USAGE SYSTEM WORKS IN THIS SERVER (relay it in "
+            "your own voice when asked; these numbers come from live config, "
+            "never guess past them):"
+        ]
+        if policy.unlimited:
+            lines.append(
+                "- This server runs the AI in UNLIMITED mode: members have no "
+                "daily allowance; every answer draws from the server's prepaid "
+                "AI credit until it is used up.")
+        else:
+            lines.append(
+                f"- Every member gets {policy.daily_energy} energy per day in "
+                "this server, resetting at midnight UTC.")
+            lines.append(
+                "- Each answer costs energy based on what it actually cost to "
+                "generate — longer questions and answers cost more. The footer "
+                "under every answer shows the asker's remaining energy.")
+            if policy.bucks_enabled and policy.paid_cap > 0:
+                lines.append(
+                    "- Out of energy, extra answers cost peepo bucks, charged up "
+                    f"front: {BUCKS_PRICE['smart']} bucks normally, "
+                    f"{BUCKS_PRICE['quick']} bucks in quick mode; automatically "
+                    "refunded if the AI fails to answer. At most "
+                    f"{policy.paid_cap} paid answers per member per day.")
+            else:
+                lines.append(
+                    "- Out of energy, a member waits until midnight UTC — there "
+                    "is no way to buy more here, and peepo bucks are not part "
+                    "of AI in this server.")
+        lines.append(
             "- /ai-usage shows a member their own usage; there is a "
-            f"{CHAT_COOLDOWN_S:.0f}-second cooldown between asks.\n"
+            f"{CHAT_COOLDOWN_S:.0f}-second cooldown between asks.")
+        lines.append(
             "- Paid servers run on prepaid AI credit: a "
             f"${CREDIT_PACK_USD:.0f} pack is ${CREDIT_PACK_USD:.0f} of "
             "AI usage, no expiry — when it runs out the AI pauses until the "
             "server tops up at forerunner.torvex.app/buy-ai. The home "
-            "community has its own monthly budget.\n"
+            "community has its own monthly budget. Server managers choose "
+            "the mode and allowance with /ai-config.")
+        lines.append(
             "- You cannot change any of these numbers — never promise free "
-            "energy, discounts, or exceptions."
-        )
+            "energy, discounts, or exceptions.")
+        return "\n".join(lines)
 
     def _system_prompt(self, character: str, with_commands: bool = False,
-                       with_energy: bool = False) -> str:
+                       with_energy: bool = False,
+                       policy: GuildAiPolicy = None) -> str:
         """Persona + hard rules, plus the command index only when asked for.
 
         The index lives in docs/commands.json and is attached on demand —
@@ -483,8 +536,11 @@ class AI(commands.Cog):
             parts += [self._commands.block(), COMMAND_RULES]
         else:
             parts.append(COMMAND_RULES_ONDEMAND)
-        parts.append(self._energy_info_block() if with_energy
-                     else ENERGY_RULES_ONDEMAND)
+        if with_energy:
+            parts.append(self._energy_info_block(
+                policy or policy_from_config({}, is_home=True)))
+        else:
+            parts.append(ENERGY_RULES_ONDEMAND)
         return "\n\n".join(parts)
 
     # ── accounting helpers ────────────────────────────────────────────────────
@@ -493,11 +549,40 @@ class AI(commands.Cog):
     def _today() -> str:
         return time.strftime("%Y-%m-%d", time.gmtime())
 
-    def _user_spent_today(self, user_id: str) -> int:
+    def _policy(self, guild_id) -> GuildAiPolicy:
+        """This server's usage policy (see utils/ai_meter.GuildAiPolicy), read
+        through security_config's short cache — a /ai-config change applies
+        to the next ask, no restart."""
+        gid = int(guild_id)
+        return policy_from_config(get_config(gid), is_home=(gid == HOME_GUILD_ID))
+
+    def _provider_for(self, guild_id):
+        """Home community answers on the home key; every other server on the
+        paid key (separate OpenRouter spend limit)."""
+        if int(guild_id) == HOME_GUILD_ID or self.provider_paid is None:
+            return self.provider
+        return self.provider_paid
+
+    def _user_spent_today(self, user_id: str, guild_id) -> int:
+        """A member's spend today IN ONE SERVER — energy is per (member,
+        server): a server's allowance is its own, never shared with or drained
+        by the same person's usage elsewhere."""
         with self._conn() as c:
             row = c.execute(
-                "SELECT COALESCE(SUM(micro),0) FROM ai_usage WHERE user_id=? AND day=?",
-                (user_id, self._today()),
+                "SELECT COALESCE(SUM(micro),0) FROM ai_usage "
+                "WHERE user_id=? AND guild_id=? AND day=?",
+                (user_id, str(guild_id), self._today()),
+            ).fetchone()
+        return row[0]
+
+    def _paid_asks_today(self, user_id: str, guild_id) -> int:
+        """Bucks-paid asks today in one server — counted from the ledger so
+        the daily cap survives restarts."""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT COUNT(*) FROM ai_usage "
+                "WHERE user_id=? AND guild_id=? AND day=? AND bucks>0",
+                (user_id, str(guild_id), self._today()),
             ).fetchone()
         return row[0]
 
@@ -518,14 +603,18 @@ class AI(commands.Cog):
         return row[0]
 
     def _credit_balance(self, guild_id) -> int:
-        """Prepaid credit remaining (µ$): lifetime grants minus lifetime spend."""
+        """Prepaid credit remaining (µ$): lifetime grants minus spend SINCE the
+        first grant. Usage from before a server ever held credit (a free trial
+        period, a stint in AI_GUILD_IDS) is not theirs to pay for."""
+        gid = str(guild_id)
         with self._conn() as c:
             granted = c.execute(
                 "SELECT COALESCE(SUM(micro),0) FROM ai_credit WHERE guild_id=?",
-                (str(guild_id),)).fetchone()[0]
+                (gid,)).fetchone()[0]
             spent = c.execute(
-                "SELECT COALESCE(SUM(micro),0) FROM ai_usage WHERE guild_id=?",
-                (str(guild_id),)).fetchone()[0]
+                "SELECT COALESCE(SUM(micro),0) FROM ai_usage WHERE guild_id=? "
+                "AND ts >= COALESCE((SELECT MIN(ts) FROM ai_credit WHERE guild_id=?), 0)",
+                (gid, gid)).fetchone()[0]
         return granted - spent
 
     def _record(self, guild_id, user_id, model, tokens_in, tokens_out, micro, bucks=0):
@@ -583,27 +672,47 @@ class AI(commands.Cog):
 
     # ── shared request pipeline (used by /ask and ping-to-chat) ──────────────
 
-    async def _precheck(self, user, tier, guild_id=None):
-        """Budget + energy gate. Returns (bucks_charged, None) on go,
-        (0, error_message) on stop. Debits bucks up front when past free energy."""
-        if self._month_spent() >= budget_micro(MONTHLY_BUDGET_USD):
-            return 0, "🧯 The AI hit this month's server-wide budget. Back on the 1st!"
-        # Paid guilds spend against their own PREPAID credit — what they paid
-        # for is what they can use, and it can't drain anyone else's.
-        if guild_id is not None and guild_id != HOME_GUILD_ID:
-            if self._credit_balance(guild_id) <= 0:
-                return 0, ("🧯 This server's prepaid AI credit is used up — "
-                           f"top up at <{BUY_URL}> to keep the AI going.")
-        if remaining_energy(self._user_spent_today(str(user.id))) <= 0:
-            price = BUCKS_PRICE[tier]
-            debited = await self._debit_bucks(user, price)
-            if debited is None:
-                return 0, (
-                    f"⚡ You're out of AI energy for today (resets at midnight UTC).\n"
-                    f"Extra uses cost **{BUCKS_PRICE['smart']} 💰** (or **{BUCKS_PRICE['quick']} 💰** "
-                    f"with `quick: True`) — you don't have enough bucks right now.")
-            return price, None
-        return 0, None
+    async def _precheck(self, user, tier, guild_id):
+        """The gate every ask passes through. Returns (bucks_charged, None) on
+        go, (0, error_message) on stop. Order is the point:
+          1. the POOL — home runs on its own monthly budget (only its own
+             spend counts), every other server on the credit it bought;
+          2. the server's MODE — unlimited goes straight through, energy
+             checks the member's allowance in THIS server;
+          3. out of energy — bucks exist only in the home community, and
+             even there at most `paid_cap` paid asks a day.
+        Nothing about the home community can ever gate a paying server."""
+        gid = int(guild_id)
+        is_home = gid == HOME_GUILD_ID
+        policy = self._policy(gid)
+        if is_home:
+            if self._month_spent(HOME_GUILD_ID) >= budget_micro(MONTHLY_BUDGET_USD):
+                return 0, ("🧯 The AI hit the home community's budget for this "
+                           "month. Back on the 1st!")
+        elif self._credit_balance(gid) <= 0:
+            return 0, ("🧯 This server's prepaid AI credit is used up — "
+                       f"top up at <{BUY_URL}> to keep the AI going.")
+        if policy.unlimited:
+            return 0, None
+        uid = str(user.id)
+        if remaining_energy(self._user_spent_today(uid, gid), policy.daily_energy) > 0:
+            return 0, None
+        if not policy.bucks_enabled or policy.paid_cap <= 0:
+            return 0, (
+                "⚡ You're out of AI energy in this server for today — everyone "
+                f"here gets {policy.daily_energy} a day, and it resets at midnight UTC.")
+        if self._paid_asks_today(uid, gid) >= policy.paid_cap:
+            return 0, (
+                f"⚡ You're out of energy and you've used today's {policy.paid_cap} "
+                "paid asks — resets at midnight UTC.")
+        price = BUCKS_PRICE[tier]
+        debited = await self._debit_bucks(user, price)
+        if debited is None:
+            return 0, (
+                f"⚡ You're out of AI energy for today (resets at midnight UTC).\n"
+                f"Extra uses cost **{BUCKS_PRICE['smart']} 💰** (or **{BUCKS_PRICE['quick']} 💰** "
+                f"with `quick: True`) — you don't have enough bucks right now.")
+        return price, None
 
     async def _generate(self, guild, channel, user, question, tier, character,
                         bucks_charged, skip_message_id=None, replied_to=None):
@@ -611,6 +720,8 @@ class AI(commands.Cog):
         success, (None, None, error_message) on failure (bucks refunded)."""
         model = MODEL_QUICK if tier == "quick" else MODEL_SMART
         user_id = str(user.id)
+        policy = self._policy(guild.id)
+        provider = self._provider_for(guild.id)
 
         context = await self._channel_context(channel, guild, skip_message_id)
         user_content = (
@@ -629,10 +740,10 @@ class AI(commands.Cog):
         attach_energy = any(w in qlow for w in (
             "energy", "ai-usage", "ai usage", "cooldown", "bucks", "cost", "pay"))
         system = self._system_prompt(character, with_commands=attach_cmds,
-                                     with_energy=attach_energy)
+                                     with_energy=attach_energy, policy=policy)
 
         try:
-            result = await self.provider.chat(
+            result = await provider.chat(
                 model=model, system=system,
                 user_content=user_content, max_tokens=MAX_OUT_TOKENS)
         except Exception as e:
@@ -653,9 +764,9 @@ class AI(commands.Cog):
         new_energy = attach_energy or (m and m.group(1).lower() == "need_energy")
         if (new_cmds, new_energy) != (attach_cmds, attach_energy):
             system = self._system_prompt(character, with_commands=new_cmds,
-                                         with_energy=new_energy)
+                                         with_energy=new_energy, policy=policy)
             try:
-                result = await self.provider.chat(
+                result = await provider.chat(
                     model=model, system=system,
                     user_content=user_content, max_tokens=MAX_OUT_TOKENS)
             except Exception as e:
@@ -693,9 +804,14 @@ class AI(commands.Cog):
         except Exception:
             log.exception("command-citation check failed")
 
-        left_after = remaining_energy(self._user_spent_today(user_id))
-        footer = (f"paid {bucks_charged} 💰" if bucks_charged
-                  else f"⚡ {max(left_after, 0)}/{DAILY_FREE_ENERGY} energy left today")
+        if bucks_charged:
+            footer = f"paid {bucks_charged} 💰"
+        elif policy.unlimited:
+            footer = f"💳 ${self._credit_balance(guild.id) / 1_000_000:.2f} credit left"
+        else:
+            left_after = remaining_energy(self._user_spent_today(user_id, guild.id),
+                                          policy.daily_energy)
+            footer = f"⚡ {max(left_after, 0)}/{policy.daily_energy} energy left today"
         mode = tier + (f" · {character}" if character != "peepo" else "")
         return text, f"-# {mode} · {footer}", None
 
@@ -862,20 +978,39 @@ class AI(commands.Cog):
     # ── /ai-usage ────────────────────────────────────────────────────────────
 
     @app_commands.command(name="ai-usage", description="Check your AI energy for today ⚡")
+    @app_commands.guild_only()
     async def ai_usage(self, interaction: discord.Interaction):
-        left = remaining_energy(self._user_spent_today(str(interaction.user.id)))
+        gid = interaction.guild_id
+        uid = str(interaction.user.id)
+        policy = self._policy(gid)
         with self._conn() as c:
             row = c.execute(
-                "SELECT COUNT(*), COALESCE(SUM(bucks),0) FROM ai_usage WHERE user_id=? AND day=?",
-                (str(interaction.user.id), self._today()),
+                "SELECT COUNT(*), COALESCE(SUM(bucks),0) FROM ai_usage "
+                "WHERE user_id=? AND guild_id=? AND day=?",
+                (uid, str(gid), self._today()),
             ).fetchone()
-        await interaction.response.send_message(
-            f"⚡ **{max(left, 0)}/{DAILY_FREE_ENERGY}** energy left today (resets midnight UTC)\n"
-            f"Questions asked today: **{row[0]}**"
-            + (f" · bucks spent: **{row[1]} 💰**" if row[1] else "")
-            + f"\nOut of energy? Extra asks cost **{BUCKS_PRICE['smart']} 💰** "
-              f"(**{BUCKS_PRICE['quick']} 💰** quick).",
-            ephemeral=True)
+        if policy.unlimited:
+            msg = (
+                "♾️ This server runs AI in **unlimited** mode — no daily allowance; "
+                "answers draw from the server's prepaid credit "
+                f"(**${self._credit_balance(gid) / 1_000_000:.2f}** left).\n"
+                f"Questions you asked here today: **{row[0]}**")
+        else:
+            left = remaining_energy(self._user_spent_today(uid, gid), policy.daily_energy)
+            msg = (
+                f"⚡ **{max(left, 0)}/{policy.daily_energy}** energy left today in this "
+                f"server (resets midnight UTC)\nQuestions asked here today: **{row[0]}**")
+            if policy.bucks_enabled and policy.paid_cap > 0:
+                paid_left = max(policy.paid_cap - self._paid_asks_today(uid, gid), 0)
+                msg += (
+                    (f" · bucks spent: **{row[1]} 💰**" if row[1] else "")
+                    + f"\nOut of energy? Extra asks cost **{BUCKS_PRICE['smart']} 💰** "
+                      f"(**{BUCKS_PRICE['quick']} 💰** quick) — **{paid_left}** of "
+                      f"{policy.paid_cap} paid asks left today.")
+            else:
+                msg += ("\nOut of energy? It comes back at midnight UTC — no bucks "
+                        "or purchases here.")
+        await interaction.response.send_message(msg, ephemeral=True)
 
     # ── /ai-privacy ──────────────────────────────────────────────────────────
 
@@ -924,19 +1059,28 @@ class AI(commands.Cog):
                 (month + "-%",)).fetchall()
         spent_usd = totals[1] / 1_000_000
         if gid == HOME_GUILD_ID:
-            budget_line = f"Spend: **${spent_usd:.2f} / ${MONTHLY_BUDGET_USD:.0f}** budget\n"
+            budget_line = f"Spend: **${spent_usd:.2f} / ${MONTHLY_BUDGET_USD:.0f}** home budget\n"
         else:
             bal = self._credit_balance(gid) / 1_000_000
             budget_line = (f"Spend this month: **${spent_usd:.2f}** · prepaid credit "
                            f"remaining: **${bal:.2f}**\n")
+        policy = self._policy(gid)
+        mode_line = (
+            "Mode: **unlimited** — no per-member allowance\n" if policy.unlimited else
+            f"Mode: **energy** — {policy.daily_energy}/member/day"
+            + (f", then bucks (≤ {policy.paid_cap} paid asks/day)"
+               if policy.bucks_enabled and policy.paid_cap else "")
+            + "\n")
         lines = [f"• <@{r['user_id']}> — {r['n']} asks, ${r['m'] / 1_000_000:.2f}" for r in top]
         msg = (
             f"🤖 **AI — {month} (this server)**\n"
-            + budget_line +
+            + budget_line + mode_line +
             f"Requests: {totals[0]:,} · tokens in/out: {totals[2]:,}/{totals[3]:,} · bucks sunk: {totals[4]:,} 💰\n"
             + ("**Top users:**\n" + "\n".join(lines) if lines else "No usage yet."))
-        # Operator view: the home guild also sees the pool split per server,
-        # since the global kill switch protects the whole API account.
+        # Operator view: the home guild also sees every server's spend. Paid
+        # servers run on their own credit and key — the home budget above is
+        # the home community's only; the OpenRouter key limits fence the
+        # real money.
         if gid == HOME_GUILD_ID and len(by_guild) > 1:
             gl = []
             for r in by_guild:
@@ -944,9 +1088,121 @@ class AI(commands.Cog):
                 gname = g.name if g else r["guild_id"]
                 gl.append(f"• {gname} — {r['n']} asks, ${r['m'] / 1_000_000:.2f}")
             total_usd = sum(r["m"] for r in by_guild) / 1_000_000
-            msg += (f"\n**All servers (${total_usd:.2f} / "
-                    f"${MONTHLY_BUDGET_USD:.0f} global cap):**\n" + "\n".join(gl))
+            msg += (f"\n**All servers — ${total_usd:.2f} billed this month** "
+                    "(paid servers draw on their own credit):\n" + "\n".join(gl))
         await interaction.response.send_message(msg, ephemeral=True)
+
+    # ── /ai-config (Manage Server) ───────────────────────────────────────────
+
+    ai_config = app_commands.Group(
+        name="ai-config",
+        description="How members may use AI in this server — daily energy or unlimited",
+        default_permissions=discord.Permissions(manage_guild=True),
+        guild_only=True)
+
+    def _policy_summary(self, gid: int) -> str:
+        p = self._policy(gid)
+        lines = []
+        if p.unlimited:
+            lines.append("**Mode: unlimited** — no daily allowance; every answer draws "
+                         "from this server's prepaid credit. Any one member can use all of it.")
+        else:
+            lines.append(f"**Mode: energy** — every member gets **{p.daily_energy} energy** "
+                         f"a day (≈ ${energy_usd(p.daily_energy):.2f} of AI per member-day), "
+                         "resetting at midnight UTC.")
+            if p.bucks_enabled and p.paid_cap > 0:
+                lines.append(f"Past that: **{BUCKS_PRICE['smart']} 💰** per ask "
+                             f"({BUCKS_PRICE['quick']} quick), at most **{p.paid_cap}** "
+                             "paid asks per member per day.")
+            elif p.bucks_enabled:
+                lines.append("Past that: no paid tier — members wait for the reset.")
+            else:
+                lines.append("Past that, a member waits for the reset — peepo bucks "
+                             "aren't part of AI here.")
+        if gid == HOME_GUILD_ID:
+            lines.append(f"Pool: home community budget "
+                         f"**${self._month_spent(HOME_GUILD_ID) / 1_000_000:.2f} / "
+                         f"${MONTHLY_BUDGET_USD:.0f}** this month.")
+        else:
+            lines.append(f"Pool: prepaid credit **${self._credit_balance(gid) / 1_000_000:.2f}** "
+                         "remaining.")
+        return "\n".join(lines)
+
+    async def _config_guard(self, interaction: discord.Interaction) -> bool:
+        if not self._ai_enabled(interaction.guild_id):
+            await interaction.response.send_message(
+                f"AI isn't enabled in this server yet — turn it on at <{BUY_URL}>.",
+                ephemeral=True)
+            return False
+        return True
+
+    @ai_config.command(name="show", description="Current AI usage mode and allowance for this server")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def ai_config_show(self, interaction: discord.Interaction):
+        if not await self._config_guard(interaction):
+            return
+        await interaction.response.send_message(
+            "🤖 **AI usage — this server**\n" + self._policy_summary(interaction.guild_id),
+            ephemeral=True)
+
+    @ai_config.command(name="mode", description="energy = daily allowance per member · unlimited = straight drawdown of the pool")
+    @app_commands.describe(mode="How members spend this server's AI")
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="energy — each member gets a daily allowance (recommended)", value="energy"),
+        app_commands.Choice(name="unlimited — no allowance; one member could use the whole pool", value="unlimited"),
+    ])
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def ai_config_mode(self, interaction: discord.Interaction, mode: str):
+        if not await self._config_guard(interaction):
+            return
+        gid = interaction.guild_id
+        if gid == HOME_GUILD_ID and mode != "energy":
+            await interaction.response.send_message(
+                "The home community always runs energy mode — it's on the shared "
+                "budget, not prepaid credit.", ephemeral=True)
+            return
+        set_config(gid, ai_mode=mode)
+        warn = ("\n⚠️ Unlimited means any one member can use this server's entire AI "
+                "credit. Switch back with `/ai-config mode energy` any time."
+                if mode == "unlimited" else "")
+        await interaction.response.send_message(
+            f"✅ Mode set to **{mode}**.{warn}\n\n" + self._policy_summary(gid),
+            ephemeral=True)
+
+    @ai_config.command(name="energy", description="Daily energy per member (energy mode)")
+    @app_commands.describe(amount=f"Energy per member per day ({ENERGY_MIN}–{ENERGY_MAX}); 100 ≈ $0.06 of AI")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def ai_config_energy(self, interaction: discord.Interaction,
+                               amount: app_commands.Range[int, ENERGY_MIN, ENERGY_MAX]):
+        if not await self._config_guard(interaction):
+            return
+        gid = interaction.guild_id
+        set_config(gid, ai_daily_energy=amount)
+        note = ("\nThis server is on **unlimited** mode, so the allowance only applies "
+                "once you switch to energy mode." if self._policy(gid).unlimited else "")
+        await interaction.response.send_message(
+            f"✅ Members now get **{amount} energy** a day here "
+            f"(≈ ${energy_usd(amount):.2f} of AI per member-day).{note}",
+            ephemeral=True)
+
+    @ai_config.command(name="paid-cap", description="Home only: max bucks-paid asks per member per day once energy is gone")
+    @app_commands.describe(amount=f"Paid asks per member per day ({PAID_CAP_MIN}–{PAID_CAP_MAX}); 0 = no paid tier")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def ai_config_paid_cap(self, interaction: discord.Interaction,
+                                 amount: app_commands.Range[int, PAID_CAP_MIN, PAID_CAP_MAX]):
+        if not await self._config_guard(interaction):
+            return
+        gid = interaction.guild_id
+        if gid != HOME_GUILD_ID:
+            await interaction.response.send_message(
+                "Peepo bucks aren't part of AI in this server — there's no paid tier to cap.",
+                ephemeral=True)
+            return
+        set_config(gid, ai_max_paid_asks=amount)
+        await interaction.response.send_message(
+            (f"✅ Members can buy at most **{amount}** extra asks a day with bucks."
+             if amount else "✅ Paid tier off — out of energy means wait for the reset."),
+            ephemeral=True)
 
     @app_commands.command(
         name="ai-credit-grant",

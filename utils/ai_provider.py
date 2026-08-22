@@ -117,8 +117,14 @@ class AnthropicProvider:
         )
 
 
-def build_provider():
-    """Build the provider chosen by .env, or None (cog answers 'not configured')."""
+def build_provider(key_env: str = "AI_API_KEY"):
+    """Build the provider chosen by .env, or None (cog answers 'not configured').
+
+    `key_env` names the env var holding the API key, so one account can run
+    two keys with separate spend limits: AI_API_KEY for the home community and
+    AI_API_KEY_PAID for servers on prepaid credit. The OpenRouter key limits
+    are the fence between the two pools; the cog picks the provider per guild.
+    (Anthropic-direct ignores key_env — the SDK reads ANTHROPIC_API_KEY.)"""
     kind = os.getenv("AI_PROVIDER", "anthropic").strip().lower()
     if kind == "anthropic":
         if not os.getenv("ANTHROPIC_API_KEY"):
@@ -127,9 +133,9 @@ def build_provider():
         return AnthropicProvider()
     if kind == "openai":
         base_url = os.getenv("AI_BASE_URL", "").strip()
-        api_key = os.getenv("AI_API_KEY", "").strip()
+        api_key = os.getenv(key_env, "").strip()
         if not base_url or not api_key:
-            log.warning("AI_PROVIDER=openai needs AI_BASE_URL + AI_API_KEY — AI disabled")
+            log.warning("AI_PROVIDER=openai needs AI_BASE_URL + %s — provider not built", key_env)
             return None
         return OpenAICompatProvider(base_url, api_key)
     log.warning("Unknown AI_PROVIDER=%r — AI disabled", kind)
