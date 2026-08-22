@@ -59,7 +59,7 @@ MEDIA_DIR = os.path.join(ROOT, "media_cache")
 #      Live embeds only. Deletes still resolve from discord.py's gateway cache,
 #      so the mod log works out of the box; nothing is written to our disk.
 #
-#   2. MESSAGE ARCHIVE (guild owner accepts the data-retention terms)
+#   2. MESSAGE ARCHIVE (Manage Server accepts the data-retention terms)
 #      Message rows + edits + the text identity ledger persist. Every row is
 #      keyed by guild_id and every read is filtered by it, so a guild is a
 #      lookup away and revoking the terms purges exactly that guild.
@@ -2289,24 +2289,18 @@ class ModLog(commands.Cog):
                      f"<t:{int(row.get('accepted_ts') or 0)}:D> (v{row.get('version')}). "
                      f"Revoke any time with `/msglog revoke-terms`.")
         else:
-            state = ("⚪ **Not accepted** — nothing is stored. The owner can accept with "
-                     "`/msglog accept-terms confirm:True`.")
+            state = ("⚪ **Not accepted** — nothing is stored. Anyone with **Manage Server** can "
+                     "accept with `/msglog accept-terms confirm:True`.")
         await interaction.response.send_message(f"{TERMS_TEXT}\n\n{state}", ephemeral=True)
 
     @msglog.command(name="accept-terms",
-                    description="Server owner: agree to the retention terms and turn the archive on.")
+                    description="Manage Server: agree to the retention terms and turn the archive on.")
     @app_commands.describe(confirm="Yes, I've read /msglog terms and I accept on behalf of this server")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def accept_terms_cmd(self, interaction: discord.Interaction, confirm: bool = False):
-        # Deliberately owner-only: Manage Server is a moderation permission, and
-        # this is not a moderation decision — it licenses someone else to hold
-        # this community's messages. That signature belongs to whoever owns it.
-        if interaction.user.id != interaction.guild.owner_id:
-            await interaction.response.send_message(
-                "🔒 Only the **server owner** can accept the retention terms — this decides "
-                "where your members' messages live, not how they're moderated. "
-                "Anyone with Manage Server can read them with `/msglog terms`.", ephemeral=True)
-            return
+        # Manage Server is enough here (Paul, 2026-08-21: terms gate only AltGuard,
+        # whose consent covers member device/network data and stays owner-only).
+        # The acceptance is still recorded by name, version and time.
         if not confirm:
             await interaction.response.send_message(
                 f"{TERMS_TEXT}\n\nRe-run with `confirm:True` to accept.", ephemeral=True)
@@ -2332,14 +2326,10 @@ class ModLog(commands.Cog):
             ephemeral=True)
 
     @msglog.command(name="revoke-terms",
-                    description="Server owner: stop storing this server's data and delete what's stored.")
+                    description="Manage Server: stop storing this server's data and delete what's stored.")
     @app_commands.describe(confirm="Yes — stop retention and permanently delete this server's archive")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def revoke_terms_cmd(self, interaction: discord.Interaction, confirm: bool = False):
-        if interaction.user.id != interaction.guild.owner_id:
-            await interaction.response.send_message(
-                "🔒 Only the **server owner** can revoke the retention terms.", ephemeral=True)
-            return
         if not confirm:
             await interaction.response.send_message(
                 "⚠️ This **permanently deletes** this server's stored messages, edit history and "
@@ -2583,7 +2573,7 @@ class ModLog(commands.Cog):
                     "media is unrecoverable (`/msglog terms`)")
         else:
             tier = ("📭 Retention: **nothing stored** — live logging only. "
-                    "The owner can turn the archive on with `/msglog terms`")
+                    "Manage Server can turn the archive on with `/msglog terms`")
         lines = [
             f"{'🟢 ON' if cfg.get('msglog_enabled') else '🔴 OFF'} · log → "
             + (f"<#{target}>" if target else "*none*"),
