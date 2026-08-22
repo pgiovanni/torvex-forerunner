@@ -20,6 +20,7 @@ the invoking channel, and ONLY when that channel is visible to @everyone —
 private/staff channels contribute no context. No database access, no archive,
 no tools. What the code doesn't fetch, no prompt injection can leak.
 """
+import math
 import os
 import re
 import sys
@@ -77,12 +78,21 @@ MONTHLY_BUDGET_USD = float(os.getenv("AI_MONTHLY_BUDGET_USD", "20"))
 
 # The home guild runs on the global budget; every other (paid) guild runs on
 # PREPAID CREDIT, no expiry, so one busy server can't drain the shared API
-# pool. A pack costs CREDIT_PACK_USD and grants CREDIT_COMPUTE_USD of usage —
-# the gap is the margin (Stripe fees + upkeep). torvex.app's ServiceCatalog
-# carries the same two numbers for the storefront: change both together.
+# pool. A pack's face value EQUALS its price — the margin (Paul: 25% of the
+# sale) lives in the METERED RATE instead: paid guilds are billed raw provider
+# cost × AI_PAID_MARKUP per answer, never shown as a pay-$20-get-$17 gap.
+# 4/3 keeps 25% of revenue. torvex.app's ServiceCatalog carries the same pack
+# number for the storefront: change both together.
 HOME_GUILD_ID = int(os.getenv("AI_HOME_GUILD_ID", "1215140346800119868"))
-CREDIT_PACK_USD = float(os.getenv("AI_CREDIT_PACK_USD", "20"))        # what they pay
-CREDIT_COMPUTE_USD = float(os.getenv("AI_CREDIT_COMPUTE_USD", "17"))  # what they get
+CREDIT_PACK_USD = float(os.getenv("AI_CREDIT_PACK_USD", "20"))
+PAID_MARKUP = float(os.getenv("AI_PAID_MARKUP", str(4 / 3)))
+
+
+def billed_micro(guild_id: int, micro: int) -> int:
+    """What a guild is charged for raw provider cost `micro`: the home
+    community pays cost, paid guilds pay the marked-up rate carrying the
+    margin."""
+    return micro if guild_id == HOME_GUILD_ID else math.ceil(micro * PAID_MARKUP)
 # Always-on guilds (the home community). Any other guild is enabled the moment
 # it has a row on the credit ledger — paid orders arrive via the poll below.
 AI_GUILD_IDS = {
@@ -412,7 +422,8 @@ class AI(commands.Cog):
                 "cooldown_seconds": int(CHAT_COOLDOWN_S),
                 "monthly_budget_usd": MONTHLY_BUDGET_USD,
                 "credit_pack_usd": CREDIT_PACK_USD,
-                "credit_compute_usd": CREDIT_COMPUTE_USD,
+                # kept for template compat; face value == price by design now
+                "credit_compute_usd": CREDIT_PACK_USD,
                 "context_messages": CONTEXT_MESSAGES,
                 "enabled_guilds": sorted(str(g) for g in self._enabled_guild_ids()),
                 "generated_at": int(time.time()),
@@ -447,7 +458,7 @@ class AI(commands.Cog):
             "- /ai-usage shows a member their own usage; there is a "
             f"{CHAT_COOLDOWN_S:.0f}-second cooldown between asks.\n"
             "- Paid servers run on prepaid AI credit: a "
-            f"${CREDIT_PACK_USD:.0f} pack adds ${CREDIT_COMPUTE_USD:.0f} of "
+            f"${CREDIT_PACK_USD:.0f} pack is ${CREDIT_PACK_USD:.0f} of "
             "AI usage, no expiry — when it runs out the AI pauses until the "
             "server tops up at forerunner.torvex.app/buy-ai. The home "
             "community has its own monthly budget.\n"
@@ -632,7 +643,7 @@ class AI(commands.Cog):
                 "😵 The AI didn't answer — try again in a minute."
                 + (f" Your {bucks_charged} 💰 was refunded." if bucks_charged else ""))
 
-        micro = cost_micro(model, result.tokens_in, result.tokens_out)
+        micro = billed_micro(guild.id, cost_micro(model, result.tokens_in, result.tokens_out))
         self._record(guild.id, user_id, model,
                      result.tokens_in, result.tokens_out, micro, bucks_charged)
 
@@ -654,7 +665,7 @@ class AI(commands.Cog):
                 return None, None, (
                     "😵 The AI didn't answer — try again in a minute."
                     + (f" Your {bucks_charged} 💰 was refunded." if bucks_charged else ""))
-            micro = cost_micro(model, result.tokens_in, result.tokens_out)
+            micro = billed_micro(guild.id, cost_micro(model, result.tokens_in, result.tokens_out))
             self._record(guild.id, user_id, model,
                          result.tokens_in, result.tokens_out, micro, 0)
 
@@ -959,7 +970,7 @@ class AI(commands.Cog):
             await interaction.response.send_message("That's not a guild id.", ephemeral=True)
             return
         if usd == 0:
-            usd = CREDIT_COMPUTE_USD
+            usd = CREDIT_PACK_USD
         micro = int(round(usd * 1_000_000))
         with self._conn() as c:
             c.execute("INSERT INTO ai_credit(ts, guild_id, micro, note) VALUES (?,?,?,?)",

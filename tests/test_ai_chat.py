@@ -121,5 +121,20 @@ class TestEnergyInfoBlock(unittest.TestCase):
         self.assertIn("midnight UTC", block)
 
 
+class TestBilledMicro(unittest.TestCase):
+    def test_home_guild_pays_raw_cost(self):
+        from cogs.ai import billed_micro, HOME_GUILD_ID
+        self.assertEqual(billed_micro(HOME_GUILD_ID, 3000), 3000)
+
+    def test_paid_guild_pays_marked_up_rate(self):
+        import math
+        from cogs.ai import billed_micro, PAID_MARKUP
+        self.assertEqual(billed_micro(123, 3000), math.ceil(3000 * PAID_MARKUP))
+
+    def test_markup_keeps_25_percent_of_revenue(self):
+        from cogs.ai import PAID_MARKUP
+        self.assertAlmostEqual(1 - 1 / PAID_MARKUP, 0.25, places=3)
+
+
 if __name__ == "__main__":
     unittest.main()
