@@ -20,6 +20,7 @@ Emoji, and the grant is done by THIS bot — which anti-nuke exempts — so a bu
 of members self-assigning never trips the nuke detector (the carl-bot problem).
 """
 import asyncio
+import json
 import os
 import re
 import sys
@@ -31,7 +32,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from utils.role_templates import TEMPLATES, template_choices  # noqa: E402
+from utils.role_templates import TEMPLATES, template_choices, as_json  # noqa: E402
 
 log = logging.getLogger("role_menu")
 # Relocatable like security_config: the web dashboard edits panels, and it runs
@@ -157,6 +158,21 @@ def _init():
         if "state" not in cols:
             # work queue for panels edited outside the bot (the dashboard)
             c.execute("ALTER TABLE panels ADD COLUMN state TEXT")
+        rcols = {r[1] for r in c.execute("PRAGMA table_info(panel_roles)")}
+        if "colour" not in rcols:
+            # A row the dashboard saves with NO role_id is a role that doesn't
+            # exist yet: panel_sync creates it (name = label, this colour) before
+            # posting. That is what lets a template be edited freely on the web
+            # BEFORE any role is made, instead of creating the whole set and
+            # deleting the leftovers.
+            c.execute("ALTER TABLE panel_roles ADD COLUMN colour INTEGER")
+
+
+def _button_rows(c, panel_id):
+    """The rows that can actually be buttons — a role that hasn't been created
+    yet (role_id NULL) has nothing to grant, so it is never rendered."""
+    return c.execute("SELECT * FROM panel_roles WHERE panel_id=? AND role_id IS NOT NULL "
+                     "ORDER BY pos", (panel_id,)).fetchall()
 
 
 _init()
@@ -230,7 +246,8 @@ def _panel_exclusive_roles(panel_id):
             if not p or not p["exclusive"]:
                 return set()
             return {int(r["role_id"]) for r in
-                    c.execute("SELECT role_id FROM panel_roles WHERE panel_id=?", (panel_id,))}
+                    c.execute("SELECT role_id FROM panel_roles WHERE panel_id=? "
+                              "AND role_id IS NOT NULL", (panel_id,))}
     except sqlite3.Error:
         return set()   # never block a click on a config read
 
@@ -288,12 +305,28 @@ class RoleMenu(commands.Cog):
         n = 0
         with _conn() as c:
             for p in c.execute("SELECT panel_id FROM panels").fetchall():
-                roles = c.execute("SELECT * FROM panel_roles WHERE panel_id=? ORDER BY pos", (p["panel_id"],)).fetchall()
+                roles = _button_rows(c, p["panel_id"])
                 if roles:
                     self.bot.add_view(_build_view(p["panel_id"], roles))
                     n += 1
         print(f"role menus: registered {n} persistent panels")
+        self._export_templates()
         self.panel_sync.start()
+
+    def _export_templates(self):
+        """Publish the template set for the dashboard's "start from a template"
+        picker — written from the code on every start, never hand-maintained,
+        so the web and `/rolemenu template` can't disagree. Best-effort: a docs
+        artifact must never stop the cog loading."""
+        path = os.getenv("TORVEX_ROLE_TEMPLATES_JSON") or os.path.join(
+            os.path.dirname(DB_PATH), "role_templates.json")
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(as_json(), f, ensure_ascii=False, indent=1)
+            os.replace(tmp, path)
+        except OSError as e:
+            log.warning("role templates export failed: %s", e)
 
     async def cog_unload(self):
         self.panel_sync.cancel()
@@ -344,14 +377,58 @@ class RoleMenu(commands.Cog):
         _render only registers on a fresh post; an EDIT that changed the roles
         would otherwise leave the old buttons bound, so re-register explicitly.
         """
+        await self._materialise_roles(guild, panel_id)
         await self._render(guild, panel_id, lambda m: None)
         with _conn() as c:
             p = c.execute("SELECT message_id FROM panels WHERE panel_id=?", (panel_id,)).fetchone()
-            roles = c.execute("SELECT * FROM panel_roles WHERE panel_id=? ORDER BY pos",
-                              (panel_id,)).fetchall()
+            roles = _button_rows(c, panel_id)
         if p and p["message_id"] and roles:
             self.bot.add_view(_build_view(panel_id, roles), message_id=int(p["message_id"]))
         self._clear_state(panel_id)
+
+    async def _materialise_roles(self, guild, panel_id):
+        """Create the roles a dashboard-saved panel still lacks.
+
+        A row with no role_id names a role by its label. An existing role of
+        that name is adopted (unless it sits at or above my own role — that
+        button could never be fulfilled); otherwise it is created permissionless,
+        exactly as `/rolemenu template` would. A row that can't be resolved stays
+        unresolved — it is simply not rendered, and the next save retries it —
+        rather than failing the whole panel.
+        """
+        with _conn() as c:
+            pending = c.execute("SELECT rowid, label, colour FROM panel_roles "
+                                "WHERE panel_id=? AND role_id IS NULL", (panel_id,)).fetchall()
+        if not pending:
+            return
+        me = guild.me
+        by_name = {r.name.casefold(): r for r in guild.roles}
+        for row in pending:
+            name = (row["label"] or "").strip()[:100]
+            if not name:
+                continue
+            role = by_name.get(name.casefold())
+            action = plan_template_role(role, me.top_role)
+            if action == "blocked":
+                log.warning("panel %s: role %r sits above me, skipped", panel_id, name)
+                continue
+            if action == "create":
+                if not me.guild_permissions.manage_roles:
+                    log.warning("panel %s: no Manage Roles, can't create %r", panel_id, name)
+                    return
+                try:
+                    role = await guild.create_role(
+                        name=name, colour=discord.Colour(int(row["colour"] or 0)),
+                        permissions=discord.Permissions.none(),
+                        hoist=False, mentionable=False,
+                        reason=f"role menu panel #{panel_id} (dashboard)")
+                    by_name[name.casefold()] = role
+                    await asyncio.sleep(0.4)   # role creation is a tight bucket
+                except discord.HTTPException as e:
+                    log.warning("panel %s: couldn't create role %r: %s", panel_id, name, e)
+                    continue
+            with _conn() as c:
+                c.execute("UPDATE panel_roles SET role_id=? WHERE rowid=?", (str(role.id), row["rowid"]))
 
     async def _delete_panel(self, guild, p):
         channel = guild.get_channel(int(p["channel_id"])) if p["channel_id"] else None
@@ -370,7 +447,7 @@ class RoleMenu(commands.Cog):
         the ephemeral confirmation (so callers control response vs followup)."""
         with _conn() as c:
             p = c.execute("SELECT * FROM panels WHERE panel_id=?", (panel_id,)).fetchone()
-            roles = c.execute("SELECT * FROM panel_roles WHERE panel_id=? ORDER BY pos", (panel_id,)).fetchall()
+            roles = _button_rows(c, panel_id)
         channel = guild.get_channel(int(p["channel_id"]))
 
         async def _tell(text):

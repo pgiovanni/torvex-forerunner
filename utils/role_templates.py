@@ -63,6 +63,7 @@ TEMPLATES = {
             ("Events", "🎮", 0x2ECC71),
             ("Polls", "📊", 0x9B59B6),
             ("Bump Squad", "👋", 0xE67E22),
+            ("Revive", "⚡", 0x95A5A6),
         ],
     },
     "colours": {
@@ -77,6 +78,53 @@ TEMPLATES = {
             ("Blue", "💙", 0x3498DB),
             ("Purple", "💜", 0x9B59B6),
             ("Pink", "🩷", 0xE91E63),
+        ],
+    },
+    # The full palette a colour-focused server expects (three tiers of every
+    # hue plus neutrals) — 25 options is exactly Discord's one-message button
+    # cap, so this is as big as a single pick-one panel can ever be.
+    "colours_full": {
+        "title": "🎨 Name colour — full palette",
+        "blurb": "Pick a colour for your name. One at a time — choosing a new one replaces the old.",
+        "exclusive": True,
+        "roles": [
+            ("Dark red", "❤️", 0x4B0000),
+            ("Dark orange", "🧡", 0x883904),
+            ("Dark yellow", "💛", 0x89590C),
+            ("Dark green", "💚", 0x1A5F09),
+            ("Dark blue", "💙", 0x123456),
+            ("Dark purple", "💜", 0x3B0B5A),
+            ("Dark pink", "🩷", 0xA60059),
+            ("Red", "❤️", 0xFF0004),
+            ("Orange", "🧡", 0xFF7100),
+            ("Yellow", "💛", 0xFFEE00),
+            ("Green", "💚", 0x24FF00),
+            ("Blue", "💙", 0x00C6FF),
+            ("Purple", "💜", 0xB900FF),
+            ("Pink", "🩷", 0xFF007C),
+            ("Pastel red", "❤️", 0xFF7575),
+            ("Pastel orange", "🧡", 0xFFBE5B),
+            ("Pastel yellow", "💛", 0xFBFF85),
+            ("Pastel green", "💚", 0x98FF8B),
+            ("Pastel blue", "💙", 0xAAC5FF),
+            ("Pastel purple", "💜", 0xF0A8FF),
+            ("Pastel pink", "🩷", 0xFFABCD),
+            ("Black", "🖤", 0x0D0D0D),
+            ("White", "🤍", 0xFFFFFF),
+            ("Light gray", "🩶", 0x818181),
+            ("Beige", "🤎", 0xCCB08C),
+        ],
+    },
+    "sexuality": {
+        "title": "🏳️‍🌈 Sexuality",
+        "blurb": "Pick what fits you. Optional, and you can pick more than one.",
+        "exclusive": False,
+        "roles": [
+            ("Straight", "🔷", 0x607D8B),
+            ("Gay", "🌈", 0x11806A),
+            ("Lesbian", "🧡", 0xE67E22),
+            ("Bisexual", "💜", 0x71368A),
+            ("Pansexual", "💛", 0xF1C40F),
         ],
     },
     "platforms": {
@@ -111,6 +159,24 @@ MAX_BUTTONS = 25
 def template_choices():
     """(key, title) pairs for building the slash-command choice list."""
     return [(k, t["title"]) for k, t in TEMPLATES.items()]
+
+
+def as_json():
+    """The templates as plain data, for the web dashboard.
+
+    The bot writes this to a shared file on start so the dashboard's "start from
+    a template" picker can never drift from what `/rolemenu template` builds —
+    there is exactly one definition, here.
+    """
+    return {
+        key: {
+            "title": t["title"],
+            "blurb": t["blurb"],
+            "exclusive": bool(t["exclusive"]),
+            "roles": [{"name": n, "emoji": e, "colour": c} for n, e, c in t["roles"]],
+        }
+        for key, t in TEMPLATES.items()
+    }
 
 
 def validate():

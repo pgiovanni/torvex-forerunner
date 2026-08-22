@@ -53,6 +53,27 @@ class TemplateDataTests(unittest.TestCase):
             self.assertTrue(t["title"].strip(), key)
             self.assertLessEqual(len(t["blurb"]), 4096, key)
 
+    def test_full_palette_is_exactly_the_button_cap_and_pick_one(self):
+        # the whole point of the set: as many colours as ONE panel can hold
+        t = TEMPLATES["colours_full"]
+        self.assertEqual(len(t["roles"]), MAX_BUTTONS)
+        self.assertTrue(t["exclusive"])
+
+    def test_sexuality_allows_several(self):
+        self.assertFalse(TEMPLATES["sexuality"]["exclusive"])
+
+    def test_json_export_mirrors_the_templates(self):
+        # the dashboard builds its "start from a template" picker from this
+        from utils.role_templates import as_json
+        import json
+        j = as_json()
+        self.assertEqual(sorted(j), sorted(TEMPLATES))
+        for key, t in TEMPLATES.items():
+            self.assertEqual(j[key]["exclusive"], t["exclusive"])
+            self.assertEqual([r["name"] for r in j[key]["roles"]], [r[0] for r in t["roles"]])
+            self.assertEqual([r["colour"] for r in j[key]["roles"]], [r[2] for r in t["roles"]])
+        json.dumps(j)          # must be plain data
+
 
 class PlanTests(unittest.TestCase):
     """plan_template_role decides create / reuse / blocked."""
@@ -189,6 +210,33 @@ class ExclusivityMigrationTests(unittest.TestCase):
         row = self._run(lambda c: c.execute("SELECT * FROM panels").fetchone())
         self.assertEqual(row["title"], "Old Panel")
         self.assertFalse(row["exclusive"], "old panels must not become pick-one")
+
+    def test_panel_roles_gain_a_colour_column_for_not_yet_created_roles(self):
+        import cogs.role_menu as rm
+        self._old_schema()
+        orig = rm.DB_PATH
+        rm.DB_PATH = self.path
+        try:
+            rm._init()
+            rm._init()         # idempotent
+        finally:
+            rm.DB_PATH = orig
+            import gc
+            gc.collect()       # `with _conn()` commits but never closes; Windows
+                               # won't delete the temp dir while it's open
+        cols = self._run(lambda c: [r[1] for r in c.execute("PRAGMA table_info(panel_roles)")])
+        self.assertEqual(cols.count("colour"), 1)
+
+    def test_unresolved_rows_never_become_buttons(self):
+        # a dashboard row with no role yet must not render (nothing to grant)
+        import cogs.role_menu as rm
+        self._old_schema()
+        def seed(c):
+            c.execute("ALTER TABLE panel_roles ADD COLUMN colour INTEGER")
+            c.execute("INSERT INTO panel_roles VALUES(1,'42','Real','🎉',0,NULL)")
+            c.execute("INSERT INTO panel_roles VALUES(1,NULL,'Pending','✨',1,255)")
+            return [r["label"] for r in rm._button_rows(c, 1)]
+        self.assertEqual(self._run(seed), ["Real"])
 
     def test_migration_is_idempotent(self):
         self._old_schema()
