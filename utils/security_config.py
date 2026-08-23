@@ -148,6 +148,19 @@ DEFAULTS = {
     "mod_require_reason": 0,         # refuse ban/kick/timeout with no reason given
     "mod_default_timeout_min": 60,   # /timeout default when no duration is passed
     "mod_ban_delete_days": 0,        # delete this many days of the banned user's messages (0-7)
+    # ── conduct record (/warn /note /warnings) — utils/conduct.py ─────────────
+    # The commands are always available (Discord permissions gate them); these
+    # only govern behaviour. Clearing is always a soft delete that keeps who did
+    # it and why, so none of these can turn the audit trail off.
+    "conduct_dm_on_warn": 1,         # tell the member they were warned, and why
+    "conduct_require_reason": 1,     # ON by default: a warning with no reason isn't a record
+    "conduct_evidence": 1,           # allow screenshot/file evidence on entries
+    "conduct_evidence_max_mb": 25,   # per-file cap
+    "conduct_evidence_max_gb": 2,    # per-guild total. Uploads are REFUSED past this
+                                     # rather than evicting old files — silently
+                                     # deleting evidence is the one failure mode
+                                     # a record like this must never have.
+    "conduct_log_channel_id": None,  # falls back to mod_log_channel_id -> modlog_channel_id
     # ── AI chat (/ask + ping-to-chat) — cogs/ai.py ────────────────────────────
     # Enablement is NOT this key: the home community is always on and any
     # other server is on once it holds prepaid credit (ai_credit ledger).
