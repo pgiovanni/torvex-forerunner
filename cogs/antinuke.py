@@ -15,7 +15,12 @@ sustained/extreme behavior trips.
 Per-guild + opt-in: runs only where `antinuke` is enabled in security_config.
 Each guild has its own enforce/shadow mode, whitelist, quarantine role, modlog
 channel and timeout — read per event from security_config (no module globals).
-Never acts on: guild owner, the bot itself, bots/webhooks, or the guild whitelist.
+Never acts on: guild owner, the bot itself, or the guild whitelist. Bots are
+exempt ONLY from the role-grant RATE vectors (reaction-role and levelling bursts
+are routine bot behavior — this false-tripped on carl-bot and MEE6); the
+destructive vectors and the admin-grant instant rule stay armed against bots,
+because a hijacked or malicious bot nuking is exactly the threat (Jalapeño).
+Per-guild `antinuke_trusted_bots` grants a specific bot full exemption.
 """
 import os
 import sys
@@ -198,8 +203,10 @@ class AntiNuke(commands.Cog):
 
     def _exempt(self, guild, user, cfg):
         wl = set(cfg.get("whitelist") or [])
+        trusted = {int(x) for x in (cfg.get("antinuke_trusted_bots") or [])}
         return (user is None or user.id == self.bot.user.id
-                or user.id == guild.owner_id or user.id in wl)
+                or user.id == guild.owner_id or user.id in wl
+                or (getattr(user, "bot", False) and user.id in trusted))
 
     def _modlog(self, guild, cfg):
         mid = cfg.get("modlog_channel_id")
@@ -284,6 +291,11 @@ class AntiNuke(commands.Cog):
         cfg = get_config(guild.id)
         user = await self._executor(guild, action, target_id)
         if self._exempt(guild, user, cfg):
+            return
+        # Bots skip the role-grant RATE vectors (see module docstring): a panel
+        # publish or levelling sweep is a burst by design. Destructive vectors
+        # and _check_admin_grant still apply to bots in full.
+        if getattr(user, "bot", False) and action in ("member_role", "role_remove")                 and not cfg.get("antinuke_watch_bot_roles"):
             return
         gid = guild.id
         # the actor is passed in so an open maintenance window can raise the

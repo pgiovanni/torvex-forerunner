@@ -38,6 +38,9 @@ DEFAULTS = {
     "antinuke_timeout_min": 10,
     "antinuke_restore_bans": 1,
     "whitelist": [],                # ids never acted on
+    "antinuke_trusted_bots": [],    # bot ids with FULL anti-nuke exemption (this server trusts them)
+    "antinuke_watch_bot_roles": 0,  # 1 = bots' role-grant bursts count toward the rate rules again
+    "partner_roles": [],            # partner-bot verification roles AltGuard must never re-strip
     # per-vector rate overrides on top of the code defaults (antinuke.ACTION_LIMITS):
     # {vector: [count, window_s]}. Set via /antinuke. Missing vector = default.
     "antinuke_limits": {},
