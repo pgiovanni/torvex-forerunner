@@ -39,6 +39,7 @@ import logging
 import os
 import re
 import time
+from collections import deque
 
 import aiohttp
 import discord
@@ -49,6 +50,7 @@ import quarantine_store as qstore
 import rejoin_roles
 from tokens import make_token, pack
 from utils.security_config import get_config
+from utils import altguard_mode as agmode
 
 log = logging.getLogger("altguard")
 
@@ -67,6 +69,8 @@ QUARANTINE_ROLE_ID = _env_int("ALTGUARD_QUARANTINE_ROLE_ID")
 MODLOG_CHANNEL_ID = _env_int("ALTGUARD_MODLOG_CHANNEL_ID")
 VERIFY_CHANNEL_ID = _env_int("ALTGUARD_VERIFY_CHANNEL_ID")
 MIN_ACCOUNT_AGE_DAYS = _env_int("ALTGUARD_MIN_ACCOUNT_AGE_DAYS", 7)
+# Observe mode's raid heuristic: joins per guild inside this window (seconds).
+OBSERVE_BURST_SECS = _env_int("ALTGUARD_OBSERVE_BURST_SECS", 60)
 # "Almost Verified": a member who opened their verify link and scored a CLEAN,
 # HIGH-TIMING-CONFIDENCE pass, but stopped at the Discord authorize screen. The
 # role carries ZERO server permissions — its only effect is an allow-send
@@ -413,6 +417,8 @@ class AltGuard(commands.Cog):
         self.session: aiohttp.ClientSession | None = None
         # live, runtime-toggleable forced-gate flag (env is just the seed default)
         self.quarantine_on_join = QUARANTINE_ON_JOIN
+        # observe mode: recent join timestamps per remote guild (raid heuristic)
+        self._join_window = {}
 
     async def cog_load(self):
         qstore.init()
@@ -661,7 +667,13 @@ class AltGuard(commands.Cog):
     # ------------------------------------------------------------------ events
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        if member.bot or member.guild.id != GUILD_ID:
+        if member.bot:
+            return
+        if member.guild.id != GUILD_ID:
+            # Multi-server: everything below is the operator's own guild, wired
+            # to env ids and a single-guild results poll. Other guilds get the
+            # observe-only path — reporting, never a role.
+            await self._observe_join(member)
             return
         # forced-gate: strip access on the way in, before anything else
         quarantined = False
@@ -738,6 +750,49 @@ class AltGuard(commands.Cog):
                     note.append("**DMs closed** — couldn't deliver link; "
                                 f"tell them to run `/verify`{panel}")
                 await ch.send(f"👀 AltGuard: {member.mention} (`{member.id}`) joined — {', '.join(note)}.")
+
+    async def _observe_join(self, member: discord.Member):
+        """Observe mode, for guilds that are not the operator's own.
+
+        Reports join-time risk to THEIR mod-log and does nothing else: no
+        quarantine, no DM, no role touched, ever. That promise is what makes it
+        safe to switch on in someone else's server, and it is all we can honestly
+        offer until the gate speaks per-guild (a remote member's verdict would
+        currently be processed against the home guild).
+
+        Silent on ordinary joins by design — a line on every member is noise,
+        and noise is how a security log stops being read.
+        """
+        guild = member.guild
+        cfg = get_config(guild.id)
+        mode = agmode.effective_mode(guild.id, cfg, GUILD_ID)
+        if mode == "off":
+            return
+        ids = agmode.resolve_ids(guild.id, cfg, GUILD_ID, {})
+        ch = guild.get_channel(ids["modlog_channel_id"]) if ids.get("modlog_channel_id") else None
+        if ch is None:
+            return
+        now = time.time()
+        window = self._join_window.setdefault(guild.id, deque())
+        window.append(now)
+        while window and now - window[0] > OBSERVE_BURST_SECS:
+            window.popleft()
+        age_days = (discord.utils.utcnow() - member.created_at).days
+        notes = agmode.join_risk_signals(
+            age_days, member.avatar is not None, len(window), OBSERVE_BURST_SECS,
+            min_age_days=MIN_ACCOUNT_AGE_DAYS)
+        if not notes:
+            return
+        tail = ""
+        if agmode.is_degraded(guild.id, cfg, GUILD_ID):
+            tail = ("\n*Observing only — this server is configured to hold members, but "
+                    "enforcement isn't switched on for it yet. Nobody has been held.*")
+        try:
+            await ch.send(f"👀 AltGuard (observing): {member.mention} (`{member.id}`) "
+                          f"joined — {', '.join(notes)}.{tail}",
+                          allowed_mentions=discord.AllowedMentions.none())
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
