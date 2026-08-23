@@ -170,21 +170,44 @@ check("no metadata + unknown ext stays quarantined",
 check("spoofed content_type without media ext stays quarantined",
       not ml.is_repostable("123_0_tool.exe", [{"filename": "tool.exe", "content_type": "application/x-msdownload"}]))
 
-# ---- retention tiers: log for everyone, remember only where it's licensed
-ml.ARCHIVE_GUILDS = {"111"}          # operator-granted media tier
+# ---- retention tiers (2026-08-23): recent window for everyone, long archive
+# only where it is BOTH paid for (Pro) AND licensed (terms accepted)
+ml.ARCHIVE_GUILDS = {"111"}          # operator's own guild
 ml._CONSENT.clear()
+ml._PRO.clear()
 ml._CONSENT["222"] = {"version": ml.TERMS_VERSION, "uid": "9", "accepted_ts": 1.0}
-ml._CONSENT["333"] = {"version": 0}   # accepted an older, superseded terms text
+ml._PRO["222"] = {"expires_ts": NOW + 86400}                 # paid + accepted
+ml._CONSENT["333"] = {"version": 0}                          # superseded terms text
+ml._PRO["333"] = {"expires_ts": None}
+ml._CONSENT["555"] = {"version": ml.TERMS_VERSION}           # accepted, never paid
+ml._PRO["666"] = {"expires_ts": NOW + 86400}                 # paid, never accepted
+ml._CONSENT["777"] = {"version": ml.TERMS_VERSION}
+ml._PRO["777"] = {"expires_ts": NOW - 3600}                  # paid, lapsed an hour ago
 
+check("operator guild = operator tier", ml.retention_tier("111") == "operator")
 check("operator guild archives messages", ml.archives_messages("111"))
 check("operator guild archives media", ml.archives_media("111"))
-check("consenting guild archives messages", ml.archives_messages("222"))
-check("consenting guild does NOT archive media", not ml.archives_media("222"))
-check("stale consent version does not count", not ml.archives_messages("333"))
-check("unknown guild stores nothing", not ml.archives_messages("444"))
-check("unknown guild stores no media", not ml.archives_media("444"))
-check("guild id type does not matter", ml.archives_messages(222))
+check("operator guild has no media ceiling", ml.guild_media_cap_bytes("111") is None)
+check("pro + accepted = pro tier", ml.retention_tier("222") == "pro")
+check("pro guild archives messages", ml.archives_messages("222"))
+check("pro guild archives media too", ml.archives_media("222"))
+check("pro media ceiling applies", ml.guild_media_cap_bytes("222") == ml.PRO_MEDIA_MB * 1024 ** 2)
+check("stale consent version does not count", ml.retention_tier("333") == "recent")
+check("unknown guild = recent window", ml.retention_tier("444") == "recent")
+check("recent guild does not long-archive", not ml.archives_messages("444"))
+check("recent guild keeps no media beyond the window", not ml.archives_media("444"))
+check("recent media ceiling applies", ml.guild_media_cap_bytes("444") == ml.RECENT_MEDIA_MB * 1024 ** 2)
+check("accepted but unpaid = recent", ml.retention_tier("555") == "recent")
+check("paid but not accepted = recent", ml.retention_tier("666") == "recent")
+check("lapsed pro = recent", ml.retention_tier("777") == "recent")
+check("lapsed pro still inside grace for the sweeper",
+      ml.pro_active("777", NOW, grace_days=ml.PRO_GRACE_DAYS))
+check("lapsed pro past grace is gone",
+      not ml.pro_active("777", NOW + (ml.PRO_GRACE_DAYS + 1) * 86400, grace_days=ml.PRO_GRACE_DAYS))
+check("no-expiry pro is active forever", ml.pro_active("333", NOW + 10 ** 9))
+check("guild id type does not matter", ml.retention_tier(222) == "pro")
 ml._CONSENT.clear()
+ml._PRO.clear()
 
 # ---- honesty line: what the archive did NOT keep
 _a = [{"filename": "kept.png", "size": 1000},
