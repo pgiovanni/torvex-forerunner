@@ -262,7 +262,11 @@ class VerifyPrune(commands.Cog):
         if ts is None:
             v = qstore.verification(m.id)
             ts = v.get("issued_at") if v else None
-        if ts is None and m.joined_at:
+        # Join-time fallback is HOME-GUILD ONLY. Pointed at another server's
+        # long-standing "unverified" role, join time makes every member of that
+        # pen instantly >72h overdue with no verification record — a mass kick
+        # on day one. Elsewhere: no real hold record, no clock.
+        if ts is None and m.guild.id == GUILD_ID and m.joined_at:
             ts = m.joined_at.timestamp()
         return ts
 

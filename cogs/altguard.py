@@ -760,6 +760,19 @@ class AltGuard(commands.Cog):
         before_ids = {r.id for r in before.roles}
         gained = [r for r in after.roles if r.id not in before_ids]
         strip = [r for r in self._removable_roles(after) if r in gained]
+        # Partner verification roles are never re-stripped: a member who clears
+        # the partner bot (carl-bot etc.) AFTER AltGuard held them would get the
+        # role granted and instantly yanked — stuck in both systems forever.
+        # Leaving it on is also the assist-mode signal that they passed there.
+        partner = {int(x) for x in (get_config(after.guild.id).get("partner_roles") or [])}
+        kept_partner = [r for r in strip if r.id in partner]
+        strip = [r for r in strip if r.id not in partner]
+        if kept_partner and not strip:
+            ch0 = after.guild.get_channel(MODLOG_CHANNEL_ID)
+            if ch0:
+                await ch0.send(
+                    f"🤝 {after.mention} (`{after.id}`) gained partner role "
+                    f"{', '.join(r.mention for r in kept_partner)} while held — left in place.")
         if not strip:
             return  # nothing new to strip (also how our own edit avoids a loop)
         qstore.add_roles(after.id, after.guild.id, [r.id for r in strip])
