@@ -50,8 +50,12 @@ def _cfg(guild_id) -> dict:
         "evidence": bool(c.get("conduct_evidence", 1)),
         "max_mb": int(c.get("conduct_evidence_max_mb", 25) or 25),
         "max_gb": int(c.get("conduct_evidence_max_gb", 2) or 2),
+        # Warnings are moderation records, so they belong with the message log,
+        # not the security/AltGuard alert channel (Paul, 8/23). Order: explicit
+        # conduct channel -> moderation-actions channel -> message log -> security log.
         "log_channel_id": (c.get("conduct_log_channel_id")
                            or c.get("mod_log_channel_id")
+                           or c.get("msglog_channel_id")
                            or c.get("modlog_channel_id")),
     }
 

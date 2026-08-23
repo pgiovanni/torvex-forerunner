@@ -143,7 +143,7 @@ DEFAULTS = {
     "mod_enabled": 0,                # master opt-in for the CONFIG below; the
                                      # commands themselves are always available
                                      # (they're gated by Discord permissions)
-    "mod_log_channel_id": None,      # where actions post; falls back to modlog_channel_id
+    "mod_log_channel_id": None,      # where actions post; falls back to msglog_channel_id -> modlog_channel_id
     "mod_dm_on_action": 1,           # DM the member what happened + why before it lands
     "mod_require_reason": 0,         # refuse ban/kick/timeout with no reason given
     "mod_default_timeout_min": 60,   # /timeout default when no duration is passed
@@ -161,7 +161,7 @@ DEFAULTS = {
                                      # rather than evicting old files — silently
                                      # deleting evidence is the one failure mode
                                      # a record like this must never have.
-    "conduct_log_channel_id": None,  # falls back to mod_log_channel_id -> modlog_channel_id
+    "conduct_log_channel_id": None,  # falls back to mod_log_channel_id -> msglog_channel_id -> modlog_channel_id
     # ── AI chat (/ask + ping-to-chat) — cogs/ai.py ────────────────────────────
     # Enablement is NOT this key: the home community is always on and any
     # other server is on once it holds prepaid credit (ai_credit ledger).
