@@ -1136,8 +1136,9 @@ class ModLog(commands.Cog):
                 embed.add_field(name="↪️ Forwarded message",
                                 value=_trunc(format_forward(fw), 1024), inline=False)
         else:
-            why = (f"older than the free {RECENT_HOURS}h window — Logging Pro keeps "
-                   f"{PRO_TEXT_DAYS} days, `/msglog pro`"
+            # No upsell here: this embed is read by another server's mods all day.
+            # Pro is explained where an admin asks — /msglog pro, the dashboard.
+            why = (f"older than the {RECENT_HOURS}h recovery window"
                    if not archives_messages(payload.guild_id) else "predates tracking")
             embed.description = (f"Message `{payload.message_id}` in <#{payload.channel_id}> "
                                  f"— **content not recoverable** ({why}).")
@@ -1186,9 +1187,7 @@ class ModLog(commands.Cog):
             if len(missing) > 5:
                 lines.append(f"… +{len(missing) - 5} more")
             if not archives_media(guild.id):
-                lines.append(f"*Free tier keeps files for {RECENT_HOURS}h, "
-                             f"{RECENT_MEDIA_MB} MB per server — Logging Pro keeps "
-                             f"{PRO_MEDIA_DAYS} days (`/msglog pro`).*")
+                lines.append(f"*Files are kept for {RECENT_HOURS}h ({RECENT_MEDIA_MB} MB per server).*")
             embed.add_field(
                 name=f"📭 Not stored — unrecoverable ({len(missing)})",
                 value=_trunc("\n".join(lines), 1024), inline=False)
