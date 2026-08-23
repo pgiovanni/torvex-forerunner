@@ -45,6 +45,7 @@ def _cfg(guild_id) -> dict:
     c = get_config(guild_id)
     return {
         "dm": bool(c.get("conduct_dm_on_warn", 1)),
+        "public": bool(c.get("conduct_public_warn", 1)),
         "require_reason": bool(c.get("conduct_require_reason", 1)),
         "evidence": bool(c.get("conduct_evidence", 1)),
         "max_mb": int(c.get("conduct_evidence_max_mb", 25) or 25),
@@ -70,14 +71,21 @@ async def _log(guild, cfg, embed, files=None):
         pass
 
 
-async def _dm(user, guild, kind, reason, entry_id):
+def _ordinal(n) -> str:
+    n = int(n)
+    suf = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suf}"
+
+
+async def _dm(user, guild, kind, reason, entry_id, nth=None):
     """Best-effort notice to the member. Closed DMs must never block the record."""
     try:
         if kind == "warn":
             e = discord.Embed(
                 title=f"You were warned in {guild.name}",
                 description=reason, color=WARN_COLOR)
-            e.set_footer(text=f"Warning #{entry_id} · reply to a moderator if you think this is wrong")
+            e.set_footer(text=(f"Your {nth} standing warning here · " if nth else "")
+                         + f"Warning #{entry_id} · reply to a moderator if you think this is wrong")
         else:
             e = discord.Embed(
                 title=f"A note was added to your record in {guild.name}",
@@ -179,13 +187,39 @@ class Conduct(commands.Cog):
             except (discord.HTTPException, OSError) as exc:
                 failed.append(f"{a.filename} ({exc.__class__.__name__})")
 
+        # Which warning this is FOR THIS MEMBER. Entry ids are a global
+        # autoincrement, so "#12" says nothing about the member's history —
+        # the ordinal is the number a mod actually reasons with ("third time").
+        c = store.counts(interaction.guild_id, member.id)
+        nth = _ordinal(c["warns"]) if kind == "warn" else None
+        total_ever = c["warns"] + c["cleared"]
+
         dmed = False
         if cfg["dm"] and not silent:
-            dmed = await _dm(member, interaction.guild, kind, reason, entry_id)
+            dmed = await _dm(member, interaction.guild, kind, reason, entry_id, nth)
+
+        # Public notice in the channel the mod used: pings the member and states
+        # the reason, so the warning is seen where the behaviour happened and
+        # the rest of the room knows it was dealt with (Paul, 8/23). Notes stay
+        # private; silent warns skip it.
+        public = False
+        if kind == "warn" and cfg["public"] and not silent:
+            try:
+                await interaction.channel.send(
+                    f"⚠️ {member.mention} — **warning** ({nth}): {reason}",
+                    allowed_mentions=discord.AllowedMentions(users=[member]))
+                public = True
+            except (discord.Forbidden, discord.HTTPException, AttributeError):
+                pass
 
         # operator confirmation
         word = "Warning" if kind == "warn" else "Note"
         bits = [f"{word} **#{entry_id}** recorded against {member.mention}."]
+        if nth:
+            bits.append(f"This is their **{nth} standing warning**"
+                        + (f" ({total_ever} ever, {c['cleared']} cleared)." if c["cleared"] else "."))
+        if kind == "warn" and cfg["public"] and not silent and not public:
+            bits.append("⚠️ Couldn't post the public notice here (missing permission).")
         if saved:
             bits.append(f"📎 {len(saved)} file(s) stored.")
         if failed:
@@ -198,13 +232,17 @@ class Conduct(commands.Cog):
 
         # mod log
         e = discord.Embed(
-            title=f"{'⚠️ Warning' if kind == 'warn' else '📗 Note'} #{entry_id}",
+            title=(f"⚠️ Warning #{entry_id} — {nth} for this member" if kind == "warn"
+                   else f"📗 Note #{entry_id}"),
             description=reason, color=WARN_COLOR if kind == "warn" else NOTE_COLOR)
         e.add_field(name="Member", value=f"{member.mention}\n`{member.id}`", inline=True)
         e.add_field(name="Moderator", value=interaction.user.mention, inline=True)
-        c = store.counts(interaction.guild_id, member.id)
         e.add_field(name="Standing record",
-                    value=f"{c['warns']} warning(s) · {c['notes']} note(s)", inline=True)
+                    value=f"{c['warns']} warning(s) · {c['notes']} note(s)"
+                          + (f" · {c['cleared']} cleared" if c["cleared"] else ""), inline=True)
+        if interaction.channel is not None:
+            e.add_field(name="Where", value=interaction.channel.mention
+                        + (" · public notice posted" if public else ""), inline=True)
         if saved:
             e.add_field(
                 name=f"Evidence ({len(saved)})",

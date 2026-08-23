@@ -153,6 +153,7 @@ DEFAULTS = {
     # only govern behaviour. Clearing is always a soft delete that keeps who did
     # it and why, so none of these can turn the audit trail off.
     "conduct_dm_on_warn": 1,         # tell the member they were warned, and why
+    "conduct_public_warn": 1,        # also ping them in the channel /warn was used in, with the reason
     "conduct_require_reason": 1,     # ON by default: a warning with no reason isn't a record
     "conduct_evidence": 1,           # allow screenshot/file evidence on entries
     "conduct_evidence_max_mb": 25,   # per-file cap
