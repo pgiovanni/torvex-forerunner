@@ -91,7 +91,7 @@ PRO_TEXT_DAYS = max(1, int(os.environ.get("MSGLOG_PRO_TEXT_DAYS") or 90))
 PRO_MEDIA_DAYS = max(1, int(os.environ.get("MSGLOG_PRO_MEDIA_DAYS") or 30))
 PRO_MEDIA_MB = max(0, int(os.environ.get("MSGLOG_PRO_MEDIA_MB") or 1024))        # per guild
 PRO_GRACE_DAYS = max(0, int(os.environ.get("MSGLOG_PRO_GRACE_DAYS") or 3))       # sweep waits this long after expiry
-PRO_URL = os.environ.get("MSGLOG_PRO_URL") or "https://torvex.app/Packages"
+PRO_URL = os.environ.get("MSGLOG_PRO_URL") or "https://torvex.app/Packages#discord-logging-pro"
 SWEEP_MINUTES = max(5, int(os.environ.get("MSGLOG_SWEEP_MINUTES") or 30))
 
 # guild_id -> entitlement row (expires_ts None = no expiry). Refilled from the
@@ -107,7 +107,7 @@ OPERATOR_GUILDS = {g.strip() for g in os.environ.get(
 # Bump when the terms text changes materially — acceptance records store the
 # version they agreed to, so an old acceptance can be re-prompted rather than
 # silently treated as consent to something they never read.
-TERMS_VERSION = 1
+TERMS_VERSION = 2   # v2 2026-08-23: free 24h window + Logging Pro windows
 
 # guild_id -> acceptance row. Cached because on_message consults it per message;
 # the DB table is the source of truth and this is refilled at startup.
@@ -692,6 +692,7 @@ class ModLog(commands.Cog):
                     _CONSENT[str(r["guild_id"])] = dict(r)
         except Exception:
             pass  # a consent read that fails must fail CLOSED: no rows = no retention
+        self._export_tiers()
 
     def _load_pro(self):
         """Refill the entitlement cache. Same fail-closed rule as consent."""
@@ -702,6 +703,37 @@ class ModLog(commands.Cog):
                     _PRO[str(r["guild_id"])] = dict(r)
         except Exception:
             pass
+        self._export_tiers()
+
+    def _export_tiers(self):
+        """Publish each guild's retention tier for the dashboard's Mod Logs
+        page (same no-drift pipe as ai-energy.json: written from the live
+        tables, never hand-maintained). The dashboard can't read messages.db
+        and shouldn't — this is the only thing it needs from it. Best-effort."""
+        path = os.getenv("TORVEX_MSGLOG_TIERS_JSON", "/var/lib/torvex/msglog-tiers.json")
+        try:
+            guilds = {}
+            for gid in set(_PRO) | set(_CONSENT) | set(ARCHIVE_GUILDS):
+                row = _PRO.get(gid) or {}
+                guilds[gid] = {
+                    "tier": retention_tier(gid),
+                    "pro_expires_ts": row.get("expires_ts"),
+                    "pro_active": pro_active(gid),
+                    "terms_accepted": consent_ok(gid),
+                }
+            payload = {
+                "recent_hours": RECENT_HOURS, "recent_media_mb": RECENT_MEDIA_MB,
+                "pro_text_days": PRO_TEXT_DAYS, "pro_media_days": PRO_MEDIA_DAYS,
+                "pro_media_mb": PRO_MEDIA_MB, "pro_url": PRO_URL,
+                "terms_version": TERMS_VERSION,
+                "guilds": guilds, "generated_at": int(time.time()),
+            }
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=1)
+            os.replace(tmp, path)
+        except OSError:
+            pass  # dashboard falls back to "free tier" copy
 
     # ------------------------------------------------------------- media layout
     # Files live in a per-guild subdirectory (media_cache/<guild_id>/...) so a
