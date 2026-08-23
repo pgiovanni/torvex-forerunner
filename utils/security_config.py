@@ -41,6 +41,8 @@ DEFAULTS = {
     "antinuke_trusted_bots": [],    # bot ids with FULL anti-nuke exemption (this server trusts them)
     "antinuke_watch_bot_roles": 0,  # 1 = bots' role-grant bursts count toward the rate rules again
     "partner_roles": [],            # partner-bot verification roles AltGuard must never re-strip
+    "altguard_mode": "",            # "" = legacy (quarantine_on_join) · observe | assist | gate | off
+    "altguard_modlog_channel_id": None,  # AltGuard's own reports; falls back to modlog_channel_id
     # per-vector rate overrides on top of the code defaults (antinuke.ACTION_LIMITS):
     # {vector: [count, window_s]}. Set via /antinuke. Missing vector = default.
     "antinuke_limits": {},
