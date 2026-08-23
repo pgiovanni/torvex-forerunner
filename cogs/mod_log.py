@@ -2951,16 +2951,37 @@ class ModLog(commands.Cog):
         if not uid:
             await interaction.response.send_message("Give me a numeric user ID.", ephemeral=True)
             return
+        # Scope: a server admin erases THEIR server's records. Only the operator's
+        # own guilds purge a user everywhere (the under-age / right-to-be-forgotten
+        # case) — before 8/23 this deleted across every guild, which let any
+        # remote admin wipe the home ledger for a user.
+        gid = str(interaction.guild.id)
+        everywhere = gid in OPERATOR_GUILDS
         with self._conn() as c:
-            ev = c.execute("DELETE FROM identity_events WHERE uid=?", (uid,)).rowcount
+            if everywhere:
+                ev = c.execute("DELETE FROM identity_events WHERE uid=?", (uid,)).rowcount
+            else:
+                ev = c.execute("DELETE FROM identity_events WHERE uid=? AND guild_id=?",
+                               (uid, gid)).rowcount
             # only drop blobs this uid alone owns — a shared/default asset hash
             # could belong to someone else's history too
             av = c.execute(
                 "DELETE FROM avatar_blobs WHERE uid=? AND hash NOT IN"
                 " (SELECT after FROM identity_events WHERE after IS NOT NULL)", (uid,)).rowcount
+        # Conduct record + evidence files live in their own store; a purge that
+        # leaves them behind is the "survives a purge everyone thought was
+        # complete" hole. Same scope rule.
+        try:
+            from utils import conduct as conduct_store
+            cr = conduct_store.forget_user(uid, None if everywhere else gid)
+            conduct_line = (f" Conduct: **{cr['entries']}** entr{'y' if cr['entries'] == 1 else 'ies'}, "
+                            f"**{cr['files']}** evidence file(s).")
+        except Exception as e:  # the cog may not be loaded on this deployment
+            conduct_line = f" Conduct record not purged ({type(e).__name__})."
+        scope = "everywhere (operator)" if everywhere else "in this server"
         await interaction.response.send_message(
-            f"🧹 Erased **{ev}** identity event(s) and **{av}** stored avatar(s) for `{uid}`.\n"
-            "Message archive and other tables are untouched — purge those separately if needed.",
+            f"🧹 Erased **{ev}** identity event(s) and **{av}** stored avatar(s) for `{uid}` {scope}."
+            f"{conduct_line}\nMessage archive is untouched — purge that separately if needed.",
             ephemeral=True)
 
     @msglog.command(name="roles", description="Toggle role-change logging on or off.")

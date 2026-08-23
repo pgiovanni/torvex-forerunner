@@ -310,6 +310,60 @@
       ]
     },
     {
+      "name": "warn",
+      "description": "Warn a member and record it, with optional evidence (mod)",
+      "cog": "conduct",
+      "required_permissions": [
+        "moderate_members"
+      ]
+    },
+    {
+      "name": "note",
+      "description": "Record positive or neutral conduct — resolutions, good streaks (mod)",
+      "cog": "conduct",
+      "required_permissions": [
+        "moderate_members"
+      ]
+    },
+    {
+      "name": "warnings",
+      "description": "View a member's conduct record — or your own",
+      "cog": "conduct",
+      "required_permissions": []
+    },
+    {
+      "name": "evidence",
+      "description": "Show one record entry in full, with its stored files (mod)",
+      "cog": "conduct",
+      "required_permissions": [
+        "moderate_members"
+      ]
+    },
+    {
+      "name": "clear-warning",
+      "description": "Clear one entry — it stays on record as cleared (mod)",
+      "cog": "conduct",
+      "required_permissions": [
+        "moderate_members"
+      ]
+    },
+    {
+      "name": "clear-warnings",
+      "description": "Clear a member's whole standing record (Manage Server)",
+      "cog": "conduct",
+      "required_permissions": [
+        "manage_guild"
+      ]
+    },
+    {
+      "name": "conduct-forget",
+      "description": "Permanently erase a user's record and evidence files (admin)",
+      "cog": "conduct",
+      "required_permissions": [
+        "administrator"
+      ]
+    },
+    {
       "name": "invite",
       "description": "Get your personal tracked invite link",
       "cog": "invites",
