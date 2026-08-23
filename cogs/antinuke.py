@@ -102,6 +102,52 @@ _NUKE_PERMS = discord.Permissions(
 _ADMIN_LOCK_PERMS = discord.Permissions(administrator=True, manage_guild=True).value
 
 
+# Vectors a bot is allowed to burst on: granting and removing member roles is
+# routine automation (reaction-role panel publishes, levelling sweeps, autorole
+# on a raid of legitimate joins). Everything else — channel/role/webhook
+# deletion, bans, kicks, bot adds — stays armed against bots, because a hijacked
+# or malicious bot doing those IS the threat (Jalapeño). Set
+# antinuke_watch_bot_roles to put bots back under the role-rate rules.
+BOT_BURST_ACTIONS = ("member_role", "role_remove")
+
+
+def id_set(value) -> set:
+    """Coerce a configured id list to a set of ints, dropping anything that
+    isn't one.
+
+    Two bugs live here if it's skipped. (1) The dashboard stores id[] fields as
+    digit STRINGS while discord.py hands us ints, so `user.id in whitelist`
+    silently never matched anything an admin added from the web UI — they were
+    whitelisted on screen and still getting stripped. (2) A stray non-numeric
+    value made int() raise inside the exemption check, which aborts the whole
+    _record_action path — anti-nuke would stop evaluating that event instead of
+    guarding it. Malformed input must fail CLOSED (not exempt), never explode.
+    """
+    if isinstance(value, (str, bytes)) or not hasattr(value, "__iter__"):
+        return set()
+    out = set()
+    for v in value:
+        try:
+            out.add(int(v))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def bot_rate_exempt(user, action, cfg) -> bool:
+    """True if this actor's action should skip the RATE rules for being a bot.
+
+    Pure so the security-critical condition is unit-testable: a mistake here
+    means either constant false trips on partner bots, or — far worse — a
+    destructive vector silently unguarded.
+    """
+    if not getattr(user, "bot", False):
+        return False
+    if action not in BOT_BURST_ACTIONS:
+        return False
+    return not cfg.get("antinuke_watch_bot_roles")
+
+
 class AntiNuke(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -202,8 +248,8 @@ class AntiNuke(commands.Cog):
         return bool(cfg.get("antinuke_enforce"))
 
     def _exempt(self, guild, user, cfg):
-        wl = set(cfg.get("whitelist") or [])
-        trusted = {int(x) for x in (cfg.get("antinuke_trusted_bots") or [])}
+        wl = id_set(cfg.get("whitelist"))
+        trusted = id_set(cfg.get("antinuke_trusted_bots"))
         return (user is None or user.id == self.bot.user.id
                 or user.id == guild.owner_id or user.id in wl
                 or (getattr(user, "bot", False) and user.id in trusted))
@@ -292,10 +338,7 @@ class AntiNuke(commands.Cog):
         user = await self._executor(guild, action, target_id)
         if self._exempt(guild, user, cfg):
             return
-        # Bots skip the role-grant RATE vectors (see module docstring): a panel
-        # publish or levelling sweep is a burst by design. Destructive vectors
-        # and _check_admin_grant still apply to bots in full.
-        if getattr(user, "bot", False) and action in ("member_role", "role_remove")                 and not cfg.get("antinuke_watch_bot_roles"):
+        if bot_rate_exempt(user, action, cfg):
             return
         gid = guild.id
         # the actor is passed in so an open maintenance window can raise the
@@ -804,7 +847,7 @@ class AntiNuke(commands.Cog):
                 "❌ Bots are already exempt from these limits.", ephemeral=True)
         # Opening a window for someone who is already exempt would sit in the
         # mod-log looking like protection was loosened when nothing changed.
-        if user.id == interaction.guild.owner_id or user.id in set(cfg.get("whitelist") or []):
+        if user.id == interaction.guild.owner_id or user.id in id_set(cfg.get("whitelist")):
             return await interaction.response.send_message(
                 f"ℹ️ {user.mention} is already exempt from rate limits "
                 f"({'server owner' if user.id == interaction.guild.owner_id else 'on the whitelist'}) "
