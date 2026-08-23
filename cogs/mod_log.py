@@ -154,7 +154,17 @@ def pro_active(guild_id, now=None, grace_days=0) -> bool:
     exp = row.get("expires_ts")
     if exp is None:
         return True
-    return float(exp) + grace_days * 86400 > (now if now is not None else time.time())
+    try:
+        exp = float(exp)
+    except (TypeError, ValueError):
+        # SQLite's dynamic typing accepts text in a REAL column, so a webhook
+        # writing an ISO date instead of an epoch lands here. Treat an
+        # unreadable expiry as EXPIRED (fail closed — a guild does not get a
+        # paid archive because its row is malformed) rather than raising:
+        # pro_active runs from _load_pro in __init__, and an exception there
+        # takes the whole mod_log cog down with it.
+        return False
+    return exp + grace_days * 86400 > (now if now is not None else time.time())
 
 
 def retention_tier(guild_id) -> str:
@@ -732,8 +742,11 @@ class ModLog(commands.Cog):
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, indent=1)
             os.replace(tmp, path)
-        except OSError:
-            pass  # dashboard falls back to "free tier" copy
+        except Exception as e:
+            # Never raise: this runs from _load_pro/_load_consent, which run
+            # from __init__. A docs artifact must not be able to stop the cog
+            # from loading (deletes, edits, joins would all stop being logged).
+            print(f"[mod_log] tier export skipped: {e!r}")
 
     # ------------------------------------------------------------- media layout
     # Files live in a per-guild subdirectory (media_cache/<guild_id>/...) so a
