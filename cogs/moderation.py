@@ -32,7 +32,10 @@ def _mod_cfg(guild_id) -> dict:
         "require_reason": bool(cfg.get("mod_require_reason", 0)),
         "default_timeout_min": int(cfg.get("mod_default_timeout_min", 60) or 60),
         "ban_delete_days": int(cfg.get("mod_ban_delete_days", 0) or 0),
-        "log_channel_id": cfg.get("mod_log_channel_id") or cfg.get("modlog_channel_id"),
+        # One channel for AltGuard, one for everything moderation (Paul, 8/23):
+        # prefer the message-log channel over the security log when unset.
+        "log_channel_id": (cfg.get("mod_log_channel_id") or cfg.get("msglog_channel_id")
+                           or cfg.get("modlog_channel_id")),
     }
 
 
