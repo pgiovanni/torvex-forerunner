@@ -2080,12 +2080,39 @@ class ModLog(commands.Cog):
         embed = discord.Embed(
             title="🖼️ Avatar changed" if kind == "avatar" else "🖼️ Server avatar changed",
             color=COLOR_ROLE, description=self._member_line(member))
-        embed.add_field(name="Before", value=f"`{old_hash or 'default'}`", inline=True)
-        embed.add_field(name="After", value=f"`{new_hash or 'default'}`", inline=True)
-        if new_asset is not None:
-            embed.set_thumbnail(url=new_asset.url)
-        embed.set_footer(text=f"User ID {member.id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        # Show the PICTURES, not the hashes (Paul, 8/23: "before and after as
+        # hashes, that's useless"). Both are fetched right now — the old one is
+        # still on the CDN for a moment after the change — and attached as
+        # files, so the log keeps its own copy after the CDN forgets. Works on
+        # every tier: nothing lands on our disk through this path. The hashes
+        # stay in the identity ledger (Pro) and in the footer for cross-referencing.
+        files = []
+
+        async def grab(asset, name):
+            if asset is None:
+                return None
+            try:
+                ext = "gif" if getattr(asset, "is_animated", lambda: False)() else "png"
+                data = await asset.with_size(256).read()
+                fname = f"{name}.{ext}"
+                files.append(discord.File(io.BytesIO(data), filename=fname))
+                return f"attachment://{fname}"
+            except Exception:
+                return asset.url  # CDN hiccup — fall back to the live link
+        before_url = await grab(old_asset, "before")
+        after_url = await grab(new_asset, "after")
+        embed.add_field(name="Before", value="*default avatar*" if before_url is None else "↗️ top right",
+                        inline=True)
+        embed.add_field(name="After", value="*default avatar*" if after_url is None else "⬇️ below",
+                        inline=True)
+        if before_url:
+            embed.set_thumbnail(url=before_url)
+        if after_url:
+            embed.set_image(url=after_url)
+        short = lambda h: (h[:12] + "…") if h and len(h) > 14 else (h or "default")  # noqa: E731
+        embed.set_footer(text=f"User ID {member.id} · {short(old_hash)} → {short(new_hash)}")
+        await log_ch.send(embed=embed, files=files or discord.utils.MISSING,
+                          allowed_mentions=discord.AllowedMentions.none())
 
     async def _log_timeout_event(self, before, after):
         """Timeout applied / lifted. Previously invisible entirely — a mod
