@@ -75,6 +75,29 @@ async def _log(guild, cfg, embed, files=None):
         pass
 
 
+def notify_plan(kind, cfg, notify="default"):
+    """(dm?, ping?, silent?) for one record.
+
+    `notify` is the per-call choice on /warn — "default" | "both" | "dm" |
+    "ping" | "none" — and it overrides the server toggles in BOTH directions: a
+    mod can quietly record a repeat offender, or ping someone in a server that
+    normally keeps warnings to DMs.
+
+    Pure so the matrix is testable. Two invariants live here: a NOTE never pings
+    publicly (positives and quiet observations are not announcements), and
+    `silent` is derived from what actually happens rather than passed in, so the
+    mod-log footer can never claim "silent" while a DM went out.
+    """
+    if notify == "default":
+        do_dm = bool(cfg.get("dm"))
+        do_ping = bool(cfg.get("public"))
+    else:
+        do_dm = notify in ("both", "dm")
+        do_ping = notify in ("both", "ping")
+    do_ping = do_ping and kind == "warn"
+    return do_dm, do_ping, (not do_dm and not do_ping)
+
+
 def _ordinal(n) -> str:
     n = int(n)
     suf = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
@@ -202,9 +225,7 @@ class Conduct(commands.Cog):
         nth = _ordinal(c["warns"]) if kind == "warn" else None
         total_ever = c["warns"] + c["cleared"]
 
-        do_dm = cfg["dm"] if notify == "default" else notify in ("both", "dm")
-        do_ping = (cfg["public"] if notify == "default" else notify in ("both", "ping")) and kind == "warn"
-        silent = not do_dm and not do_ping
+        do_dm, do_ping, silent = notify_plan(kind, cfg, notify)
 
         dmed = False
         if do_dm:

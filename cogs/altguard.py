@@ -819,7 +819,12 @@ class AltGuard(commands.Cog):
         # the partner bot (carl-bot etc.) AFTER AltGuard held them would get the
         # role granted and instantly yanked — stuck in both systems forever.
         # Leaving it on is also the assist-mode signal that they passed there.
-        partner = {int(x) for x in (get_config(after.guild.id).get("partner_roles") or [])}
+        # partner_role_ids() coerces and DROPS junk. Hand-rolling int() here (as
+        # this line originally did) let one non-numeric entry — an admin typing
+        # a bot's name instead of its id — raise straight out of the listener,
+        # silently disabling autorole-race protection for every held member in
+        # the guild until someone noticed. Third instance of that bug in a day.
+        partner = agmode.partner_role_ids(get_config(after.guild.id))
         kept_partner = [r for r in strip if r.id in partner]
         strip = [r for r in strip if r.id not in partner]
         if kept_partner and not strip:
