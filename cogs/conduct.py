@@ -139,7 +139,11 @@ class Conduct(commands.Cog):
 
     # ── recording ─────────────────────────────────────────────────────────────
 
-    async def _record(self, interaction, member, kind, reason, attachments, silent):
+    async def _record(self, interaction, member, kind, reason, attachments, notify="default"):
+        """notify: 'default' (server settings) | 'both' | 'dm' | 'ping' | 'none'.
+        The per-call choice overrides the server toggles in both directions —
+        a mod can quietly record a repeat offender's tenth warning, or ping
+        someone in a server that normally keeps warnings to DMs."""
         cfg = _cfg(interaction.guild_id)
 
         if cfg["require_reason"] and not (reason or "").strip():
@@ -194,8 +198,12 @@ class Conduct(commands.Cog):
         nth = _ordinal(c["warns"]) if kind == "warn" else None
         total_ever = c["warns"] + c["cleared"]
 
+        do_dm = cfg["dm"] if notify == "default" else notify in ("both", "dm")
+        do_ping = (cfg["public"] if notify == "default" else notify in ("both", "ping")) and kind == "warn"
+        silent = not do_dm and not do_ping
+
         dmed = False
-        if cfg["dm"] and not silent:
+        if do_dm:
             dmed = await _dm(member, interaction.guild, kind, reason, entry_id, nth)
 
         # Public notice in the channel the mod used: pings the member and states
@@ -203,7 +211,7 @@ class Conduct(commands.Cog):
         # the rest of the room knows it was dealt with (Paul, 8/23). Notes stay
         # private; silent warns skip it.
         public = False
-        if kind == "warn" and cfg["public"] and not silent:
+        if do_ping:
             try:
                 await interaction.channel.send(
                     f"⚠️ {member.mention} — **warning** ({nth}): {reason}",
@@ -218,15 +226,15 @@ class Conduct(commands.Cog):
         if nth:
             bits.append(f"This is their **{nth} standing warning**"
                         + (f" ({total_ever} ever, {c['cleared']} cleared)." if c["cleared"] else "."))
-        if kind == "warn" and cfg["public"] and not silent and not public:
+        if do_ping and not public:
             bits.append("⚠️ Couldn't post the public notice here (missing permission).")
         if saved:
             bits.append(f"📎 {len(saved)} file(s) stored.")
         if failed:
             bits.append("⚠️ Failed to store: " + ", ".join(failed))
-        if cfg["dm"] and not silent:
+        if do_dm:
             bits.append("DM delivered." if dmed else "Couldn't DM them (DMs closed).")
-        elif silent:
+        if silent:
             bits.append("Silent — they were not told.")
         await interaction.followup.send(" ".join(bits), ephemeral=True)
 
@@ -258,15 +266,23 @@ class Conduct(commands.Cog):
         member="Who to warn", reason="What they did — this is the record",
         evidence="Screenshot or file backing this up",
         evidence2="Another file", evidence3="Another file",
-        silent="Record it without DMing them")
+        notify="How the member is told — leave empty for this server's default")
+    @app_commands.choices(notify=[
+        app_commands.Choice(name="DM + ping in this channel", value="both"),
+        app_commands.Choice(name="DM only", value="dm"),
+        app_commands.Choice(name="Ping in this channel only", value="ping"),
+        app_commands.Choice(name="Silent — record only, don't tell them", value="none"),
+    ])
     @app_commands.default_permissions(moderate_members=True)
     @app_commands.checks.has_permissions(moderate_members=True)
     @app_commands.guild_only()
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str,
                    evidence: discord.Attachment = None, evidence2: discord.Attachment = None,
-                   evidence3: discord.Attachment = None, silent: bool = False):
+                   evidence3: discord.Attachment = None,
+                   notify: app_commands.Choice[str] = None):
         await self._record(interaction, member, "warn", reason,
-                           [evidence, evidence2, evidence3], silent)
+                           [evidence, evidence2, evidence3],
+                           notify.value if notify else "default")
 
     @app_commands.command(name="note", description="Record positive or neutral conduct — resolutions, good streaks.")
     @app_commands.describe(
@@ -277,7 +293,8 @@ class Conduct(commands.Cog):
     @app_commands.guild_only()
     async def note(self, interaction: discord.Interaction, member: discord.Member, note: str,
                    evidence: discord.Attachment = None, silent: bool = True):
-        await self._record(interaction, member, "note", note, [evidence], silent)
+        await self._record(interaction, member, "note", note, [evidence],
+                           "none" if silent else "dm")
 
     # ── reading ───────────────────────────────────────────────────────────────
 
