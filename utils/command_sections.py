@@ -8,7 +8,8 @@ from another. Order is deliberate: security is why most servers add the bot.
 SECTIONS = [
     ("Security",          ["altguard", "antinuke", "security", "quarantine_lock",
                            "link_guard", "recon_watch", "verify_prune",
-                           "simpleverify", "honeypot", "server_backup"]),
+                           "simpleverify", "honeypot", "server_backup",
+                           "security_ai"]),
     ("Moderation",        ["moderation", "mod_log", "conduct"]),
     ("Server setup",      ["setup", "automation", "role_menu", "emojis",
                            "pi_count", "suggestions", "tickets", "server_info"]),
@@ -30,6 +31,7 @@ FRIENDLY = {
     "moderation": "Moderation", "peepo": "Peepo", "pi_count": "Pi counting",
     "pvp": "PvP", "quarantine_lock": "Quarantine lock", "recon_watch": "Recon watch",
     "role_menu": "Reaction roles", "rpg": "RPG", "security": "Security config",
+    "security_ai": "Security AI (reviewed verdicts)",
     "server_backup": "Server backup", "server_info": "Server info", "setup": "Setup",
     "simpleverify": "Simple verify",
     "stats": "Stats", "suggestions": "Suggestions", "tickets": "Tickets",
