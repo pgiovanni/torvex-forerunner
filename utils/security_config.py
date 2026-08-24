@@ -134,12 +134,18 @@ DEFAULTS = {
     "msglog_log_bots": 0,            # also log EDITS by bots/webhooks (their deletes always log)
     "msglog_media": 1,               # cache attachments to disk so deleted media can be re-posted
     "msglog_media_channel_id": None, # route deleted-media re-posts here (e.g. an 18+ staff channel); None = with the log embeds
-    "msglog_members_channel_id": None,  # split log: joins/leaves/kicks/bans → here (None = log channel)
-    "msglog_users_channel_id": None,    # split log: name/nick/avatar, member role + voice changes → here
-    "msglog_server_channel_id": None,   # split log: channel/role/emoji/automod-rule changes → here
     "msglog_media_max_mb": 25,       # per-file cache cap
     "msglog_media_days": 30,         # media cache retention (log re-posts persist in Discord)
     "msglog_media_max_gb": 5,        # whole-cache hard cap — oldest evicted beyond this (disk-fill DoS guard)
+    # split log — every event class may have its own channel; None = the log channel
+    "msglog_members_channel_id": None,       # joins / leaves / kicks / bans / unbans
+    "msglog_users_channel_id": None,         # username / nickname / avatar changes
+    "msglog_member_roles_channel_id": None,  # roles added to / removed from a member
+    "msglog_voice_channel_id": None,         # voice join / leave / move, server mute / deafen
+    "msglog_channels_channel_id": None,      # channel create / delete / edit
+    "msglog_roles_channel_id": None,         # role create / delete / edit
+    "msglog_expressions_channel_id": None,   # emoji + sticker create / delete
+    "msglog_automod_channel_id": None,       # AutoMod blocks + rule changes
     "msglog_ignore_channels": [],    # channels never LOGGED (still archived)
     "msglog_members": 1,             # member lifecycle: join (w/ invite used), leave, kick/ban/unban w/ WHO+reason
     "msglog_roles": 1,               # member role add/remove (w/ WHO) + role create/delete/edit; own-bot changes never logged
