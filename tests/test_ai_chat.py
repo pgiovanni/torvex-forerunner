@@ -150,5 +150,126 @@ class TestBilledMicro(unittest.TestCase):
         self.assertAlmostEqual(1 - 1 / PAID_MARKUP, 0.25, places=3)
 
 
+class TestRetryAttachments(unittest.TestCase):
+    """The on-demand reference protocol: a second model call happens ONLY when
+    the first reply was a bare NEED_* sentinel. The inline version of this
+    decision fired a duplicate, identical API call on every single answer for
+    five days — `False or (None and x)` is None, and None != False — so each
+    case here pins the exact pair the retry compares against."""
+
+    def test_ordinary_answer_asks_for_nothing(self):
+        from cogs.ai import retry_attachments
+        self.assertEqual(retry_attachments("yo", False, False, True), (False, False))
+
+    def test_ordinary_answer_does_not_trigger_a_retry(self):
+        """The regression itself: identical pair in, identical pair out, so
+        _generate's `!=` is False and no second call is made."""
+        from cogs.ai import retry_attachments
+        self.assertEqual(retry_attachments("Can I... what?", False, False, True),
+                         (False, False))
+        self.assertEqual(retry_attachments("", False, False, True), (False, False))
+        self.assertEqual(retry_attachments(None, False, False, True), (False, False))
+
+    def test_command_sentinel_attaches_the_index(self):
+        from cogs.ai import retry_attachments
+        self.assertEqual(retry_attachments("NEED_COMMANDS", False, False, True),
+                         (True, False))
+        self.assertEqual(retry_attachments(" need_commands ", False, False, True),
+                         (True, False))
+
+    def test_command_sentinel_ignored_when_the_index_is_missing(self):
+        from cogs.ai import retry_attachments
+        self.assertEqual(retry_attachments("NEED_COMMANDS", False, False, False),
+                         (False, False))
+
+    def test_energy_sentinel_attaches_the_reference(self):
+        from cogs.ai import retry_attachments
+        self.assertEqual(retry_attachments("NEED_ENERGY", False, False, True),
+                         (False, True))
+
+    def test_sentinel_inside_prose_is_not_a_request(self):
+        from cogs.ai import retry_attachments
+        self.assertEqual(
+            retry_attachments("I would need_commands to answer that", False, False, True),
+            (False, False))
+
+    def test_pregated_attachment_survives_a_plain_answer(self):
+        """Pre-gate already attached the index; a normal reply must not undo
+        it — the pair has to stay equal or the answer is generated twice."""
+        from cogs.ai import retry_attachments
+        self.assertEqual(retry_attachments("here you go", True, False, True),
+                         (True, False))
+        self.assertEqual(retry_attachments("here you go", False, True, True),
+                         (False, True))
+
+
+class _Perms:
+    def __init__(self, view):
+        self.view_channel = view
+
+
+class _Role:
+    def __init__(self, name, view):
+        self.name = name
+        self.permissions = _Perms(view)
+
+    def __repr__(self):
+        return f"<{self.name}>"
+
+
+class TestBaselineViewRoles(unittest.TestCase):
+    """Who "the general membership" is for the context guard. An
+    @everyone-only test reads as "nothing is public" in a verification-gated
+    server, which silently starved the model of channel context everywhere."""
+
+    def test_open_server_uses_everyone(self):
+        from cogs.ai import baseline_view_roles
+        everyone = _Role("@everyone", True)
+        member = _Role("Member", True)
+        self.assertEqual(baseline_view_roles(everyone, [member]), [everyone])
+
+    def test_gated_server_falls_back_to_the_verified_role(self):
+        from cogs.ai import baseline_view_roles
+        everyone = _Role("@everyone", False)
+        member = _Role("Peepo", True)
+        ping = _Role("Announcement Ping", False)
+        self.assertEqual(baseline_view_roles(everyone, [ping, member]), [member])
+
+    def test_no_usable_role_stays_closed(self):
+        """Fail closed: with nothing that can stand for the membership, the
+        guard falls back to @everyone and no context is gathered."""
+        from cogs.ai import baseline_view_roles
+        everyone = _Role("@everyone", False)
+        self.assertEqual(baseline_view_roles(everyone, []), [everyone])
+        self.assertEqual(baseline_view_roles(everyone, [_Role("Ping", False)]), [everyone])
+
+
+class TestIdList(unittest.TestCase):
+    def test_mixed_types_coerced_and_junk_dropped(self):
+        from cogs.ai import _id_list
+        self.assertEqual(_id_list([1, "2", None, "x", 3.0]), [1, 2, 3])
+
+    def test_non_list_config_is_empty_not_an_error(self):
+        from cogs.ai import _id_list
+        self.assertEqual(_id_list(None), [])
+        self.assertEqual(_id_list("123"), [])
+        self.assertEqual(_id_list(7), [])
+
+
+class TestStripSubtext(unittest.TestCase):
+    def test_meter_footer_removed(self):
+        from cogs.ai import strip_subtext
+        self.assertEqual(strip_subtext("yo\n-# smart · ⚡ 97/100 energy left today"), "yo")
+
+    def test_footer_only_message_is_empty(self):
+        from cogs.ai import strip_subtext
+        self.assertEqual(strip_subtext("-# smart · ⚡ 3/100"), "")
+
+    def test_plain_message_untouched(self):
+        from cogs.ai import strip_subtext
+        self.assertEqual(strip_subtext("hello there"), "hello there")
+        self.assertEqual(strip_subtext(None), "")
+
+
 if __name__ == "__main__":
     unittest.main()
