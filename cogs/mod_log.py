@@ -1029,8 +1029,21 @@ class ModLog(commands.Cog):
                                       None if bulk else author_id, time.time())
 
     # ------------------------------------------------------------- logging
-    def _log_channel(self, guild, cfg):
-        cid = cfg.get("msglog_channel_id") or cfg.get("modlog_channel_id")
+    # Optional per-category destinations (the Dyno / carl-bot style split a lot
+    # of servers lay out as #joins-leaves, #user-updates, #channel-logs …). Each
+    # falls back to the one msglog channel, so a single-channel setup is unchanged
+    # and nothing here can ever route into the security log by default.
+    KIND_KEYS = {
+        "members": "msglog_members_channel_id",   # joins, leaves, kicks, bans, unbans
+        "users":   "msglog_users_channel_id",     # name/nick/avatar, member role changes, voice
+        "server":  "msglog_server_channel_id",    # channel / role / emoji / automod-rule changes
+        "mod":     "mod_log_channel_id",          # timeouts — beside the moderation cog's own actions
+    }
+
+    def _log_channel(self, guild, cfg, kind="messages"):
+        key = self.KIND_KEYS.get(kind)
+        cid = ((cfg.get(key) if key else None) or cfg.get("msglog_channel_id")
+               or cfg.get("modlog_channel_id"))
         return guild.get_channel(int(cid)) if cid else None
 
     def _media_channel(self, guild, cfg):
@@ -1042,6 +1055,10 @@ class ModLog(commands.Cog):
     def _skip_logging(self, cfg, channel_id, log_ch):
         if log_ch is not None and int(channel_id) == log_ch.id:
             return True  # never log the log channel — feedback loop
+        for key in self.KIND_KEYS.values():
+            v = cfg.get(key)
+            if v and int(channel_id) == int(v):
+                return True  # ...nor any of the split log channels
         mcid = cfg.get("msglog_media_channel_id")
         if mcid and int(channel_id) == int(mcid):
             return True  # ...nor the media channel
@@ -1579,7 +1596,7 @@ class ModLog(commands.Cog):
         cfg = get_config(guild.id)
         if not cfg.get("msglog_members", 1):
             return None, None
-        return self._log_channel(guild, cfg), cfg
+        return self._log_channel(guild, cfg, "members"), cfg
 
     def _join_invite_line(self, uid, guild_id):
         """Latest invite attribution the invites cog recorded for this join."""
@@ -1758,7 +1775,7 @@ class ModLog(commands.Cog):
         cfg = get_config(guild.id)
         if not cfg.get("msglog_automod", 1):
             return
-        log_ch = self._log_channel(guild, cfg)
+        log_ch = self._log_channel(guild, cfg, "server")
         if log_ch is None:
             return
         A = discord.AuditLogAction
@@ -1894,7 +1911,7 @@ class ModLog(commands.Cog):
             return
         if after.bot and not cfg.get("msglog_log_bots", 0):
             return
-        log_ch = self._log_channel(guild, cfg)
+        log_ch = self._log_channel(guild, cfg, "users")
         if log_ch is None:
             return
         added = [r for r in after.roles if r not in before.roles]
@@ -2014,7 +2031,7 @@ class ModLog(commands.Cog):
                               by_uid=(rec or {}).get("by_id"),
                               by_name=(rec or {}).get("by_name"),
                               reason=(rec or {}).get("reason"))
-        log_ch = self._log_channel(guild, cfg)
+        log_ch = self._log_channel(guild, cfg, "users")
         if log_ch is None:
             return
         title = {"nick": "🏷️ Nickname changed",
@@ -2087,7 +2104,7 @@ class ModLog(commands.Cog):
         old_hash = getattr(old_asset, "key", None) if old_asset else None
         new_hash = await self._store_avatar(member, new_asset)
         self._record_identity(guild.id, member, kind, old_hash, new_hash)
-        log_ch = self._log_channel(guild, cfg)
+        log_ch = self._log_channel(guild, cfg, "users")
         if log_ch is None:
             return
         embed = discord.Embed(
@@ -2150,7 +2167,7 @@ class ModLog(commands.Cog):
             after=until.isoformat() if until else None,
             by_uid=(rec or {}).get("by_id"), by_name=(rec or {}).get("by_name"),
             reason=(rec or {}).get("reason"))
-        log_ch = self._log_channel(guild, cfg)
+        log_ch = self._log_channel(guild, cfg, "mod")
         if log_ch is None:
             return
         embed = discord.Embed(
@@ -2274,7 +2291,7 @@ class ModLog(commands.Cog):
         cfg = get_config(guild.id)
         if not cfg.get("msglog_roles", 1):
             return
-        log_ch = self._log_channel(guild, cfg)
+        log_ch = self._log_channel(guild, cfg, "server")
         if log_ch is None:
             return
         A = discord.AuditLogAction
@@ -2329,7 +2346,7 @@ class ModLog(commands.Cog):
         cfg = get_config(guild.id)
         if not cfg.get("msglog_expressions", 1):
             return
-        log_ch = self._log_channel(guild, cfg)
+        log_ch = self._log_channel(guild, cfg, "server")
         if log_ch is None:
             return
         A = discord.AuditLogAction
@@ -2404,7 +2421,7 @@ class ModLog(commands.Cog):
         cfg = get_config(guild.id)
         if not cfg.get("msglog_channels", 1):
             return
-        log_ch = self._log_channel(guild, cfg)
+        log_ch = self._log_channel(guild, cfg, "server")
         if log_ch is None:
             return
         A = discord.AuditLogAction
@@ -2540,7 +2557,7 @@ class ModLog(commands.Cog):
             return
         if member.bot and not cfg.get("msglog_log_bots", 0):
             return
-        log_ch = self._log_channel(guild, cfg)
+        log_ch = self._log_channel(guild, cfg, "users")
         if log_ch is None:
             return
 
