@@ -17,24 +17,8 @@
       ]
     },
     {
-      "name": "security-ai-grant",
-      "description": "[Operator] Grant a Security AI review tier to a server",
-      "cog": "security_ai",
-      "required_permissions": [
-        "administrator"
-      ]
-    },
-    {
-      "name": "security-ai-revoke",
-      "description": "[Operator] Remove a server's Security AI tier",
-      "cog": "security_ai",
-      "required_permissions": [
-        "administrator"
-      ]
-    },
-    {
-      "name": "security-ai-status",
-      "description": "Security AI tier and monthly review usage for this server",
+      "name": "security-ai",
+      "description": "Security AI reviewed verdicts — status for admins; grant/revoke are operator-only",
       "cog": "security_ai",
       "required_permissions": [
         "manage_guild"
