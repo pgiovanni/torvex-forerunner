@@ -66,7 +66,11 @@ CONTEXT_MESSAGES = 12
 CONTEXT_SCAN = 60      # raw messages walked to find those 12
 CONTEXT_SNIPPET = 200  # chars per context message
 
-CHAT_COOLDOWN_S = 15.0
+# Per-member spacing between asks, both paths. Anti-spam only — the real
+# budget fence is daily energy (~65 asks/member/day), which holds no matter
+# how fast they fire. 15s was long enough to ⏳ an ordinary follow-up, so a
+# normal back-and-forth kept hitting it (Paul, 8/24).
+CHAT_COOLDOWN_S = float(os.getenv("AI_CHAT_COOLDOWN_S", "5"))
 
 # Servers without the paid AI add-on get a pitch instead of silence when the
 # bot is deliberately @-mentioned — at most once an hour per guild.
@@ -899,7 +903,7 @@ class AI(commands.Cog):
         app_commands.Choice(name="Grub the gremlin 🦝", value="gremlin"),
         app_commands.Choice(name="Reginald the butler 🎩", value="butler"),
     ])
-    @app_commands.checks.cooldown(1, 15.0)
+    @app_commands.checks.cooldown(1, CHAT_COOLDOWN_S)
     @app_commands.guild_only()
     async def ask(self, interaction: discord.Interaction, question: str,
                   quick: bool = False, character: str = "peepo"):
