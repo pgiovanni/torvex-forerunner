@@ -134,6 +134,9 @@ DEFAULTS = {
     "msglog_log_bots": 0,            # also log EDITS by bots/webhooks (their deletes always log)
     "msglog_media": 1,               # cache attachments to disk so deleted media can be re-posted
     "msglog_media_channel_id": None, # route deleted-media re-posts here (e.g. an 18+ staff channel); None = with the log embeds
+    "msglog_members_channel_id": None,  # split log: joins/leaves/kicks/bans → here (None = log channel)
+    "msglog_users_channel_id": None,    # split log: name/nick/avatar, member role + voice changes → here
+    "msglog_server_channel_id": None,   # split log: channel/role/emoji/automod-rule changes → here
     "msglog_media_max_mb": 25,       # per-file cache cap
     "msglog_media_days": 30,         # media cache retention (log re-posts persist in Discord)
     "msglog_media_max_gb": 5,        # whole-cache hard cap — oldest evicted beyond this (disk-fill DoS guard)

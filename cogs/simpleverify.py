@@ -7,12 +7,15 @@ drive-by bot" check without running the AltGuard gate.
 
 Everything is per-guild and opt-in (utils/simpleverify_store): a server does
 nothing until an admin runs /simpleverify setup-roles (or wires roles + channel
-by hand) and it's enabled. Independent of AltGuard — a guild runs one or the
+by hand) and it's enabled. Unverified members see only the verify channel:
+setup-roles hides every other channel from the role and new channels are hidden
+as they are created (a channel given its own overwrite for the role is respected). Independent of AltGuard — a guild runs one or the
 other, so this never fires in the home guild where the gate already holds joins.
 
 The button is a persistent view (custom_id "sv:verify"), registered at cog_load
 so a click works the instant the bot is up, across restarts.
 """
+import asyncio
 import os
 import sys
 
@@ -109,6 +112,69 @@ class SimpleVerify(commands.Cog):
         name="simpleverify", description="Role-swap verify, no AltGuard gate (Admin only)",
         default_permissions=discord.Permissions(administrator=True))
 
+    # ───────────────────────────────────────────────────────── channel lockdown
+    async def _lock_unverified(self, guild, role, verify_channel_id):
+        """Deny View Channel for the Unverified role on every channel except the
+        verify channel — the half of "unverified members see only #verify" that
+        the roles alone can't do. A channel that already carries an explicit
+        overwrite for the role is left alone, so an admin who deliberately opens
+        #rules or #welcome to unverified members keeps that choice.
+        Returns (locked, skipped)."""
+        locked = skipped = 0
+        for ch in guild.channels:
+            if verify_channel_id and ch.id == int(verify_channel_id):
+                continue
+            if role in ch.overwrites:
+                skipped += 1
+                continue
+            try:
+                await ch.set_permissions(role, view_channel=False,
+                                         reason="Simple verify: unverified members see only the verify channel")
+                locked += 1
+            except (discord.Forbidden, discord.HTTPException):
+                skipped += 1
+            await asyncio.sleep(0.3)
+        return locked, skipped
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel):
+        """A channel created after setup must not leak to unverified members."""
+        guild = channel.guild
+        cfg = store.get(guild.id)
+        if not store.is_ready(cfg):
+            return
+        if cfg.get("channel_id") and int(cfg["channel_id"]) == channel.id:
+            return
+        role = guild.get_role(int(cfg["unverified_role_id"]))
+        if role is None or role in channel.overwrites or not _bot_can_manage(guild, role):
+            return
+        try:
+            await channel.set_permissions(role, view_channel=False,
+                                          reason="Simple verify: unverified members see only the verify channel")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    @group.command(name="lockdown",
+                   description="Hide every channel except the verify channel from Unverified members.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def lockdown(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        cfg = store.get(guild.id)
+        role = guild.get_role(int(cfg["unverified_role_id"])) if cfg.get("unverified_role_id") else None
+        if role is None:
+            await interaction.response.send_message(
+                "No Unverified role yet — run `/simpleverify setup-roles` first.", ephemeral=True)
+            return
+        if not _bot_can_manage(guild, role):
+            await interaction.response.send_message(
+                "My role must sit **above** the Unverified role and I need **Manage Roles**.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        locked, skipped = await self._lock_unverified(guild, role, cfg.get("channel_id"))
+        await interaction.followup.send(
+            f"🔒 Hidden from **Unverified** on **{locked}** channel(s); {skipped} left as they were "
+            "(already had an overwrite for the role). New channels are hidden automatically.", ephemeral=True)
+
     @group.command(name="setup-roles",
                    description="Create/wire the Unverified + Verified roles and turn verify on.")
     @app_commands.describe(verify_channel="Channel members verify in (the button gets posted here).")
@@ -155,15 +221,16 @@ class SimpleVerify(commands.Cog):
             except discord.Forbidden:
                 lines.append(f"• Verify channel → {verify_channel.mention} "
                              f"(⚠️ I couldn't set its permissions — do it by hand)")
+            locked, _skipped = await self._lock_unverified(guild, unverified, verify_channel.id)
+            lines.append(f"• Hidden from Unverified on {locked} other channel(s); new channels follow")
 
         store.set_enabled(guild.id, True)
         ready = store.is_ready(store.get(guild.id))
         note = ("\n\n**Verify is ON.** " if ready else
                 "\n\n**Almost there** — set a verify channel to finish: `/simpleverify set-channel`. ")
-        note += ("New members now get **Unverified** on join. Post the button with "
-                 "`/simpleverify panel`.\n\n**One manual step:** make sure your normal channels are "
-                 "visible to **Verified** (not `@everyone`) so unverified members only see the verify "
-                 "channel. I don't rewrite your whole server's permissions automatically.")
+        note += ("New members now get **Unverified** on join and can only see the verify channel "
+                 "(a channel you deliberately opened to them stays open). Post the button with "
+                 "`/simpleverify panel`; re-run the hide with `/simpleverify lockdown` any time.")
         await interaction.followup.send("Set up:\n" + "\n".join(lines) + note, ephemeral=True)
 
     @group.command(name="set-roles", description="Use your own existing Unverified + Verified roles.")
