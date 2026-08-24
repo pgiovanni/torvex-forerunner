@@ -1029,15 +1029,20 @@ class ModLog(commands.Cog):
                                       None if bulk else author_id, time.time())
 
     # ------------------------------------------------------------- logging
-    # Optional per-category destinations (the Dyno / carl-bot style split a lot
-    # of servers lay out as #joins-leaves, #user-updates, #channel-logs …). Each
-    # falls back to the one msglog channel, so a single-channel setup is unchanged
-    # and nothing here can ever route into the security log by default.
+    # Optional per-event destinations — every event class the log produces can be
+    # routed to its own channel (the Dyno / carl-bot style split). Each falls back
+    # to the one msglog channel, so a single-channel setup is unchanged and nothing
+    # here can ever route into the security log by default.
     KIND_KEYS = {
-        "members": "msglog_members_channel_id",   # joins, leaves, kicks, bans, unbans
-        "users":   "msglog_users_channel_id",     # name/nick/avatar, member role changes, voice
-        "server":  "msglog_server_channel_id",    # channel / role / emoji / automod-rule changes
-        "mod":     "mod_log_channel_id",          # timeouts — beside the moderation cog's own actions
+        "members":      "msglog_members_channel_id",       # joins, leaves, kicks, bans, unbans
+        "users":        "msglog_users_channel_id",         # username / nickname / avatar changes
+        "member_roles": "msglog_member_roles_channel_id",  # roles added to / removed from a member
+        "voice":        "msglog_voice_channel_id",         # voice join / leave / move, server mute / deafen
+        "channels":     "msglog_channels_channel_id",      # channel create / delete / edit / overwrites
+        "roles":        "msglog_roles_channel_id",         # role create / delete / edit
+        "expressions":  "msglog_expressions_channel_id",   # emoji + sticker create / delete
+        "automod":      "msglog_automod_channel_id",       # AutoMod blocks + rule changes
+        "mod":          "mod_log_channel_id",              # timeouts — beside the moderation cog's own actions
     }
 
     def _log_channel(self, guild, cfg, kind="messages"):
@@ -1775,7 +1780,7 @@ class ModLog(commands.Cog):
         cfg = get_config(guild.id)
         if not cfg.get("msglog_automod", 1):
             return
-        log_ch = self._log_channel(guild, cfg, "server")
+        log_ch = self._log_channel(guild, cfg, "automod")
         if log_ch is None:
             return
         A = discord.AuditLogAction
@@ -1911,7 +1916,7 @@ class ModLog(commands.Cog):
             return
         if after.bot and not cfg.get("msglog_log_bots", 0):
             return
-        log_ch = self._log_channel(guild, cfg, "users")
+        log_ch = self._log_channel(guild, cfg, "member_roles")
         if log_ch is None:
             return
         added = [r for r in after.roles if r not in before.roles]
@@ -2201,7 +2206,7 @@ class ModLog(commands.Cog):
         cfg = get_config(guild.id)
         if not cfg.get("msglog_automod", 1):
             return
-        log_ch = self._log_channel(guild, cfg)
+        log_ch = self._log_channel(guild, cfg, "automod")
         if log_ch is None:
             return
         member = guild.get_member(execution.user_id)
@@ -2291,7 +2296,7 @@ class ModLog(commands.Cog):
         cfg = get_config(guild.id)
         if not cfg.get("msglog_roles", 1):
             return
-        log_ch = self._log_channel(guild, cfg, "server")
+        log_ch = self._log_channel(guild, cfg, "roles")
         if log_ch is None:
             return
         A = discord.AuditLogAction
@@ -2346,7 +2351,7 @@ class ModLog(commands.Cog):
         cfg = get_config(guild.id)
         if not cfg.get("msglog_expressions", 1):
             return
-        log_ch = self._log_channel(guild, cfg, "server")
+        log_ch = self._log_channel(guild, cfg, "expressions")
         if log_ch is None:
             return
         A = discord.AuditLogAction
@@ -2421,7 +2426,7 @@ class ModLog(commands.Cog):
         cfg = get_config(guild.id)
         if not cfg.get("msglog_channels", 1):
             return
-        log_ch = self._log_channel(guild, cfg, "server")
+        log_ch = self._log_channel(guild, cfg, "channels")
         if log_ch is None:
             return
         A = discord.AuditLogAction
@@ -2557,7 +2562,7 @@ class ModLog(commands.Cog):
             return
         if member.bot and not cfg.get("msglog_log_bots", 0):
             return
-        log_ch = self._log_channel(guild, cfg, "users")
+        log_ch = self._log_channel(guild, cfg, "voice")
         if log_ch is None:
             return
 
