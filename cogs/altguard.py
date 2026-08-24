@@ -51,6 +51,7 @@ import rejoin_roles
 from tokens import make_token, pack
 from utils.security_config import get_config
 from utils import altguard_mode as agmode
+from utils import security_ai as sai
 
 log = logging.getLogger("altguard")
 
@@ -1011,24 +1012,56 @@ class AltGuard(commands.Cog):
         except discord.HTTPException:
             pass
 
+    async def _fetch_results(self, guild_id: str):
+        """One guild's pending verdicts — ALWAYS scoped. An unscoped call
+        returns every guild's rows, and acking those consumes results whose
+        rightful reader is another server's poll (the pre-2b bug: a remote
+        member's verdict was processed against the home guild)."""
+        try:
+            async with self.session.get(
+                f"{GATE_URL}/api/results", params={"guild_id": guild_id},
+                headers=_hmac_headers(), timeout=10
+            ) as r:
+                if r.status != 200:
+                    return []
+                data = await r.json()
+                return data.get("results", [])
+        except Exception as e:
+            log.debug("poll failed for %s: %s", guild_id, e)
+            return []
+
+    async def _ack_results(self, uids, guild_id: str):
+        """Ack one guild's copies only — the results PK is (uid, guild_id)."""
+        if not uids:
+            return
+        try:
+            async with self.session.post(
+                f"{GATE_URL}/api/ack", headers=_hmac_headers(),
+                json={"uids": uids, "guild_id": guild_id}, timeout=10
+            ):
+                pass
+        except Exception as e:
+            log.debug("ack failed for %s: %s", guild_id, e)
+
+    def _security_ai_review(self, guild, res, facts, channel=None):
+        """Paid sealed second opinion, when this guild holds a tier. Never
+        blocks the poll — the SecurityAI cog runs the model in its own task
+        and posts to the same log channel that carries the case."""
+        cog = self.bot.get_cog("SecurityAI")
+        if cog is None or guild is None:
+            return
+        ch = channel if channel is not None else guild.get_channel(MODLOG_CHANNEL_ID)
+        cog.schedule_review(guild, res.get("uid"), res.get("signals") or [],
+                            res.get("verdict"), facts, ch)
+
     @tasks.loop(seconds=10)
     async def poll_results(self):
         if not self.session or not GATE_URL:
             return
-        try:
-            async with self.session.get(
-                f"{GATE_URL}/api/results", headers=_hmac_headers(), timeout=10
-            ) as r:
-                if r.status != 200:
-                    return
-                data = await r.json()
-        except Exception as e:
-            log.debug("poll failed: %s", e)
-            return
-
         guild = self.bot.get_guild(GUILD_ID)
-        results = data.get("results", [])
+        results = await self._fetch_results(str(GUILD_ID))
         if not results:
+            await self._poll_remote_guilds()
             await self._poll_shares(guild)  # still surface link-sharing
             await self._poll_precaptures(guild)
             await self._refresh_precap_cards(guild)
@@ -1101,20 +1134,114 @@ class AltGuard(commands.Cog):
                     log.warning("Wanted to ban %s for evasion but lack permission", member)
 
             await self._alert(guild, member, res, removed, cascaded, banned, left, evaded, cleared)
+            self._security_ai_review(guild, res, {
+                "matched_account_banned_here": bool(banned),
+                "matched_account_member_here": bool(cascaded or cleared),
+                "matched_account_left": bool(left),
+                "matched_account_cleared": bool(cleared),
+            })
 
-        try:
-            async with self.session.post(
-                f"{GATE_URL}/api/ack", headers=_hmac_headers(), json={"uids": acked}, timeout=10
-            ):
-                pass
-        except Exception as e:
-            log.debug("ack failed: %s", e)
-
+        await self._ack_results(acked, str(GUILD_ID))
+        await self._poll_remote_guilds()
         await self._poll_shares(guild)
         await self._poll_precaptures(guild)
         await self._refresh_precap_cards(guild)
         await self._poll_unknown_networks(guild)
         await self._poll_hold_replies(guild)
+
+    async def _poll_remote_guilds(self):
+        """Phase 2b, bot half: each non-home guild with AltGuard switched on
+        gets its own scoped poll, and its results are routed to IT — reported
+        in its mod-log, quarantined (if enforcing) with its own role, acked as
+        its own copy. The gate already redacts the payload server-side and
+        recomputes the verdict from what the guild may see, so a foreign match
+        can hold nobody here."""
+        for g in self.bot.guilds:
+            if g.id == GUILD_ID:
+                continue
+            cfg = get_config(g.id)
+            if agmode.effective_mode(g.id, cfg, GUILD_ID) == "off":
+                continue
+            remote = await self._fetch_results(str(g.id))
+            if not remote:
+                continue
+            acked = await self._process_remote_results(g, cfg, remote)
+            await self._ack_results(acked, str(g.id))
+
+    async def _process_remote_results(self, guild, cfg, results):
+        """Handle one remote guild's verdicts under its own mode.
+
+        observe (and any degraded enforcing mode): report only — no role is
+        ever touched, that promise is what makes observe safe to run in a
+        stranger's server. assist/gate with remote enforcement on: quarantine
+        holds with THEIR configured role. Local facts for the reviewer come
+        from rows this guild owns (its members, its ban list) — never from
+        another server's history."""
+        mode = agmode.effective_mode(guild.id, cfg, GUILD_ID)
+        ids = agmode.resolve_ids(guild.id, cfg, GUILD_ID, {})
+        ch = guild.get_channel(ids["modlog_channel_id"]) if ids.get("modlog_channel_id") else None
+        acked = []
+        for res in results:
+            uid = str(res.get("uid") or "")
+            if not uid:
+                continue
+            acked.append(uid)
+            verdict = res.get("verdict")
+            signals = res.get("signals") or []
+            member = guild.get_member(int(uid)) if uid.isdigit() else None
+            facts = {}
+            for a in res.get("alt_uids") or []:
+                try:
+                    aid = int(a)
+                except (TypeError, ValueError):
+                    continue
+                if guild.get_member(aid):
+                    facts["matched_account_member_here"] = True
+                else:
+                    status = await self._ban_status(guild, aid)
+                    if status == "banned":
+                        facts["matched_account_banned_here"] = True
+                    else:
+                        facts["matched_account_left"] = True
+            held = False
+            if verdict != "pass" and member is not None and agmode.acts_on_roles(mode):
+                role = guild.get_role(ids.get("quarantine_role_id") or 0)
+                if role is not None:
+                    try:
+                        await member.add_roles(role, reason="AltGuard: verification flagged")
+                        held = True
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
+            if ch is not None:
+                await self._remote_result_card(ch, uid, verdict, signals, res, held, mode)
+            if verdict != "pass":
+                self._security_ai_review(guild, res, facts, channel=ch)
+        return acked
+
+    async def _remote_result_card(self, ch, uid, verdict, signals, res, held, mode):
+        passed = verdict == "pass"
+        e = discord.Embed(
+            title="✅ AltGuard: verification passed" if passed
+            else "🚩 AltGuard: verification flagged",
+            color=0x2ECC71 if passed else 0xE67E22,
+            description=f"<@{uid}> (`{uid}`)",
+        )
+        lines = sai.signal_lines(signals)
+        if lines:
+            e.add_field(name="Signals", value="\n".join(lines)[:1024], inline=False)
+        if res.get("redacted"):
+            e.add_field(name="Scope", value=(
+                "Only signals involving your own server are disclosable — "
+                "nothing further exists for this case here."), inline=False)
+        if not passed:
+            action = ("Quarantined with your configured role — your mods decide the release."
+                      if held else
+                      "Observing only — nobody's roles were touched.")
+            e.add_field(name="Action", value=action, inline=False)
+        try:
+            await ch.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
     async def _poll_hold_replies(self, guild):
         """Surface what a HELD member said about their own device match.
