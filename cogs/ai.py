@@ -19,10 +19,11 @@ budget (AI_HOME_MONTHLY_BUDGET_USD); every other server runs on the prepaid
 credit it bought, and nothing about the home community can gate it.
 
 Data scoping: the model only ever sees the question plus recent messages from
-the invoking channel, and ONLY when that channel is readable by the server's
-general membership — private/staff channels contribute no context. No database
-access, no archive, no tools. What the code doesn't fetch, no prompt injection
-can leak.
+THE CHANNEL IT WAS PINGED IN — never another channel, never a DB, no archive,
+no tools. That boundary is the whole guarantee: the answer is posted back into
+the same channel, so context can only ever reach people who could already read
+it. A member who does not want to appear in it at all opts out with
+/ai-privacy. What the code doesn't fetch, no prompt injection can leak.
 """
 import math
 import os
@@ -276,22 +277,6 @@ def strip_bot_mention(content: str, bot_id: int):
     return content.strip() or None
 
 
-def _id_list(value):
-    """Configured ids → ints, dropping anything that isn't one. Same
-    fail-closed contract as antinuke.id_set: the dashboard stores id[] fields
-    as digit STRINGS while discord.py hands out ints, and a bare int() on
-    config is how three silent protection-off bugs shipped in one day."""
-    if isinstance(value, (str, bytes)) or not hasattr(value, "__iter__"):
-        return []
-    out = []
-    for v in value:
-        try:
-            out.append(int(v))
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
 def strip_subtext(content: str) -> str:
     """A message minus its `-# ` subtext lines — that footer is the bot's own
     meter readout (tier · energy), not something it said."""
@@ -314,26 +299,6 @@ def retry_attachments(reply_text, attach_cmds, attach_energy, commands_available
     sentinel = m.group(1).lower() if m else ""
     return (bool(attach_cmds or (sentinel == "need_commands" and commands_available)),
             bool(attach_energy or sentinel == "need_energy"))
-
-
-def baseline_view_roles(everyone, granted_roles):
-    """The roles that stand in for "anyone who is a member of this server",
-    used to decide whether a channel is public enough to feed the AI context.
-
-    @everyone is the obvious stand-in and the right one in an open server —
-    but a verification-gated server works by stripping View Channel off
-    @everyone entirely and handing it to the role granted on verification. In
-    the home community @everyone holds no View Channel at all, so the old
-    @everyone-only guard rejected every channel in the server and the model
-    never saw one line of context. `granted_roles` (AltGuard's on-verify
-    `default_role_ids`) is the fallback: every verified member holds them, so
-    a channel one of them can read is a channel the membership can read, while
-    staff channels deny them and stay invisible. Nothing usable → @everyone
-    stands and the guard stays shut, which is the old behaviour.
-    """
-    if everyone.permissions.view_channel:
-        return [everyone]
-    return [r for r in granted_roles if r.permissions.view_channel] or [everyone]
 
 
 def quote_question(display_name: str, question: str) -> str:
@@ -719,23 +684,23 @@ class AI(commands.Cog):
 
     # ── context ───────────────────────────────────────────────────────────────
 
-    def _member_baseline_roles(self, guild):
-        """This guild's stand-in for "any member here" (see
-        baseline_view_roles) — @everyone, or the roles AltGuard grants on
-        verification when the gate has emptied @everyone out."""
-        granted = [guild.get_role(rid)
-                   for rid in _id_list(get_config(guild.id).get("default_role_ids"))]
-        return baseline_view_roles(guild.default_role,
-                                   [r for r in granted if r is not None])
-
     async def _channel_context(self, channel, guild, skip_message_id=None) -> str:
-        """Recent messages from the invoking channel, but ONLY if the general
-        membership can read it — private/staff channels never feed the
-        prompt. See _member_baseline_roles for who "the membership" is."""
+        """Recent messages from the channel the bot was pinged in — whatever
+        channel that is.
+
+        There is deliberately no public/private test here (Paul, 8/24: "it
+        should only get the context of the channel it's in. public or not.").
+        The one that used to live here asked whether @everyone could see the
+        channel, which in a verification-gated server is a question about a
+        role no human holds — it answered "no" for 69 of 86 channels and cost
+        the AI its context entirely once conversation moved to a new one.
+        The boundary that actually matters is the channel itself: the answer
+        is posted back where it was asked, so nothing reaches anyone who
+        could not already read it. Staff talk in a staff channel informs a
+        staff answer and goes no further. Opting out (/ai-privacy) still
+        removes a member from every transcript.
+        """
         try:
-            if not any(channel.permissions_for(r).view_channel
-                       for r in self._member_baseline_roles(guild)):
-                return ""
             me = guild.me
             lines = []
             async for m in channel.history(limit=CONTEXT_SCAN):
@@ -1108,8 +1073,8 @@ class AI(commands.Cog):
             if uid in self._optout:
                 c.execute("DELETE FROM ai_optout WHERE user_id=?", (uid,))
                 self._optout.discard(uid)
-                msg = ("🔓 Opted back in — your recent public messages may appear as context "
-                       "when someone uses /ask in the same channel.")
+                msg = ("🔓 Opted back in — your recent messages may appear as context "
+                       "when someone asks the AI in the same channel.")
             else:
                 c.execute("INSERT OR IGNORE INTO ai_optout(user_id) VALUES (?)", (uid,))
                 self._optout.add(uid)

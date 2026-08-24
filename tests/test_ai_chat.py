@@ -203,59 +203,6 @@ class TestRetryAttachments(unittest.TestCase):
                          (False, True))
 
 
-class _Perms:
-    def __init__(self, view):
-        self.view_channel = view
-
-
-class _Role:
-    def __init__(self, name, view):
-        self.name = name
-        self.permissions = _Perms(view)
-
-    def __repr__(self):
-        return f"<{self.name}>"
-
-
-class TestBaselineViewRoles(unittest.TestCase):
-    """Who "the general membership" is for the context guard. An
-    @everyone-only test reads as "nothing is public" in a verification-gated
-    server, which silently starved the model of channel context everywhere."""
-
-    def test_open_server_uses_everyone(self):
-        from cogs.ai import baseline_view_roles
-        everyone = _Role("@everyone", True)
-        member = _Role("Member", True)
-        self.assertEqual(baseline_view_roles(everyone, [member]), [everyone])
-
-    def test_gated_server_falls_back_to_the_verified_role(self):
-        from cogs.ai import baseline_view_roles
-        everyone = _Role("@everyone", False)
-        member = _Role("Peepo", True)
-        ping = _Role("Announcement Ping", False)
-        self.assertEqual(baseline_view_roles(everyone, [ping, member]), [member])
-
-    def test_no_usable_role_stays_closed(self):
-        """Fail closed: with nothing that can stand for the membership, the
-        guard falls back to @everyone and no context is gathered."""
-        from cogs.ai import baseline_view_roles
-        everyone = _Role("@everyone", False)
-        self.assertEqual(baseline_view_roles(everyone, []), [everyone])
-        self.assertEqual(baseline_view_roles(everyone, [_Role("Ping", False)]), [everyone])
-
-
-class TestIdList(unittest.TestCase):
-    def test_mixed_types_coerced_and_junk_dropped(self):
-        from cogs.ai import _id_list
-        self.assertEqual(_id_list([1, "2", None, "x", 3.0]), [1, 2, 3])
-
-    def test_non_list_config_is_empty_not_an_error(self):
-        from cogs.ai import _id_list
-        self.assertEqual(_id_list(None), [])
-        self.assertEqual(_id_list("123"), [])
-        self.assertEqual(_id_list(7), [])
-
-
 class TestStripSubtext(unittest.TestCase):
     def test_meter_footer_removed(self):
         from cogs.ai import strip_subtext
