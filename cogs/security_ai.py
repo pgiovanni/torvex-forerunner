@@ -103,11 +103,20 @@ class SecurityAI(commands.Cog):
                  tier, uid, guild.id, passes, tokens["in"], tokens["out"])
 
     # ── operator commands ────────────────────────────────────────────────
+    # One GROUP, not three top-level commands: the global tree sits at
+    # Discord's 100-command cap (adding three loose commands knocked the
+    # economy cog out of the tree on 2026-08-24 — a group costs one slot).
+    group = app_commands.Group(
+        name="security-ai",
+        description="Security AI — sealed reviewed verdicts on flagged members",
+        default_permissions=discord.Permissions(manage_guild=True),
+        guild_only=True)
+
     def _home_admin(self, interaction) -> bool:
         return interaction.guild_id == HOME_GUILD_ID
 
-    @app_commands.command(
-        name="security-ai-grant",
+    @group.command(
+        name="grant",
         description="[Operator] Grant a Security AI tier to a server")
     @app_commands.describe(guild_id="Server to entitle",
                            tier="Review tier",
@@ -118,9 +127,7 @@ class SecurityAI(commands.Cog):
         app_commands.Choice(name="Advanced", value="advanced"),
         app_commands.Choice(name="Elite", value="elite"),
     ])
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
     async def grant(self, interaction: discord.Interaction, guild_id: str,
                     tier: app_commands.Choice[str], days: int = 0, note: str = ""):
         if not self._home_admin(interaction):
@@ -138,13 +145,11 @@ class SecurityAI(commands.Cog):
             f"✅ **{TIER_LABEL[tier.value]}** review → **{g.name if g else gid}** ({until}). "
             f"Flagged cases there now get a sealed written assessment.", ephemeral=True)
 
-    @app_commands.command(
-        name="security-ai-revoke",
+    @group.command(
+        name="revoke",
         description="[Operator] Remove a server's Security AI tier")
     @app_commands.describe(guild_id="Server to revoke")
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
     async def revoke(self, interaction: discord.Interaction, guild_id: str):
         if not self._home_admin(interaction):
             await interaction.response.send_message("Home-server only.", ephemeral=True)
@@ -157,12 +162,10 @@ class SecurityAI(commands.Cog):
         sai.revoke(gid)
         await interaction.response.send_message(f"Removed Security AI from `{gid}`.", ephemeral=True)
 
-    @app_commands.command(
-        name="security-ai-status",
+    @group.command(
+        name="status",
         description="Security AI tier and monthly review usage for this server")
-    @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.guild_only()
     async def status(self, interaction: discord.Interaction):
         gid = interaction.guild_id
         row = sai.entitlement(gid)
