@@ -60,6 +60,7 @@ DEFAULTS = {
     # instantly reverted + the granter stripped, unless the granter is the guild
     # OWNER or this bot (ignores the general whitelist). 1 = on.
     "antinuke_admin_lockdown": 1,
+    "antinuke_ping": "here",          # alert ping: "here" | "everyone" | "none" | <role_id>
     # user-installed application guard. These apps live on the PERSON, not the
     # server — invisible in Server Settings → Integrations, no bot_add event —
     # so this listener is the only server-side visibility that exists.
