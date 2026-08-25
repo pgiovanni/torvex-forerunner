@@ -254,6 +254,21 @@ class AntiNuke(commands.Cog):
                 or user.id == guild.owner_id or user.id in wl
                 or (getattr(user, "bot", False) and user.id in trusted))
 
+    def _ping_prefix(self, cfg):
+        """Who an alert @'s: "here" (default) | "everyone" | "none" | a role id.
+        Same knob as LinkGuard's — a small server that reads its log channel
+        doesn't want @here on every alert."""
+        val = str(cfg.get("antinuke_ping", "here")).strip().lower()
+        if val == "everyone":
+            return "@everyone"
+        if val == "none" or not val:
+            return None
+        if val == "here":
+            return "@here"
+        if val.isdigit():
+            return f"<@&{val}>"
+        return "@here"
+
     def _modlog(self, guild, cfg):
         mid = cfg.get("modlog_channel_id")
         return guild.get_channel(int(mid)) if mid else None
@@ -424,7 +439,7 @@ class AntiNuke(commands.Cog):
             embed.set_footer(text="Victims unbanned — they can rejoin via the invite. Re-ban any that were legit.")
         elif self._enforce(cfg) and cfg.get("antinuke_restore_bans"):
             embed.add_field(name="Victims", value="none captured in the window.", inline=False)
-        await ch.send(content="@here", embed=embed)
+        await ch.send(content=self._ping_prefix(cfg), embed=embed)
 
     # ----------------------------------------------------- chat abuse (messages)
     # ─────────────────────────────────────────────── user-installed app guard
@@ -610,7 +625,7 @@ class AntiNuke(commands.Cog):
         embed.add_field(name="Action", value=action_txt or ("none — SHADOW" if not enforce else "FAILED"), inline=True)
         if not enforce:
             embed.set_footer(text="Shadow mode — alert only. Enable enforce in /security to act.")
-        await ch.send(content="@here" if (acted or enforce) else None, embed=embed)
+        await ch.send(content=self._ping_prefix(cfg) if (acted or enforce) else None, embed=embed)
 
     # ----------------------------------------------------------- listeners
     @commands.Cog.listener()
@@ -737,7 +752,7 @@ class AntiNuke(commands.Cog):
         embed.add_field(name="Action", value=("bot kicked" if kicked else "alert only"), inline=True)
         if not kicked and had_admin:
             embed.set_footer(text="Bot has admin — verify it's trusted or remove it.")
-        await ch.send(content="@here", embed=embed)
+        await ch.send(content=self._ping_prefix(cfg), embed=embed)
 
     # ----------------------------------------------------------- commands
     group = app_commands.Group(
