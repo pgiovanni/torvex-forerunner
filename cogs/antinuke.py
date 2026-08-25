@@ -752,7 +752,11 @@ class AntiNuke(commands.Cog):
         embed.add_field(name="Action", value=("bot kicked" if kicked else "alert only"), inline=True)
         if not kicked and had_admin:
             embed.set_footer(text="Bot has admin — verify it's trusted or remove it.")
-        await ch.send(content=self._ping_prefix(cfg), embed=embed)
+        # An owner / whitelisted member adding an ordinary bot is an authorised
+        # action — record it, don't wake the staff for it. Ping only when the
+        # adder isn't trusted, couldn't be identified, or the bot has Administrator.
+        suspicious = adder is None or not self._exempt(member.guild, adder, cfg) or had_admin
+        await ch.send(content=self._ping_prefix(cfg) if suspicious else None, embed=embed)
 
     # ----------------------------------------------------------- commands
     group = app_commands.Group(
