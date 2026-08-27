@@ -11,6 +11,10 @@ moderation permission) and bots are always ignored, so a mod who wanders in
 isn't nuked. The punishment defaults to timeout — the safe setting — and is
 raised to kick/ban deliberately.
 
+Auto-delete (off by default, /honeypot auto-delete or the dashboard): the
+tripper's messages are swept out of the trap channel (and their reaction
+removed) alongside the punishment, so bait never accumulates in the channel.
+
 Anti-double-fire: a small in-memory set stops a burst (message + reactions from
 the same raider in the same second) from stacking three bans on one person.
 """
@@ -53,7 +57,8 @@ class Honeypot(commands.Cog):
         member = message.guild.get_member(message.author.id)
         if member is None or _is_staff(member):
             return
-        await self._trip(cfg, member, message.channel, trigger="posted in the honeypot channel")
+        await self._trip(cfg, member, message.channel, trigger="posted in the honeypot channel",
+                         message=message)
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -67,14 +72,22 @@ class Honeypot(commands.Cog):
         if member is None or member.bot or _is_staff(member):
             return
         channel = guild.get_channel(payload.channel_id)
-        await self._trip(cfg, member, channel, trigger="reacted in the honeypot channel")
+        await self._trip(cfg, member, channel, trigger="reacted in the honeypot channel",
+                         reaction=payload)
 
     # ──────────────────────────────────────────────────────────── enforcement
-    async def _trip(self, cfg, member: discord.Member, channel, trigger: str):
+    async def _trip(self, cfg, member: discord.Member, channel, trigger: str,
+                    message: discord.Message = None, reaction: discord.RawReactionActionEvent = None):
         key = (member.guild.id, member.id)
+        sweep = bool(cfg.get("delete_messages"))
         if key in self._handled:
+            # Already punished this run (or the punishment failed) — still keep
+            # the channel clean if auto-delete is on, but never re-punish.
+            if sweep:
+                await self._sweep(member, channel, message, reaction)
             return
         self._handled.add(key)
+        deleted = await self._sweep(member, channel, message, reaction) if sweep else 0
 
         guild = member.guild
         action = cfg.get("action", "timeout")
@@ -107,7 +120,36 @@ class Honeypot(commands.Cog):
         except discord.HTTPException:
             failed = "Discord returned an error carrying out the action."
 
+        if done is not None and deleted:
+            done += f" · 🧹 deleted {deleted} message{'s' if deleted != 1 else ''}"
         await self._log(cfg, guild, member, channel, trigger, done, failed)
+
+    async def _sweep(self, member: discord.Member, channel, message, reaction) -> int:
+        """Auto-delete: the triggering message, the tripper's other recent messages
+        in the trap channel, and (on a reaction trip) the reaction itself. Best
+        effort — a missing Manage Messages must never block the punishment."""
+        if channel is None or not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            return 0
+        perms = channel.permissions_for(member.guild.me)
+        if not perms.manage_messages:
+            return 0
+        deleted = 0
+        try:
+            if reaction is not None:
+                msg = await channel.fetch_message(reaction.message_id)
+                await msg.remove_reaction(reaction.emoji, member)
+            if message is not None:
+                await message.delete()
+                deleted += 1
+            if perms.read_message_history:
+                skip = message.id if message is not None else None
+                purged = await channel.purge(
+                    limit=100, check=lambda m: m.author.id == member.id and m.id != skip,
+                    reason="Honeypot auto-delete")
+                deleted += len(purged)
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            pass
+        return deleted
 
     async def _log(self, cfg, guild, member, channel, trigger, done, failed):
         lc = guild.get_channel(int(cfg["log_channel_id"])) if cfg.get("log_channel_id") else None
@@ -185,7 +227,23 @@ class Honeypot(commands.Cog):
         e.add_field(name="Trap channel", value=ch.mention if ch else "*not set*")
         e.add_field(name="Punishment", value=f"**{act}**")
         e.add_field(name="Log channel", value=lc.mention if lc else "*not set*", inline=False)
+        e.add_field(name="Auto-delete", value="🧹 **On** — tripper's messages are removed"
+                    if cfg.get("delete_messages") else "Off — messages stay as evidence")
         await interaction.response.send_message(embed=e, ephemeral=True)
+
+    @group.command(name="auto-delete",
+                   description="Also delete the tripper's messages from the trap channel when it fires.")
+    @app_commands.describe(enabled="On: sweep their messages/reaction out of the channel. Off: keep them as evidence.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def auto_delete(self, interaction: discord.Interaction, enabled: bool):
+        store.set_delete_messages(interaction.guild.id, enabled)
+        cfg = store.get(interaction.guild.id)
+        ch = interaction.guild.get_channel(int(cfg["channel_id"])) if cfg.get("channel_id") else None
+        note = ""
+        if enabled and ch is not None and not ch.permissions_for(interaction.guild.me).manage_messages:
+            note = f"\n⚠️ I don't have **Manage Messages** in {ch.mention} — nothing will be deleted until I do."
+        await interaction.response.send_message(
+            f"🧹 Honeypot auto-delete **{'on' if enabled else 'off'}**." + note, ephemeral=True)
 
     @group.command(name="disarm", description="Turn the honeypot off (settings are kept).")
     @app_commands.checks.has_permissions(administrator=True)
