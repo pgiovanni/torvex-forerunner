@@ -9,6 +9,10 @@ Opt-in per guild and inert until armed: nothing happens until `channel_id` is
 set and `enabled` is 1. The punishment is configurable — timeout / kick / ban —
 because how hard you hit depends on how untouchable the channel really is.
 
+Auto-delete (`delete_messages`, off by default): when on, the bot also removes
+the tripper's messages from the trap channel (and their reaction, on a
+reaction trip) so bait never accumulates. Off keeps the evidence in place.
+
 Pure module: sqlite3 only, no discord import, tests run locally.
 """
 
@@ -26,7 +30,8 @@ ACTIONS = ("timeout", "kick", "ban")
 MAX_TIMEOUT_MIN = 40320   # Discord's hard 28-day cap on timeouts
 DEFAULT_TIMEOUT_MIN = 60
 
-_COLS = ("enabled", "channel_id", "action", "timeout_minutes", "log_channel_id", "updated_ts")
+_COLS = ("enabled", "channel_id", "action", "timeout_minutes", "log_channel_id",
+         "delete_messages", "updated_ts")
 
 
 @contextlib.contextmanager
@@ -44,6 +49,10 @@ def _conn(db=None):
         log_channel_id  INTEGER,
         updated_ts      INTEGER
     )""")
+    # Additive migration: delete_messages arrived after the table shipped (8/27).
+    cols = {r[1] for r in c.execute("PRAGMA table_info(honeypot_config)")}
+    if "delete_messages" not in cols:
+        c.execute("ALTER TABLE honeypot_config ADD COLUMN delete_messages INTEGER NOT NULL DEFAULT 0")
     try:
         yield c
         c.commit()
@@ -57,7 +66,7 @@ def get(guild_id, db=None) -> dict:
     if row is None:
         return {"guild_id": int(guild_id), "enabled": 0, "channel_id": None,
                 "action": "timeout", "timeout_minutes": DEFAULT_TIMEOUT_MIN,
-                "log_channel_id": None, "updated_ts": None}
+                "log_channel_id": None, "delete_messages": 0, "updated_ts": None}
     return dict(row)
 
 
@@ -92,6 +101,11 @@ def set_action(guild_id, action, timeout_minutes=None, db=None):
 
 def set_log_channel(guild_id, channel_id, db=None):
     _update(guild_id, db=db, log_channel_id=int(channel_id) if channel_id else None)
+
+
+def set_delete_messages(guild_id, on, db=None):
+    """Auto-delete the tripper's messages/reaction in the trap channel."""
+    _update(guild_id, db=db, delete_messages=1 if on else 0)
 
 
 def set_enabled(guild_id, on, db=None):

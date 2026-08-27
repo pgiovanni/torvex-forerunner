@@ -66,6 +66,31 @@ class HoneypotStore(unittest.TestCase):
         self.assertEqual(cfg["channel_id"], 800)
         self.assertFalse(store.is_armed(cfg))
 
+    def test_delete_messages_toggle(self):
+        self.assertEqual(store.get(7, db=self.db)["delete_messages"], 0)
+        store.set_delete_messages(7, True, db=self.db)
+        self.assertEqual(store.get(7, db=self.db)["delete_messages"], 1)
+        store.set_delete_messages(7, False, db=self.db)
+        self.assertEqual(store.get(7, db=self.db)["delete_messages"], 0)
+
+    def test_migrates_pre_delete_messages_schema(self):
+        # A db created before the column existed must gain it on first open
+        # without losing the row.
+        import sqlite3
+        c = sqlite3.connect(self.db)
+        c.execute("""CREATE TABLE honeypot_config (
+            guild_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,
+            channel_id INTEGER, action TEXT NOT NULL DEFAULT 'timeout',
+            timeout_minutes INTEGER NOT NULL DEFAULT 60, log_channel_id INTEGER,
+            updated_ts INTEGER)""")
+        c.execute("INSERT INTO honeypot_config (guild_id, enabled, channel_id) VALUES (8, 1, 900)")
+        c.commit(); c.close()
+        cfg = store.get(8, db=self.db)
+        self.assertEqual(cfg["delete_messages"], 0)
+        self.assertTrue(store.is_armed(cfg))
+        store.set_delete_messages(8, True, db=self.db)
+        self.assertEqual(store.get(8, db=self.db)["delete_messages"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
