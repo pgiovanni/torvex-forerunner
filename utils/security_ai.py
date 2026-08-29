@@ -184,6 +184,18 @@ _SIGNAL_TEXT = {
 }
 
 
+# The only non-enum string the gate sends. It comes from redact.band_for()
+# behind an HMAC, so it is inside the trust boundary — but the seal is
+# "enums and placeholders only", and a whitelist is what makes that true
+# rather than assumed.
+_BANDS = frozenset({"strong", "moderate", "weak"})
+
+
+def band_text(sig) -> str:
+    b = sig.get("band")
+    return b if b in _BANDS else "unstated"
+
+
 def signal_lines(signals):
     """Human lines for a result card (accounts render as Discord mentions).
     Same vocabulary as the sealed case, so a mod and the model read the same
@@ -195,7 +207,7 @@ def signal_lines(signals):
             continue
         accounts = ", ".join(f"<@{a}>" for a in (sig.get("accounts") or []))
         out.append("• " + text.format(accounts=accounts or "another account",
-                                      band=sig.get("band", "unstated")))
+                                      band=band_text(sig)))
     return out
 
 
@@ -231,7 +243,7 @@ def build_case(uid, signals, verdict, local_facts=None):
                     if str(a) in by_uid]
         lines.append("Signal: " + text.format(
             accounts=", ".join(accounts) or "another account",
-            band=sig.get("band", "unstated")))
+            band=band_text(sig)))
     if facts.get("matched_account_banned_here"):
         lines.append("Local fact: a matched account is on THIS server's own ban list.")
     if facts.get("matched_account_member_here"):
