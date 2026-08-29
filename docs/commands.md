@@ -95,17 +95,18 @@ Inspect a user's fingerprint/verdict history and who they link to
 
 #### `/altguard-release`
 
-Clear a quarantine and restore removed roles — releases the whole matched-alt group
+Clear a quarantine and restore removed roles — one member (+ their alt group), or everyone held
 
 ```
-/altguard-release <member>
+/altguard-release [member] [everyone]
 ```
 
 **Access:** Requires **Administrator**
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `member` | user | Yes | … |
+| `member` | user | No | One member to release, together with their matched-alt group |
+| `everyone` | boolean | No | True = release EVERY held member in this server (for switching the gate off) |
 
 #### `/altguard-sweep`
 

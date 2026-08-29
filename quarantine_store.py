@@ -342,3 +342,25 @@ def pop(uid):
 def is_quarantined(uid):
     with _conn() as c:
         return c.execute("SELECT 1 FROM quarantined WHERE uid=?", (str(uid),)).fetchone() is not None
+
+
+def list_quarantined(guild_id=None):
+    """Every uid with a live quarantine record, as ints — one guild's, or all.
+
+    Feeds `/altguard-release everyone:True`: the store is the memory of who is
+    held, and it can outlive the member (someone who left while quarantined
+    keeps a row, and the reconciliation listener would re-strip them on a
+    rejoin), so a bulk release has to walk the store, not just the role."""
+    with _conn() as c:
+        if guild_id is None:
+            rows = c.execute("SELECT uid FROM quarantined").fetchall()
+        else:
+            rows = c.execute("SELECT uid FROM quarantined WHERE guild_id=?",
+                             (str(guild_id),)).fetchall()
+    out = []
+    for r in rows:
+        try:
+            out.append(int(r["uid"]))
+        except (TypeError, ValueError):
+            continue
+    return out
