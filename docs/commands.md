@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **193 commands** (88 top-level, the rest subcommands) across 35 cogs
+- **225 commands** (100 top-level, the rest subcommands) across 39 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -23,9 +23,9 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 ## Index
 
-**Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/member-activity`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recent-leaves`, `/recon-status`, `/recon-unblock`, `/roster-missing`, `/roster-snapshot`, `/security`, `/structure-restore`, `/structure-status`, `/unquarantine`, `/verify`
+**Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/honeypot`, `/member-activity`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recent-leaves`, `/recon-status`, `/recon-unblock`, `/roster-missing`, `/roster-snapshot`, `/security-ai`, `/security`, `/simpleverify`, `/structure-restore`, `/structure-status`, `/unquarantine`, `/verify`
 
-**Moderation** — `/ban`, `/kick`, `/lock`, `/msglog`, `/prune-messages`, `/quiet-kick`, `/timeout`, `/unban`, `/unlock`, `/untimeout`
+**Moderation** — `/ban`, `/clear-warning`, `/clear-warnings`, `/conduct-forget`, `/evidence`, `/kick`, `/lock`, `/msglog`, `/note`, `/prune-messages`, `/quiet-kick`, `/timeout`, `/unban`, `/unlock`, `/untimeout`, `/warn`, `/warnings`
 
 **Server setup** — `/backup_emojis`, `/picount`, `/rolemenu`, `/server-info`, `/setup`, `/steal-emoji`, `/suggest`, `/welcome`
 
@@ -33,7 +33,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Games & fun** — `/8ball`, `/challenge`, `/chess`, `/connect4_bot`, `/connect4`, `/gear`, `/gift`, `/link`, `/market`, `/peepo`, `/roast`, `/rpg`, `/tictactoe_bot`, `/tictactoe`, `/trade`, `/unlink`, `/wordle`
 
-**AI** — `/ai-privacy`, `/ai-status`, `/ai-usage`, `/ask`
+**AI** — `/ai-config`, `/ai-credit-grant`, `/ai-privacy`, `/ai-status`, `/ai-usage`, `/ask`
 
 **Help** — `/add-bot`, `/dashboard`, `/help`
 
@@ -667,6 +667,188 @@ Show verify-prune config + who's currently overdue (admin).
 
 *No parameters.*
 
+### Simple verify
+
+<sub>`cogs/simpleverify.py`</sub>
+
+#### `/simpleverify disable`
+
+Turn simple verify off (settings are kept).
+
+```
+/simpleverify disable
+```
+
+**Access:** Requires **Administrator**
+
+*No parameters.*
+
+#### `/simpleverify lockdown`
+
+Hide every channel except the verify channel from Unverified members.
+
+```
+/simpleverify lockdown
+```
+
+**Access:** Requires **Administrator**
+
+*No parameters.*
+
+#### `/simpleverify panel`
+
+Post the Verify button in the verify channel.
+
+```
+/simpleverify panel [message]
+```
+
+**Access:** Requires **Administrator**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `message` | string | No | Optional text shown above the button. |
+
+#### `/simpleverify set-channel`
+
+Set the channel the verify button lives in.
+
+```
+/simpleverify set-channel <channel>
+```
+
+**Access:** Requires **Administrator**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `channel` | channel | Yes | … *(channel types: text, announcement)* |
+
+#### `/simpleverify set-roles`
+
+Use your own existing Unverified + Verified roles.
+
+```
+/simpleverify set-roles <unverified> <verified>
+```
+
+**Access:** Requires **Administrator**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `unverified` | role | Yes | Role given on join. |
+| `verified` | role | Yes | Role given after verifying. |
+
+#### `/simpleverify setup-roles`
+
+Create/wire the Unverified + Verified roles and turn verify on.
+
+```
+/simpleverify setup-roles [verify_channel]
+```
+
+**Access:** Requires **Administrator**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `verify_channel` | channel | No | Channel members verify in (the button gets posted here). *(channel types: text, announcement)* |
+
+#### `/simpleverify status`
+
+Show this server's verify settings.
+
+```
+/simpleverify status
+```
+
+**Access:** Requires **Administrator**
+
+*No parameters.*
+
+### Honeypot
+
+<sub>`cogs/honeypot.py`</sub>
+
+#### `/honeypot auto-delete`
+
+Also delete the tripper's messages from the trap channel when it fires.
+
+```
+/honeypot auto-delete <enabled>
+```
+
+**Access:** Requires **Administrator**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `enabled` | boolean | Yes | On: sweep their messages/reaction out of the channel. Off: keep them as evidence. |
+
+#### `/honeypot disarm`
+
+Turn the honeypot off (settings are kept).
+
+```
+/honeypot disarm
+```
+
+**Access:** Requires **Administrator**
+
+*No parameters.*
+
+#### `/honeypot log-channel`
+
+Where honeypot trips are reported (optional).
+
+```
+/honeypot log-channel [channel]
+```
+
+**Access:** Requires **Administrator**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `channel` | channel | No | … *(channel types: text, announcement)* |
+
+#### `/honeypot punishment`
+
+What happens when someone trips the honeypot.
+
+```
+/honeypot punishment <action> [timeout_minutes]
+```
+
+**Access:** Requires **Administrator**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `action` | string | Yes | Timeout, kick, or ban. *(one of: `Timeout — temporary mute`, `Kick — removable, can rejoin`, `Ban — permanent`)* |
+| `timeout_minutes` | integer | No | For timeout only: how long (1–40320 min). Default 60. |
+
+#### `/honeypot set-channel`
+
+Point the honeypot at a channel and arm it. Anyone who posts/reacts is punished.
+
+```
+/honeypot set-channel <channel>
+```
+
+**Access:** Requires **Administrator**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `channel` | channel | Yes | … *(channel types: text, announcement)* |
+
+#### `/honeypot status`
+
+Show the honeypot settings for this server.
+
+```
+/honeypot status
+```
+
+**Access:** Requires **Administrator**
+
+*No parameters.*
+
 ### Server backup
 
 <sub>`cogs/server_backup.py`</sub>
@@ -746,6 +928,53 @@ Show the channel/role backup + what's been deleted since (admin)
 ```
 
 **Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+*No parameters.*
+
+### Security AI (reviewed verdicts)
+
+<sub>`cogs/security_ai.py`</sub>
+
+#### `/security-ai grant`
+
+[Operator] Grant a Security AI tier to a server
+
+```
+/security-ai grant <guild_id> <tier> [days] [note]
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `guild_id` | string | Yes | Server to entitle |
+| `tier` | string | Yes | Review tier *(one of: `Standard`, `Advanced`, `Elite`)* |
+| `days` | integer | No | Days until it lapses (0 = no expiry) |
+| `note` | string | No | Why — order ref, comp, trial |
+
+#### `/security-ai revoke`
+
+[Operator] Remove a server's Security AI tier
+
+```
+/security-ai revoke <guild_id>
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `guild_id` | string | Yes | Server to revoke |
+
+#### `/security-ai status`
+
+Security AI tier and monthly review usage for this server
+
+```
+/security-ai status
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
 
 *No parameters.*
 
@@ -904,17 +1133,33 @@ Remove a member's timeout early.
 
 #### `/msglog accept-terms`
 
-Server owner: agree to the retention terms and turn the archive on.
+Manage Server: agree to the retention terms and turn the archive on.
 
 ```
 /msglog accept-terms [confirm]
 ```
 
-**Access:** **Server owner only** &nbsp;·&nbsp; Server only
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `confirm` | boolean | No | Yes, I've read /msglog terms and I accept on behalf of this server |
+
+#### `/msglog audit`
+
+Server-change ledger: roles, channels, permissions, emoji, AutoMod rules, member roles.
+
+```
+/msglog audit [kind] [target_id] [limit]
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `kind` | string | No | Filter by kind (default: everything) *(one of: `roles (create/delete/edit)`, `channels (create/delete/edit)`, `channel permissions`, `member role changes`, `emoji`, `stickers`, `AutoMod rules`)* |
+| `target_id` | string | No | Only events about this role/channel/member/emoji ID |
+| `limit` | integer | No | How many (1–40, default 25) |
 
 #### `/msglog automod`
 
@@ -943,6 +1188,23 @@ Toggle channel-change logging on or off.
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `enabled` | boolean | Yes | On = log channel create/delete/edit + permission-overwrite changes |
+
+#### `/msglog commands`
+
+Who ran which slash commands — including denied ones.
+
+```
+/msglog commands [user_id] [command] [denied] [limit]
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `user_id` | string | No | Only this user's commands |
+| `command` | string | No | Only this command (e.g. msglog audit) |
+| `denied` | boolean | No | Only denied/failed invocations |
+| `limit` | integer | No | How many (1–40, default 25) |
 
 #### `/msglog deleted`
 
@@ -1069,15 +1331,43 @@ Toggle nickname/username/timeout logging on or off.
 |---|---|:--:|---|
 | `enabled` | boolean | Yes | On = log nickname, username and timeout changes |
 
+#### `/msglog pro`
+
+Logging Pro: what this server has, what it would get.
+
+```
+/msglog pro
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+*No parameters.*
+
+#### `/msglog pro-grant`
+
+Operator: grant/extend/revoke Logging Pro for a server (home guild only).
+
+```
+/msglog pro-grant <guild_id> <days> [note]
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `guild_id` | string | Yes | Server to grant |
+| `days` | integer | Yes | Days to add from now (0 = no expiry, -1 = revoke) |
+| `note` | string | No | Why (order id, comp, trial…) |
+
 #### `/msglog revoke-terms`
 
-Server owner: stop storing this server's data and delete what's stored.
+Manage Server: stop storing this server's data and delete what's stored.
 
 ```
 /msglog revoke-terms [confirm]
 ```
 
-**Access:** **Server owner only** &nbsp;·&nbsp; Server only
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
@@ -1134,6 +1424,121 @@ Toggle voice channel join/leave/move logging on or off.
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `enabled` | boolean | Yes | On = log voice join/leave/switch to the mod-log |
+
+### Conduct record
+
+<sub>`cogs/conduct.py`</sub>
+
+#### `/clear-warning`
+
+Clear one entry. It stays on record as cleared.
+
+```
+/clear-warning <entry_id> <reason>
+```
+
+**Access:** Requires **Timeout Members** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `entry_id` | integer | Yes | The #id from /warnings |
+| `reason` | string | Yes | Why it's being cleared |
+
+#### `/clear-warnings`
+
+Clear a member's whole standing record (Manage Server).
+
+```
+/clear-warnings <member> <reason>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `member` | user | Yes | Whose record |
+| `reason` | string | Yes | Why the whole record is being cleared |
+
+#### `/conduct-forget`
+
+Permanently erase a user's record AND evidence files. Cannot be undone.
+
+```
+/conduct-forget <user_id> [confirm] [everywhere]
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `user_id` | string | Yes | Discord user ID |
+| `confirm` | boolean | No | Type true to confirm — this really deletes |
+| `everywhere` | boolean | No | Erase in every server, not just this one |
+
+#### `/evidence`
+
+Show one record entry in full, with its stored files.
+
+```
+/evidence <entry_id>
+```
+
+**Access:** Requires **Timeout Members** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `entry_id` | integer | Yes | The #id from /warnings |
+
+#### `/note`
+
+Record positive or neutral conduct — resolutions, good streaks.
+
+```
+/note <member> <note> [evidence] [silent]
+```
+
+**Access:** Requires **Timeout Members** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `member` | user | Yes | Who this is about |
+| `note` | string | Yes | What happened |
+| `evidence` | attachment | No | Screenshot or file |
+| `silent` | boolean | No | Record it without DMing them |
+
+#### `/warn`
+
+Warn a member and record it, with optional evidence.
+
+```
+/warn <member> <reason> [evidence] [evidence2] [evidence3] [notify]
+```
+
+**Access:** Requires **Timeout Members** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `member` | user | Yes | Who to warn |
+| `reason` | string | Yes | What they did — this is the record |
+| `evidence` | attachment | No | Screenshot or file backing this up |
+| `evidence2` | attachment | No | Another file |
+| `evidence3` | attachment | No | Another file |
+| `notify` | string | No | How the member is told — leave empty for this server's default *(one of: `DM + ping in this channel`, `DM only`, `Ping in this channel only`, `Silent — record only, don't tell them`)* |
+
+#### `/warnings`
+
+View a member's conduct record — or your own.
+
+```
+/warnings [member] [show_cleared]
+```
+
+**Access:** Everyone &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `member` | user | No | Whose record (leave empty for your own) |
+| `show_cleared` | boolean | No | Include entries that were cleared |
 
 ---
 
@@ -1390,7 +1795,7 @@ Post a ready-made role panel — creates any roles you don't have yet
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `template` | string | Yes | Which set to build *(one of: `🏷 Pronouns`, `🎂 Age`, `🌍 Region`, `🔔 Notifications`, `🎨 Name colour`, `🎮 Platform`, `💬 DM preference`)* |
+| `template` | string | Yes | Which set to build *(one of: `🏷 Pronouns`, `🎂 Age`, `🌍 Region`, `🔔 Notifications`, `🎨 Name colour`, `🎨 Name colour — full palette`, `🏳🌈 Sexuality`, `🎮 Platform`, `💬 DM preference`)* |
 | `channel` | channel | Yes | Where to post the panel *(channel types: text, announcement)* |
 
 ### Emojis
@@ -2733,6 +3138,76 @@ Offer a peepo trade to another player.
 
 <sub>`cogs/ai.py`</sub>
 
+#### `/ai-config energy`
+
+Daily energy per member (energy mode)
+
+```
+/ai-config energy <amount>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `amount` | integer | Yes | Energy per member per day (10–2000); 100 ≈ $0.06 of AI *(range 10–2000)* |
+
+#### `/ai-config mode`
+
+energy = daily allowance per member · unlimited = straight drawdown of the pool
+
+```
+/ai-config mode <mode>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `mode` | string | Yes | How members spend this server's AI *(one of: `energy — each member gets a daily allowance (recommended)`, `unlimited — no allowance; one member could use the whole pool`)* |
+
+#### `/ai-config paid-cap`
+
+Home only: max bucks-paid asks per member per day once energy is gone
+
+```
+/ai-config paid-cap <amount>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `amount` | integer | Yes | Paid asks per member per day (0–100); 0 = no paid tier *(range 0–100)* |
+
+#### `/ai-config show`
+
+Current AI usage mode and allowance for this server
+
+```
+/ai-config show
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+*No parameters.*
+
+#### `/ai-credit-grant`
+
+[Operator] Grant prepaid AI credit to a server (negative = correction)
+
+```
+/ai-credit-grant <guild_id> [usd] [note]
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `guild_id` | string | Yes | Server to credit |
+| `usd` | number | No | Dollars of AI usage (0 = one pack's worth; negative = correction) |
+| `note` | string | No | Why — order ref, correction, comp |
+
 #### `/ai-privacy`
 
 Toggle whether your messages can appear as AI context 🔒
@@ -2765,7 +3240,7 @@ Check your AI energy for today ⚡
 /ai-usage
 ```
 
-**Access:** Everyone
+**Access:** Everyone &nbsp;·&nbsp; Server only
 
 *No parameters.*
 

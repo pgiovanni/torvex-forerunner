@@ -165,6 +165,119 @@
    "dm_allowed": false
   },
   {
+   "path": "ai-config energy",
+   "description": "Daily energy per member (energy mode)",
+   "params": [
+    {
+     "name": "amount",
+     "type": "integer",
+     "required": true,
+     "description": "Energy per member per day (10–2000); 100 ≈ $0.06 of AI",
+     "min": 10,
+     "max": 2000
+    }
+   ],
+   "signature": "/ai-config energy <amount>",
+   "root": "ai-config",
+   "cog": "ai",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "ai-config mode",
+   "description": "energy = daily allowance per member · unlimited = straight drawdown of the pool",
+   "params": [
+    {
+     "name": "mode",
+     "type": "string",
+     "required": true,
+     "description": "How members spend this server's AI",
+     "choices": [
+      "energy — each member gets a daily allowance (recommended)",
+      "unlimited — no allowance; one member could use the whole pool"
+     ]
+    }
+   ],
+   "signature": "/ai-config mode <mode>",
+   "root": "ai-config",
+   "cog": "ai",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "ai-config paid-cap",
+   "description": "Home only: max bucks-paid asks per member per day once energy is gone",
+   "params": [
+    {
+     "name": "amount",
+     "type": "integer",
+     "required": true,
+     "description": "Paid asks per member per day (0–100); 0 = no paid tier",
+     "min": 0,
+     "max": 100
+    }
+   ],
+   "signature": "/ai-config paid-cap <amount>",
+   "root": "ai-config",
+   "cog": "ai",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "ai-config show",
+   "description": "Current AI usage mode and allowance for this server",
+   "params": [],
+   "signature": "/ai-config show",
+   "root": "ai-config",
+   "cog": "ai",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "ai-credit-grant",
+   "description": "[Operator] Grant prepaid AI credit to a server (negative = correction)",
+   "params": [
+    {
+     "name": "guild_id",
+     "type": "string",
+     "required": true,
+     "description": "Server to credit"
+    },
+    {
+     "name": "usd",
+     "type": "number",
+     "required": false,
+     "description": "Dollars of AI usage (0 = one pack's worth; negative = correction)"
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "required": false,
+     "description": "Why — order ref, correction, comp"
+    }
+   ],
+   "signature": "/ai-credit-grant <guild_id> [usd] [note]",
+   "root": "ai-credit-grant",
+   "cog": "ai",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "ai-privacy",
    "description": "Toggle whether your messages can appear as AI context 🔒",
    "params": [],
@@ -197,7 +310,7 @@
    "cog": "ai",
    "permissions": [],
    "cooldown_seconds": 0,
-   "dm_allowed": true
+   "dm_allowed": false
   },
   {
    "path": "ask",
@@ -800,6 +913,228 @@
    "dm_allowed": true
   },
   {
+   "path": "clear-warning",
+   "description": "Clear one entry. It stays on record as cleared.",
+   "params": [
+    {
+     "name": "entry_id",
+     "type": "integer",
+     "required": true,
+     "description": "The #id from /warnings"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": true,
+     "description": "Why it's being cleared"
+    }
+   ],
+   "signature": "/clear-warning <entry_id> <reason>",
+   "root": "clear-warning",
+   "cog": "conduct",
+   "permissions": [
+    "Timeout Members"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "clear-warnings",
+   "description": "Clear a member's whole standing record (Manage Server).",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": true,
+     "description": "Whose record"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": true,
+     "description": "Why the whole record is being cleared"
+    }
+   ],
+   "signature": "/clear-warnings <member> <reason>",
+   "root": "clear-warnings",
+   "cog": "conduct",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "conduct-forget",
+   "description": "Permanently erase a user's record AND evidence files. Cannot be undone.",
+   "params": [
+    {
+     "name": "user_id",
+     "type": "string",
+     "required": true,
+     "description": "Discord user ID"
+    },
+    {
+     "name": "confirm",
+     "type": "boolean",
+     "required": false,
+     "description": "Type true to confirm — this really deletes"
+    },
+    {
+     "name": "everywhere",
+     "type": "boolean",
+     "required": false,
+     "description": "Erase in every server, not just this one"
+    }
+   ],
+   "signature": "/conduct-forget <user_id> [confirm] [everywhere]",
+   "root": "conduct-forget",
+   "cog": "conduct",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "evidence",
+   "description": "Show one record entry in full, with its stored files.",
+   "params": [
+    {
+     "name": "entry_id",
+     "type": "integer",
+     "required": true,
+     "description": "The #id from /warnings"
+    }
+   ],
+   "signature": "/evidence <entry_id>",
+   "root": "evidence",
+   "cog": "conduct",
+   "permissions": [
+    "Timeout Members"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "note",
+   "description": "Record positive or neutral conduct — resolutions, good streaks.",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": true,
+     "description": "Who this is about"
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "required": true,
+     "description": "What happened"
+    },
+    {
+     "name": "evidence",
+     "type": "attachment",
+     "required": false,
+     "description": "Screenshot or file"
+    },
+    {
+     "name": "silent",
+     "type": "boolean",
+     "required": false,
+     "description": "Record it without DMing them"
+    }
+   ],
+   "signature": "/note <member> <note> [evidence] [silent]",
+   "root": "note",
+   "cog": "conduct",
+   "permissions": [
+    "Timeout Members"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "warn",
+   "description": "Warn a member and record it, with optional evidence.",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": true,
+     "description": "Who to warn"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": true,
+     "description": "What they did — this is the record"
+    },
+    {
+     "name": "evidence",
+     "type": "attachment",
+     "required": false,
+     "description": "Screenshot or file backing this up"
+    },
+    {
+     "name": "evidence2",
+     "type": "attachment",
+     "required": false,
+     "description": "Another file"
+    },
+    {
+     "name": "evidence3",
+     "type": "attachment",
+     "required": false,
+     "description": "Another file"
+    },
+    {
+     "name": "notify",
+     "type": "string",
+     "required": false,
+     "description": "How the member is told — leave empty for this server's default",
+     "choices": [
+      "DM + ping in this channel",
+      "DM only",
+      "Ping in this channel only",
+      "Silent — record only, don't tell them"
+     ]
+    }
+   ],
+   "signature": "/warn <member> <reason> [evidence] [evidence2] [evidence3] [notify]",
+   "root": "warn",
+   "cog": "conduct",
+   "permissions": [
+    "Timeout Members"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "warnings",
+   "description": "View a member's conduct record — or your own.",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": false,
+     "description": "Whose record (leave empty for your own)"
+    },
+    {
+     "name": "show_cleared",
+     "type": "boolean",
+     "required": false,
+     "description": "Include entries that were cleared"
+    }
+   ],
+   "signature": "/warnings [member] [show_cleared]",
+   "root": "warnings",
+   "cog": "conduct",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "backfill-chat-levels",
    "description": "[Admin] Sync all chat levels to RPG XP multipliers.",
    "params": [],
@@ -1274,6 +1609,131 @@
    "dm_allowed": true
   },
   {
+   "path": "honeypot auto-delete",
+   "description": "Also delete the tripper's messages from the trap channel when it fires.",
+   "params": [
+    {
+     "name": "enabled",
+     "type": "boolean",
+     "required": true,
+     "description": "On: sweep their messages/reaction out of the channel. Off: keep them as evidence."
+    }
+   ],
+   "signature": "/honeypot auto-delete <enabled>",
+   "root": "honeypot",
+   "cog": "honeypot",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "honeypot disarm",
+   "description": "Turn the honeypot off (settings are kept).",
+   "params": [],
+   "signature": "/honeypot disarm",
+   "root": "honeypot",
+   "cog": "honeypot",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "honeypot log-channel",
+   "description": "Where honeypot trips are reported (optional).",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": false,
+     "description": "…",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/honeypot log-channel [channel]",
+   "root": "honeypot",
+   "cog": "honeypot",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "honeypot punishment",
+   "description": "What happens when someone trips the honeypot.",
+   "params": [
+    {
+     "name": "action",
+     "type": "string",
+     "required": true,
+     "description": "Timeout, kick, or ban.",
+     "choices": [
+      "Timeout — temporary mute",
+      "Kick — removable, can rejoin",
+      "Ban — permanent"
+     ]
+    },
+    {
+     "name": "timeout_minutes",
+     "type": "integer",
+     "required": false,
+     "description": "For timeout only: how long (1–40320 min). Default 60."
+    }
+   ],
+   "signature": "/honeypot punishment <action> [timeout_minutes]",
+   "root": "honeypot",
+   "cog": "honeypot",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "honeypot set-channel",
+   "description": "Point the honeypot at a channel and arm it. Anyone who posts/reacts is punished.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "…",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/honeypot set-channel <channel>",
+   "root": "honeypot",
+   "cog": "honeypot",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "honeypot status",
+   "description": "Show the honeypot settings for this server.",
+   "params": [],
+   "signature": "/honeypot status",
+   "root": "honeypot",
+   "cog": "honeypot",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
    "path": "invite",
    "description": "Get your personal tracked invite link.",
    "params": [],
@@ -1613,7 +2073,7 @@
   },
   {
    "path": "msglog accept-terms",
-   "description": "Server owner: agree to the retention terms and turn the archive on.",
+   "description": "Manage Server: agree to the retention terms and turn the archive on.",
    "params": [
     {
      "name": "confirm",
@@ -1623,6 +2083,47 @@
     }
    ],
    "signature": "/msglog accept-terms [confirm]",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog audit",
+   "description": "Server-change ledger: roles, channels, permissions, emoji, AutoMod rules, member roles.",
+   "params": [
+    {
+     "name": "kind",
+     "type": "string",
+     "required": false,
+     "description": "Filter by kind (default: everything)",
+     "choices": [
+      "roles (create/delete/edit)",
+      "channels (create/delete/edit)",
+      "channel permissions",
+      "member role changes",
+      "emoji",
+      "stickers",
+      "AutoMod rules"
+     ]
+    },
+    {
+     "name": "target_id",
+     "type": "string",
+     "required": false,
+     "description": "Only events about this role/channel/member/emoji ID"
+    },
+    {
+     "name": "limit",
+     "type": "integer",
+     "required": false,
+     "description": "How many (1–40, default 25)"
+    }
+   ],
+   "signature": "/msglog audit [kind] [target_id] [limit]",
    "root": "msglog",
    "cog": "mod_log",
    "permissions": [
@@ -1663,6 +2164,44 @@
     }
    ],
    "signature": "/msglog channels <enabled>",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog commands",
+   "description": "Who ran which slash commands — including denied ones.",
+   "params": [
+    {
+     "name": "user_id",
+     "type": "string",
+     "required": false,
+     "description": "Only this user's commands"
+    },
+    {
+     "name": "command",
+     "type": "string",
+     "required": false,
+     "description": "Only this command (e.g. msglog audit)"
+    },
+    {
+     "name": "denied",
+     "type": "boolean",
+     "required": false,
+     "description": "Only denied/failed invocations"
+    },
+    {
+     "name": "limit",
+     "type": "integer",
+     "required": false,
+     "description": "How many (1–40, default 25)"
+    }
+   ],
+   "signature": "/msglog commands [user_id] [command] [denied] [limit]",
    "root": "msglog",
    "cog": "mod_log",
    "permissions": [
@@ -1865,8 +2404,53 @@
    "dm_allowed": false
   },
   {
+   "path": "msglog pro",
+   "description": "Logging Pro: what this server has, what it would get.",
+   "params": [],
+   "signature": "/msglog pro",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "msglog pro-grant",
+   "description": "Operator: grant/extend/revoke Logging Pro for a server (home guild only).",
+   "params": [
+    {
+     "name": "guild_id",
+     "type": "string",
+     "required": true,
+     "description": "Server to grant"
+    },
+    {
+     "name": "days",
+     "type": "integer",
+     "required": true,
+     "description": "Days to add from now (0 = no expiry, -1 = revoke)"
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "required": false,
+     "description": "Why (order id, comp, trial…)"
+    }
+   ],
+   "signature": "/msglog pro-grant <guild_id> <days> [note]",
+   "root": "msglog",
+   "cog": "mod_log",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "msglog revoke-terms",
-   "description": "Server owner: stop storing this server's data and delete what's stored.",
+   "description": "Manage Server: stop storing this server's data and delete what's stored.",
    "params": [
     {
      "name": "confirm",
@@ -2783,6 +3367,8 @@
       "🌍 Region",
       "🔔 Notifications",
       "🎨 Name colour",
+      "🎨 Name colour — full palette",
+      "🏳🌈 Sexuality",
       "🎮 Platform",
       "💬 DM preference"
      ]
@@ -3533,6 +4119,82 @@
    "dm_allowed": true
   },
   {
+   "path": "security-ai grant",
+   "description": "[Operator] Grant a Security AI tier to a server",
+   "params": [
+    {
+     "name": "guild_id",
+     "type": "string",
+     "required": true,
+     "description": "Server to entitle"
+    },
+    {
+     "name": "tier",
+     "type": "string",
+     "required": true,
+     "description": "Review tier",
+     "choices": [
+      "Standard",
+      "Advanced",
+      "Elite"
+     ]
+    },
+    {
+     "name": "days",
+     "type": "integer",
+     "required": false,
+     "description": "Days until it lapses (0 = no expiry)"
+    },
+    {
+     "name": "note",
+     "type": "string",
+     "required": false,
+     "description": "Why — order ref, comp, trial"
+    }
+   ],
+   "signature": "/security-ai grant <guild_id> <tier> [days] [note]",
+   "root": "security-ai",
+   "cog": "security_ai",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "security-ai revoke",
+   "description": "[Operator] Remove a server's Security AI tier",
+   "params": [
+    {
+     "name": "guild_id",
+     "type": "string",
+     "required": true,
+     "description": "Server to revoke"
+    }
+   ],
+   "signature": "/security-ai revoke <guild_id>",
+   "root": "security-ai",
+   "cog": "security_ai",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "security-ai status",
+   "description": "Security AI tier and monthly review usage for this server",
+   "params": [],
+   "signature": "/security-ai status",
+   "root": "security-ai",
+   "cog": "security_ai",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "member-activity",
    "description": "Full join/leave/kick/ban log between snapshots (admin)",
    "params": [
@@ -3786,6 +4448,139 @@
    "dm_allowed": true
   },
   {
+   "path": "simpleverify disable",
+   "description": "Turn simple verify off (settings are kept).",
+   "params": [],
+   "signature": "/simpleverify disable",
+   "root": "simpleverify",
+   "cog": "simpleverify",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "simpleverify lockdown",
+   "description": "Hide every channel except the verify channel from Unverified members.",
+   "params": [],
+   "signature": "/simpleverify lockdown",
+   "root": "simpleverify",
+   "cog": "simpleverify",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "simpleverify panel",
+   "description": "Post the Verify button in the verify channel.",
+   "params": [
+    {
+     "name": "message",
+     "type": "string",
+     "required": false,
+     "description": "Optional text shown above the button."
+    }
+   ],
+   "signature": "/simpleverify panel [message]",
+   "root": "simpleverify",
+   "cog": "simpleverify",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "simpleverify set-channel",
+   "description": "Set the channel the verify button lives in.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": true,
+     "description": "…",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/simpleverify set-channel <channel>",
+   "root": "simpleverify",
+   "cog": "simpleverify",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "simpleverify set-roles",
+   "description": "Use your own existing Unverified + Verified roles.",
+   "params": [
+    {
+     "name": "unverified",
+     "type": "role",
+     "required": true,
+     "description": "Role given on join."
+    },
+    {
+     "name": "verified",
+     "type": "role",
+     "required": true,
+     "description": "Role given after verifying."
+    }
+   ],
+   "signature": "/simpleverify set-roles <unverified> <verified>",
+   "root": "simpleverify",
+   "cog": "simpleverify",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "simpleverify setup-roles",
+   "description": "Create/wire the Unverified + Verified roles and turn verify on.",
+   "params": [
+    {
+     "name": "verify_channel",
+     "type": "channel",
+     "required": false,
+     "description": "Channel members verify in (the button gets posted here).",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/simpleverify setup-roles [verify_channel]",
+   "root": "simpleverify",
+   "cog": "simpleverify",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "simpleverify status",
+   "description": "Show this server's verify settings.",
+   "params": [],
+   "signature": "/simpleverify status",
+   "root": "simpleverify",
+   "cog": "simpleverify",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
    "path": "stats-status",
    "description": "Activity-tracking status — totals, date range, top channels (admin)",
    "params": [],
@@ -4003,6 +4798,48 @@
    ],
    "server_owner_only": false
   },
+  "ai-config show": {
+   "cog": "ai",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "ai-config mode": {
+   "cog": "ai",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "ai-config energy": {
+   "cog": "ai",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "ai-config paid-cap": {
+   "cog": "ai",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "ai-credit-grant": {
+   "cog": "ai",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
   "verify": {
    "cog": "altguard",
    "visibility_permissions": [],
@@ -4207,6 +5044,72 @@
    "runtime_permissions": [],
    "server_owner_only": false
   },
+  "warn": {
+   "cog": "conduct",
+   "visibility_permissions": [
+    "moderate_members"
+   ],
+   "runtime_permissions": [
+    "moderate_members"
+   ],
+   "server_owner_only": false
+  },
+  "note": {
+   "cog": "conduct",
+   "visibility_permissions": [
+    "moderate_members"
+   ],
+   "runtime_permissions": [
+    "moderate_members"
+   ],
+   "server_owner_only": false
+  },
+  "warnings": {
+   "cog": "conduct",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "evidence": {
+   "cog": "conduct",
+   "visibility_permissions": [
+    "moderate_members"
+   ],
+   "runtime_permissions": [
+    "moderate_members"
+   ],
+   "server_owner_only": false
+  },
+  "clear-warning": {
+   "cog": "conduct",
+   "visibility_permissions": [
+    "moderate_members"
+   ],
+   "runtime_permissions": [
+    "moderate_members"
+   ],
+   "server_owner_only": false
+  },
+  "clear-warnings": {
+   "cog": "conduct",
+   "visibility_permissions": [
+    "manage_guild"
+   ],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "conduct-forget": {
+   "cog": "conduct",
+   "visibility_permissions": [
+    "administrator"
+   ],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
   "balance": {
    "cog": "economy",
    "visibility_permissions": [],
@@ -4377,6 +5280,54 @@
    "runtime_permissions": [],
    "server_owner_only": false
   },
+  "honeypot set-channel": {
+   "cog": "honeypot",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "honeypot punishment": {
+   "cog": "honeypot",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "honeypot log-channel": {
+   "cog": "honeypot",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "honeypot status": {
+   "cog": "honeypot",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "honeypot auto-delete": {
+   "cog": "honeypot",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "honeypot disarm": {
+   "cog": "honeypot",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
   "invite": {
    "cog": "invites",
    "visibility_permissions": [],
@@ -4537,6 +5488,22 @@
    ],
    "server_owner_only": false
   },
+  "msglog pro": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog pro-grant": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
   "msglog terms": {
    "cog": "mod_log",
    "visibility_permissions": [],
@@ -4551,7 +5518,7 @@
    "runtime_permissions": [
     "manage_guild"
    ],
-   "server_owner_only": true
+   "server_owner_only": false
   },
   "msglog revoke-terms": {
    "cog": "mod_log",
@@ -4559,7 +5526,7 @@
    "runtime_permissions": [
     "manage_guild"
    ],
-   "server_owner_only": true
+   "server_owner_only": false
   },
   "msglog disable": {
    "cog": "mod_log",
@@ -4610,6 +5577,22 @@
    "server_owner_only": false
   },
   "msglog automod": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog audit": {
+   "cog": "mod_log",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "msglog commands": {
    "cog": "mod_log",
    "visibility_permissions": [],
    "runtime_permissions": [
@@ -5201,6 +6184,30 @@
    ],
    "server_owner_only": false
   },
+  "security-ai grant": {
+   "cog": "security_ai",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "security-ai revoke": {
+   "cog": "security_ai",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "security-ai status": {
+   "cog": "security_ai",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
   "recent-leaves": {
    "cog": "server_backup",
    "visibility_permissions": [
@@ -5317,6 +6324,62 @@
   },
   "setup mod-log": {
    "cog": "setup",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "simpleverify lockdown": {
+   "cog": "simpleverify",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "simpleverify setup-roles": {
+   "cog": "simpleverify",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "simpleverify set-roles": {
+   "cog": "simpleverify",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "simpleverify set-channel": {
+   "cog": "simpleverify",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "simpleverify panel": {
+   "cog": "simpleverify",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "simpleverify status": {
+   "cog": "simpleverify",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "simpleverify disable": {
+   "cog": "simpleverify",
    "visibility_permissions": [],
    "runtime_permissions": [
     "administrator"
