@@ -521,6 +521,38 @@ def files_to_evict(entries, max_bytes):
     return evict
 
 
+def _jsonable(v):
+    """Audit-log diff values → something json.dumps accepts, losslessly enough
+    to grep: Permissions become the list of granted flag names, snowflake
+    objects their id/name, everything exotic its str()."""
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if isinstance(v, discord.Permissions):
+        return sorted(p for p, on in v if on)
+    if isinstance(v, (list, tuple, set)):
+        return [_jsonable(x) for x in v]
+    if hasattr(v, "id"):
+        name = getattr(v, "name", None)
+        return f"{name} ({v.id})" if name else str(v.id)
+    return str(v)
+
+
+def audit_changes_json(changes):
+    """AuditLogChanges → json '[{key, before, after}]' or None. Walks the
+    before/after AuditLogDiff pairs (each iterates as (attr, value)), so it
+    works for every action type without per-kind code."""
+    if changes is None:
+        return None
+    try:
+        b = dict(iter(getattr(changes, "before", None) or ()))
+        a = dict(iter(getattr(changes, "after", None) or ()))
+    except Exception:
+        return None
+    keys = [k for k in list(b) + [k for k in a if k not in b]]
+    out = [{"key": k, "before": _jsonable(b.get(k)), "after": _jsonable(a.get(k))} for k in keys]
+    return json.dumps(out, default=str)[:4000] if out else None
+
+
 def perm_diff_lines(b_allow, b_deny, a_allow, a_deny):
     """Human-readable lines for a permission-overwrite change. Inputs are
     {perm_name: bool} dicts (dict(discord.Permissions)). A perm can move
@@ -688,6 +720,31 @@ class ModLog(commands.Cog):
                        order_ref   TEXT            -- web order id, for idempotent grants
                    )""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_edits_guild_ts ON edits(guild_id, edited_ts)")
+            # 2026-08-29: guild-structure ledger. Role / channel / permission-
+            # overwrite / emoji-sticker / AutoMod-rule changes and member role
+            # add/removes used to exist ONLY as embeds — one `?purge` of the log
+            # channel (Dismiss, 8/29) erased the whole setup history, and
+            # Discord's own audit log forgets after 45 days. Same rule as the
+            # identity ledger: anything worth logging lands in a queryable
+            # table, plain text, with WHO + before/after.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS guild_events (
+                       ts          REAL,
+                       guild_id    TEXT,
+                       kind        TEXT,     -- role|channel|overwrite|emoji|sticker|
+                                             -- automod_rule|member_roles
+                       action      TEXT,     -- create|delete|update|add|remove
+                       target_type TEXT,     -- role|channel|member|emoji|sticker|rule
+                       target_id   TEXT,
+                       target_name TEXT,
+                       by_uid      TEXT,
+                       by_name     TEXT,
+                       reason      TEXT,
+                       summary     TEXT,     -- the plain-text lines the embed showed
+                       changes     TEXT      -- json [{key,before,after}]
+                   )""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_gev_guild_ts ON guild_events(guild_id, ts)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_gev_target ON guild_events(guild_id, target_id, ts)")
         self._load_consent()
         self._load_pro()
         self._guild_bytes = {}          # guild_id -> cached-file bytes on disk (lazy, kept current)
@@ -1514,6 +1571,7 @@ class ModLog(commands.Cog):
         with self._conn() as c:
             gids = {r[0] for r in c.execute("SELECT DISTINCT guild_id FROM messages")}
             gids |= {r[0] for r in c.execute("SELECT DISTINCT guild_id FROM identity_events")}
+            gids |= {r[0] for r in c.execute("SELECT DISTINCT guild_id FROM guild_events")}
             for gid in gids:
                 if not gid:
                     continue
@@ -1523,6 +1581,8 @@ class ModLog(commands.Cog):
                 n = c.execute("DELETE FROM messages WHERE guild_id=? AND created_ts<?",
                               (gid, text_cutoff)).rowcount
                 n += c.execute("DELETE FROM edits WHERE guild_id=? AND edited_ts<?",
+                               (gid, text_cutoff)).rowcount
+                n += c.execute("DELETE FROM guild_events WHERE guild_id=? AND ts<?",
                                (gid, text_cutoff)).rowcount
                 if retention_tier(gid) == "recent":
                     # The ledger is a Pro feature; a lapsed/never-Pro guild keeps none.
@@ -1778,11 +1838,8 @@ class ModLog(commands.Cog):
         """AutoMod rule created / edited / deleted, with the diff."""
         guild = entry.guild
         cfg = get_config(guild.id)
-        if not cfg.get("msglog_automod", 1):
-            return
-        log_ch = self._log_channel(guild, cfg, "automod")
-        if log_ch is None:
-            return
+        # embed only if the kind is on and routed; the ledger row is written regardless
+        log_ch = self._log_channel(guild, cfg, "automod") if cfg.get("msglog_automod", 1) else None
         A = discord.AuditLogAction
         if entry.action == getattr(A, "automod_rule_create", None):
             title, color = "🆕 AutoMod rule created", COLOR_JOIN
@@ -1801,6 +1858,11 @@ class ModLog(commands.Cog):
             else:
                 lines.append(f"• `{key}`: {_trunc(_plain(str(b)), 120)} → "
                              f"{_trunc(_plain(str(a)), 120)}")
+        self._record_guild_event(guild.id, "automod_rule", entry.action.name.split("_")[-1],
+                                 "rule", getattr(entry.target, "id", None), name,
+                                 entry=entry, lines=[name] + lines[1:])
+        if log_ch is None:
+            return
         embed = discord.Embed(title=title, color=color, description=_trunc("\n".join(lines), 3000))
         embed.add_field(name="By", value=self._mod_line(
             {"by_id": entry.user_id, "by_name": str(entry.user) if entry.user else None}),
@@ -1834,6 +1896,39 @@ class ModLog(commands.Cog):
                      None if before is None else str(before),
                      None if after is None else str(after),
                      None if by_uid is None else str(by_uid), by_name, reason))
+        except Exception:
+            pass
+
+    def _record_guild_event(self, guild_id, kind, action, target_type, target_id,
+                            target_name, entry=None, lines=None, by_uid=None,
+                            by_name=None, reason=None, changes=None):
+        """Mirror one guild-structure event into guild_events (plain text).
+
+        `entry` (an AuditLogEntry) supplies actor / reason / before-after diff;
+        `lines` are the exact description lines the embed shows, kept as the
+        human-readable summary. Best-effort and swallowing like the identity
+        ledger — it must never break the embed. Rows live under the guild's
+        text window (free 24h / Pro 90d / operator forever), swept with messages.
+        """
+        try:
+            if entry is not None:
+                by_uid = by_uid if by_uid is not None else getattr(entry, "user_id", None)
+                by_name = by_name or (str(entry.user) if getattr(entry, "user", None) else None)
+                reason = reason if reason is not None else getattr(entry, "reason", None)
+                if changes is None:
+                    changes = audit_changes_json(getattr(entry, "changes", None))
+            elif changes is not None and not isinstance(changes, str):
+                changes = json.dumps(changes, default=str)
+            summary = "\n".join(str(x) for x in (lines or []))[:2000] or None
+            with self._conn() as c:
+                c.execute(
+                    "INSERT INTO guild_events (ts, guild_id, kind, action, target_type, target_id,"
+                    " target_name, by_uid, by_name, reason, summary, changes)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (time.time(), str(guild_id), kind, action, target_type,
+                     None if target_id is None else str(target_id),
+                     None if target_name is None else str(target_name)[:200],
+                     None if by_uid is None else str(by_uid), by_name, reason, summary, changes))
         except Exception:
             pass
 
@@ -1996,6 +2091,15 @@ class ModLog(commands.Cog):
             else:
                 return
 
+        self._record_guild_event(
+            guild.id, "member_roles", "update", "member", after.id, after.name,
+            lines=([f"+ {', '.join(r.name for r in added)}"] if added else [])
+                  + ([f"- {', '.join(r.name for r in removed)}"] if removed else []),
+            by_uid=after.id if self_assign else (rec or {}).get("by_id"),
+            by_name="self-assign (reaction role)" if self_assign else (rec or {}).get("by_name"),
+            reason=None if self_assign else (rec or {}).get("reason"),
+            changes={"added": [f"{r.name} ({r.id})" for r in added],
+                     "removed": [f"{r.name} ({r.id})" for r in removed]})
         embed = discord.Embed(title="🎭 Roles updated", color=COLOR_ROLE,
                               description=self._member_line(after))
         if added:
@@ -2294,11 +2398,8 @@ class ModLog(commands.Cog):
         carries actor + diff in one payload (no aggregation for these actions)."""
         guild = entry.guild
         cfg = get_config(guild.id)
-        if not cfg.get("msglog_roles", 1):
-            return
-        log_ch = self._log_channel(guild, cfg, "roles")
-        if log_ch is None:
-            return
+        # embed only if the kind is on and routed; the ledger row is written regardless
+        log_ch = self._log_channel(guild, cfg, "roles") if cfg.get("msglog_roles", 1) else None
         A = discord.AuditLogAction
         role = entry.target  # discord.Role, or bare Object once deleted
         role_id = getattr(role, "id", "?")
@@ -2333,6 +2434,10 @@ class ModLog(commands.Cog):
             title, color = "✏️ Role edited", COLOR_EDIT
             lines = [role.mention if isinstance(role, discord.Role) else f"**{name}**"] + diffs
 
+        self._record_guild_event(guild.id, "role", entry.action.name.split("_")[-1],
+                                 "role", role_id, name, entry=entry, lines=[f"@{name}"] + lines[1:])
+        if log_ch is None:
+            return
         embed = discord.Embed(title=title, color=color, description=_trunc("\n".join(lines), 4000))
         embed.add_field(name="By", value=self._mod_line(
             {"by_id": entry.user_id, "by_name": str(entry.user) if entry.user else None}), inline=True)
@@ -2349,11 +2454,8 @@ class ModLog(commands.Cog):
         image in Discord permanently (the CDN copy is not guaranteed to)."""
         guild = entry.guild
         cfg = get_config(guild.id)
-        if not cfg.get("msglog_expressions", 1):
-            return
-        log_ch = self._log_channel(guild, cfg, "expressions")
-        if log_ch is None:
-            return
+        # embed only if the kind is on and routed; the ledger row is written regardless
+        log_ch = self._log_channel(guild, cfg, "expressions") if cfg.get("msglog_expressions", 1) else None
         A = discord.AuditLogAction
         is_sticker = entry.action in (A.sticker_create, A.sticker_delete, A.sticker_update)
         kind = "Sticker" if is_sticker else "Emoji"
@@ -2375,6 +2477,10 @@ class ModLog(commands.Cog):
                 return
             title, color, lines = f"✏️ {kind} edited", COLOR_EDIT, [f"**{name}**"] + diffs
 
+        self._record_guild_event(guild.id, kind.lower(), entry.action.name.split("_")[-1],
+                                 kind.lower(), target_id, name, entry=entry, lines=[name] + lines[1:])
+        if log_ch is None:
+            return
         embed = discord.Embed(title=title, color=color, description=_trunc("\n".join(lines), 4000))
         embed.add_field(name="By", value=self._mod_line(
             {"by_id": entry.user_id, "by_name": str(entry.user) if entry.user else None}), inline=True)
@@ -2424,11 +2530,8 @@ class ModLog(commands.Cog):
         not to be noise. Position-only channel reorders are skipped."""
         guild = entry.guild
         cfg = get_config(guild.id)
-        if not cfg.get("msglog_channels", 1):
-            return
-        log_ch = self._log_channel(guild, cfg, "channels")
-        if log_ch is None:
-            return
+        # embed only if the kind is on and routed; the ledger row is written regardless
+        log_ch = self._log_channel(guild, cfg, "channels") if cfg.get("msglog_channels", 1) else None
         A = discord.AuditLogAction
         target_id = getattr(entry.target, "id", None)
         chan = guild.get_channel(target_id) if target_id else None
@@ -2475,6 +2578,12 @@ class ModLog(commands.Cog):
                 return
             lines = [f"{where} — {subject}"] + diffs
 
+        is_ow = entry.action in (A.overwrite_create, A.overwrite_update, A.overwrite_delete)
+        self._record_guild_event(guild.id, "overwrite" if is_ow else "channel",
+                                 entry.action.name.split("_")[-1], "channel", target_id, name,
+                                 entry=entry, lines=[f"#{name}" + (f" — {subject}" if is_ow else "")] + lines[1:])
+        if log_ch is None:
+            return
         embed = discord.Embed(title=title, color=color, description=_trunc("\n".join(lines), 4000))
         embed.add_field(name="By", value=self._mod_line(
             {"by_id": entry.user_id, "by_name": str(entry.user) if entry.user else None}), inline=True)
@@ -2840,10 +2949,11 @@ class ModLog(commands.Cog):
         Blocking on purpose — the caller runs it off the event loop. Media files
         are named by message id, so the ids have to be read before the rows go.
         """
-        counts = {"messages": 0, "edits": 0, "identity": 0, "files": 0}
+        counts = {"messages": 0, "edits": 0, "identity": 0, "events": 0, "files": 0}
         with self._conn() as c:
             ids = [r[0] for r in c.execute("SELECT message_id FROM messages WHERE guild_id=?", (gid,))]
             counts["edits"] = c.execute("DELETE FROM edits WHERE guild_id=?", (gid,)).rowcount
+            counts["events"] = c.execute("DELETE FROM guild_events WHERE guild_id=?", (gid,)).rowcount
             counts["messages"] = c.execute("DELETE FROM messages WHERE guild_id=?", (gid,)).rowcount
             counts["identity"] = c.execute("DELETE FROM identity_events WHERE guild_id=?",
                                            (gid,)).rowcount
@@ -2975,6 +3085,62 @@ class ModLog(commands.Cog):
                if enabled else "AutoMod activity is no longer logged."),
             ephemeral=True)
 
+    @msglog.command(name="audit", description="Server-change ledger: roles, channels, permissions, emoji, AutoMod rules, member roles.")
+    @app_commands.describe(
+        kind="Filter by kind (default: everything)",
+        target_id="Only events about this role/channel/member/emoji ID",
+        limit="How many (1–40, default 25)")
+    @app_commands.choices(kind=[
+        app_commands.Choice(name="roles (create/delete/edit)", value="role"),
+        app_commands.Choice(name="channels (create/delete/edit)", value="channel"),
+        app_commands.Choice(name="channel permissions", value="overwrite"),
+        app_commands.Choice(name="member role changes", value="member_roles"),
+        app_commands.Choice(name="emoji", value="emoji"),
+        app_commands.Choice(name="stickers", value="sticker"),
+        app_commands.Choice(name="AutoMod rules", value="automod_rule"),
+    ])
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def audit_cmd(self, interaction: discord.Interaction, kind: str = None,
+                        target_id: str = None, limit: int = 25):
+        """The text twin of Discord's audit log, except it never forgets inside
+        the archive window and survives a purge of the log channel."""
+        limit = max(1, min(40, limit))
+        tid = "".join(ch for ch in (target_id or "") if ch.isdigit()) or None
+        q = ("SELECT ts, kind, action, target_type, target_id, target_name, by_name, reason, summary"
+             " FROM guild_events WHERE guild_id=?")
+        args = [str(interaction.guild.id)]
+        if kind:
+            q += " AND kind=?"; args.append(kind)
+        if tid:
+            q += " AND target_id=?"; args.append(tid)
+        q += " ORDER BY ts DESC LIMIT ?"; args.append(limit)
+        with self._conn() as c:
+            rows = list(c.execute(q, args))
+        if not rows:
+            await interaction.response.send_message(
+                "Nothing in the server-change ledger for that filter.", ephemeral=True)
+            return
+        lines = []
+        for r in rows:
+            bit = f"<t:{int(r['ts'])}:f> · **{r['kind']} {r['action']}**"
+            if r["target_name"]:
+                bit += f" · {_plain(str(r['target_name']))}"
+            if r["target_id"]:
+                bit += f" (`{r['target_id']}`)"
+            if r["by_name"]:
+                bit += f" · by {_plain(r['by_name'])}"
+            if r["reason"]:
+                bit += f" · _{_plain(r['reason'])[:60]}_"
+            detail = [l for l in (r["summary"] or "").split("\n")[1:] if l.strip()]
+            if detail:
+                bit += "\n> " + _trunc(_plain(" · ".join(detail)), 300)
+            lines.append(bit)
+        embed = discord.Embed(title="📒 Server-change ledger", color=COLOR_ROLE,
+                              description=_trunc("\n".join(lines), 4000))
+        tier = self._pro_state_lines(interaction.guild)[0].split(" — ")[0]
+        embed.set_footer(text=f"{len(rows)} event(s) · retention: {_plain(tier).strip('*🟢🕐 ')}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @msglog.command(name="forget", description="Erase all identity records + stored avatars for a user ID.")
     @app_commands.describe(user_id="Numeric user ID to erase from the identity ledger")
     @app_commands.checks.has_permissions(administrator=True)
@@ -2998,6 +3164,13 @@ class ModLog(commands.Cog):
             else:
                 ev = c.execute("DELETE FROM identity_events WHERE uid=? AND guild_id=?",
                                (uid, gid)).rowcount
+            # member role add/removes are the uid's rows in the guild ledger too
+            if everywhere:
+                ev += c.execute("DELETE FROM guild_events WHERE target_type='member' AND target_id=?",
+                                (uid,)).rowcount
+            else:
+                ev += c.execute("DELETE FROM guild_events WHERE target_type='member' AND target_id=?"
+                                " AND guild_id=?", (uid, gid)).rowcount
             # only drop blobs this uid alone owns — a shared/default asset hash
             # could belong to someone else's history too
             av = c.execute(
@@ -3066,6 +3239,7 @@ class ModLog(commands.Cog):
             deleted = c.execute("SELECT COUNT(*) FROM messages WHERE guild_id=? AND deleted_ts IS NOT NULL",
                                 (gid,)).fetchone()[0]
             edits = c.execute("SELECT COUNT(*) FROM edits WHERE guild_id=?", (gid,)).fetchone()[0]
+            gevents = c.execute("SELECT COUNT(*) FROM guild_events WHERE guild_id=?", (gid,)).fetchone()[0]
             span = c.execute("SELECT MIN(created_ts), MAX(created_ts) FROM messages WHERE guild_id=?",
                              (gid,)).fetchone()
         # This guild's own files only — the shared cache total is the operator's business.
@@ -3096,7 +3270,8 @@ class ModLog(commands.Cog):
             tier,
             f"**{total:,}** messages archived"
             + (f" (<t:{int(span[0])}:d> → <t:{int(span[1])}:d>)" if span and span[0] else ""),
-            f"**{deleted:,}** deletions · **{edits:,}** edits recorded",
+            f"**{deleted:,}** deletions · **{edits:,}** edits recorded · "
+            f"**{gevents:,}** server changes in the ledger (`/msglog audit`)",
             f"Members: {'🟢' if cfg.get('msglog_members', 1) else '🔴'} · "
             f"Voice: {'🟢' if cfg.get('msglog_voice', 1) else '🔴'} · "
             f"Roles: {'🟢' if cfg.get('msglog_roles', 1) else '🔴'} · "
