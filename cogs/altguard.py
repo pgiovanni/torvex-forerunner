@@ -1290,17 +1290,24 @@ class AltGuard(commands.Cog):
             return
         uid = int(rep["uid"])
         member = guild.get_member(uid)
+        choice = rep.get("choice") or ""
         label = {
             "mine":   ("✅ “Yes — the other account is mine”", 0x57F287),
             "shared": ("👨‍👩‍👧 “It's a shared device — family, partner, roommate”", 0xFEE75C),
             "no":     ("❔ “No / not that I know of”", 0x95A5A6),
-        }.get(rep.get("choice") or "", ("(unknown answer)", 0x95A5A6))
+            # VPN-hold answers (gate 2026-08-29): the page asked them to reconnect
+            # without a VPN first; this is what they said when it still held.
+            "novpn":  ("🏠 “I'm not using a VPN — this is my normal connection”", 0xFEE75C),
+            "need":   ("🔒 “I need my VPN on — work, school, safety, or my carrier”", 0x5865F2),
+            "off":    ("🔁 “I turned it off and it still says this”", 0xFEE75C),
+        }.get(choice, ("(unknown answer)", 0x95A5A6))
+        question = "VPN question" if choice in ("novpn", "need", "off") else "device-match question"
 
         embed = discord.Embed(
             title="💬 Held member replied",
             color=label[1],
             description=(f"{member.mention if member else f'<@{uid}>'} `{uid}` answered the "
-                         f"device-match question on the verify page."),
+                         f"{question} on the verify page."),
         )
         embed.add_field(name="Answer", value=label[0], inline=False)
         note = (rep.get("note") or "").strip()
