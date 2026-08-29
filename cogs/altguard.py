@@ -137,6 +137,11 @@ NO_RESTORE_ROLE_IDS = {
     1466063286352089303,  # Retired Staff
     1377788209488068689,  # Minecraft Staff
     QUARANTINE_ROLE_ID,
+    # Almost Verified is mid-gate access only. It is permissionless, so the
+    # rejoin filter would hand it back — and the roster-snapshot fallback holds
+    # it for anyone still quarantined, which re-added it in the very release
+    # edit meant to drop it (the 5-min sync then cleaned up). 0 when unset.
+    ALMOST_ROLE_ID,
 } | {int(x) for x in os.environ.get("ALTGUARD_NO_RESTORE_ROLES", "").replace(",", " ").split() if x.strip().isdigit()}
 DM_ON_JOIN = os.environ.get("ALTGUARD_DM_ON_JOIN", "1") != "0"
 # Forced-gate mode: quarantine EVERY human the moment they join (strip access),
@@ -544,7 +549,7 @@ class AltGuard(commands.Cog):
         restore = []
         for rid in stored:
             r = member.guild.get_role(rid)
-            if r and not r.managed and me and r < me.top_role:
+            if r and not r.managed and me and r < me.top_role and r.id != ALMOST_ROLE_ID:
                 restore.append(r)
         # returning member: restore their safe pre-leave roles (self-assigned
         # reaction roles, age band, Level N+) from the departure snapshot. The
