@@ -745,6 +745,25 @@ class ModLog(commands.Cog):
                    )""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_gev_guild_ts ON guild_events(guild_id, ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_gev_target ON guild_events(guild_id, target_id, ts)")
+            # Slash-command usage. Discord keeps no record of who ran what, an
+            # ephemeral reply leaves nothing in the archive, and a denied command
+            # (CheckFailure) is invisible everywhere — so someone mapping the
+            # bot's command surface left no trace at all (8/29). Same retention
+            # as guild_events: the guild's text window, purged with the guild.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS command_log (
+                       ts         REAL,
+                       guild_id   TEXT,     -- 'dm' outside a guild
+                       channel_id TEXT,
+                       user_id    TEXT,
+                       user_name  TEXT,
+                       command    TEXT,     -- qualified name: 'msglog audit'
+                       options    TEXT,     -- json {name: value}, truncated
+                       ok         INTEGER,  -- 1 completed, 0 raised
+                       error      TEXT      -- error class when ok=0
+                   )""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_cmd_guild_ts ON command_log(guild_id, ts)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_cmd_user ON command_log(guild_id, user_id, ts)")
         self._load_consent()
         self._load_pro()
         self._guild_bytes = {}          # guild_id -> cached-file bytes on disk (lazy, kept current)
@@ -853,6 +872,11 @@ class ModLog(commands.Cog):
     async def cog_load(self):
         self.flusher.start()
         self.retention_sweeper.start()
+        # Failed app commands never reach a listener — only tree.on_error sees
+        # them. Chain in front of whatever handler is set (recon_watch does the
+        # same) and always hand the error on.
+        self._orig_tree_error = self.bot.tree.on_error
+        self.bot.tree.on_error = self._on_tree_error
         # Prime the audit cache BEFORE any delete event arrives. Priming lazily
         # at event time is a bug: the fetch would cache the very entry we're
         # trying to attribute, making it look already-seen.
@@ -869,7 +893,58 @@ class ModLog(commands.Cog):
         self.flusher.cancel()
         self.retention_sweeper.cancel()
         self._prime_task.cancel()
+        if getattr(self, "_orig_tree_error", None) is not None:
+            self.bot.tree.on_error = self._orig_tree_error
         self._flush()
+
+    # ------------------------------------------------------------- command log
+    def _record_command(self, interaction, command=None, error=None):
+        """One row per slash-command invocation, completed or denied.
+
+        Best-effort and swallowing, like the other ledgers. `error` is unwrapped
+        to the class the check/handler actually raised (MissingPermissions,
+        CheckFailure, CommandOnCooldown…) — that class is the enumeration signal.
+        """
+        try:
+            if interaction.type != discord.InteractionType.application_command:
+                return
+            cmd = command if command is not None else getattr(interaction, "command", None)
+            name = getattr(cmd, "qualified_name", None)
+            if not name:
+                name = str((getattr(interaction, "data", None) or {}).get("name") or "?")
+            opts = None
+            ns = getattr(interaction, "namespace", None)
+            if ns is not None:
+                try:
+                    d = {k: _jsonable(v) for k, v in iter(ns)}
+                    opts = json.dumps(d, default=str)[:500] if d else None
+                except Exception:
+                    opts = None
+            err = None
+            if error is not None:
+                err = getattr(error, "original", None) or error
+                err = type(err).__name__
+            user = interaction.user
+            with self._conn() as c:
+                c.execute(
+                    "INSERT INTO command_log (ts, guild_id, channel_id, user_id, user_name,"
+                    " command, options, ok, error) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (time.time(),
+                     str(interaction.guild_id) if interaction.guild_id else "dm",
+                     str(interaction.channel_id) if interaction.channel_id else None,
+                     str(user.id), str(user)[:100], name[:100], opts,
+                     0 if error is not None else 1, err))
+        except Exception:
+            pass
+
+    @commands.Cog.listener()
+    async def on_app_command_completion(self, interaction, command):
+        self._record_command(interaction, command)
+
+    async def _on_tree_error(self, interaction, error):
+        self._record_command(interaction, error=error)
+        if getattr(self, "_orig_tree_error", None) is not None:
+            await self._orig_tree_error(interaction, error)
 
     # ------------------------------------------------------------- archive
     def _remember(self, row):
@@ -1572,6 +1647,7 @@ class ModLog(commands.Cog):
             gids = {r[0] for r in c.execute("SELECT DISTINCT guild_id FROM messages")}
             gids |= {r[0] for r in c.execute("SELECT DISTINCT guild_id FROM identity_events")}
             gids |= {r[0] for r in c.execute("SELECT DISTINCT guild_id FROM guild_events")}
+            gids |= {r[0] for r in c.execute("SELECT DISTINCT guild_id FROM command_log")}
             for gid in gids:
                 if not gid:
                     continue
@@ -1583,6 +1659,8 @@ class ModLog(commands.Cog):
                 n += c.execute("DELETE FROM edits WHERE guild_id=? AND edited_ts<?",
                                (gid, text_cutoff)).rowcount
                 n += c.execute("DELETE FROM guild_events WHERE guild_id=? AND ts<?",
+                               (gid, text_cutoff)).rowcount
+                n += c.execute("DELETE FROM command_log WHERE guild_id=? AND ts<?",
                                (gid, text_cutoff)).rowcount
                 if retention_tier(gid) == "recent":
                     # The ledger is a Pro feature; a lapsed/never-Pro guild keeps none.
@@ -2949,11 +3027,12 @@ class ModLog(commands.Cog):
         Blocking on purpose — the caller runs it off the event loop. Media files
         are named by message id, so the ids have to be read before the rows go.
         """
-        counts = {"messages": 0, "edits": 0, "identity": 0, "events": 0, "files": 0}
+        counts = {"messages": 0, "edits": 0, "identity": 0, "events": 0, "commands": 0, "files": 0}
         with self._conn() as c:
             ids = [r[0] for r in c.execute("SELECT message_id FROM messages WHERE guild_id=?", (gid,))]
             counts["edits"] = c.execute("DELETE FROM edits WHERE guild_id=?", (gid,)).rowcount
             counts["events"] = c.execute("DELETE FROM guild_events WHERE guild_id=?", (gid,)).rowcount
+            counts["commands"] = c.execute("DELETE FROM command_log WHERE guild_id=?", (gid,)).rowcount
             counts["messages"] = c.execute("DELETE FROM messages WHERE guild_id=?", (gid,)).rowcount
             counts["identity"] = c.execute("DELETE FROM identity_events WHERE guild_id=?",
                                            (gid,)).rowcount
@@ -3141,6 +3220,51 @@ class ModLog(commands.Cog):
         embed.set_footer(text=f"{len(rows)} event(s) · retention: {_plain(tier).strip('*🟢🕐 ')}")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @msglog.command(name="commands", description="Who ran which slash commands — including denied ones.")
+    @app_commands.describe(
+        user_id="Only this user's commands",
+        command="Only this command (e.g. msglog audit)",
+        denied="Only denied/failed invocations",
+        limit="How many (1–40, default 25)")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def commands_cmd(self, interaction: discord.Interaction, user_id: str = None,
+                           command: str = None, denied: bool = False, limit: int = 25):
+        """The record Discord doesn't keep. A run of ⛔ rows across many
+        different commands from one member is someone mapping the bot."""
+        limit = max(1, min(40, limit))
+        uid = "".join(ch for ch in (user_id or "") if ch.isdigit()) or None
+        q = ("SELECT ts, channel_id, user_id, user_name, command, options, ok, error"
+             " FROM command_log WHERE guild_id=?")
+        args = [str(interaction.guild.id)]
+        if uid:
+            q += " AND user_id=?"; args.append(uid)
+        if command:
+            q += " AND command LIKE ?"; args.append(command.strip().lstrip("/") + "%")
+        if denied:
+            q += " AND ok=0"
+        q += " ORDER BY ts DESC LIMIT ?"; args.append(limit)
+        with self._conn() as c:
+            rows = list(c.execute(q, args))
+        if not rows:
+            await interaction.response.send_message(
+                "No slash-command records for that filter.", ephemeral=True)
+            return
+        lines = []
+        for r in rows:
+            mark = "✅" if r["ok"] else f"⛔ {r['error'] or 'error'}"
+            bit = (f"<t:{int(r['ts'])}:f> · `/{r['command']}` · {_plain(r['user_name'] or '?')}"
+                   f" (`{r['user_id']}`) · {mark}")
+            if r["channel_id"]:
+                bit += f" · <#{r['channel_id']}>"
+            if r["options"]:
+                bit += "\n> " + _trunc(_plain(r["options"]), 200)
+            lines.append(bit)
+        embed = discord.Embed(title="⌨️ Slash-command log", color=COLOR_ROLE,
+                              description=_trunc("\n".join(lines), 4000))
+        tier = self._pro_state_lines(interaction.guild)[0].split(" — ")[0]
+        embed.set_footer(text=f"{len(rows)} invocation(s) · retention: {_plain(tier).strip('*🟢🕐 ')}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @msglog.command(name="forget", description="Erase all identity records + stored avatars for a user ID.")
     @app_commands.describe(user_id="Numeric user ID to erase from the identity ledger")
     @app_commands.checks.has_permissions(administrator=True)
@@ -3171,6 +3295,12 @@ class ModLog(commands.Cog):
             else:
                 ev += c.execute("DELETE FROM guild_events WHERE target_type='member' AND target_id=?"
                                 " AND guild_id=?", (uid, gid)).rowcount
+            # and the commands they ran
+            if everywhere:
+                ev += c.execute("DELETE FROM command_log WHERE user_id=?", (uid,)).rowcount
+            else:
+                ev += c.execute("DELETE FROM command_log WHERE user_id=? AND guild_id=?",
+                                (uid, gid)).rowcount
             # only drop blobs this uid alone owns — a shared/default asset hash
             # could belong to someone else's history too
             av = c.execute(
