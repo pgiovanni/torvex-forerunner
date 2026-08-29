@@ -73,8 +73,12 @@ CONTEXT_SNIPPET = 200  # chars per context message
 CHAT_COOLDOWN_S = float(os.getenv("AI_CHAT_COOLDOWN_S", "5"))
 
 # Servers without the paid AI add-on get a pitch instead of silence when the
-# bot is deliberately @-mentioned — at most once an hour per guild.
-AD_COOLDOWN_S = 3600.0
+# bot is deliberately @-mentioned. EVERY deliberate ping gets it (Paul, 8/29:
+# "make sure if the bot is pinged it runs the ai ad response unless it's in
+# my server") — the old once-an-hour-per-guild window made the second ping in
+# an hour look like the bot was dead. The guard left is per member, and only
+# there to stop a ping burst from producing a reply burst.
+AD_COOLDOWN_S = float(os.getenv("AI_AD_COOLDOWN_S", "5"))
 AD_TEXT = (
     "⚡ **AI chat isn't enabled in this server.** It's a paid add-on — AI "
     "answers run on real compute. Anyone who manages this server can turn "
@@ -281,6 +285,13 @@ def strip_bot_mention(content: str, bot_id: int):
     return content.strip() or None
 
 
+def mentions_bot(content: str, bot_id: int) -> bool:
+    """True only for an explicit @-mention of the bot in the text. Distinct
+    from `message.mentions`, which Discord also fills for a reply-ping — so a
+    member replying to the ad itself would otherwise re-trigger the ad."""
+    return any(f in (content or "") for f in (f"<@{bot_id}>", f"<@!{bot_id}>"))
+
+
 def strip_subtext(content: str) -> str:
     """A message minus its `-# ` subtext lines — that footer is the bot's own
     meter readout (tier · energy), not something it said."""
@@ -320,7 +331,7 @@ class AI(commands.Cog):
         self.provider = None  # built in cog_load from .env (see utils/ai_provider)
         self.provider_paid = None  # second key for credit servers; falls back to provider
         self._chat_last = {}  # user_id -> monotonic ts of last ping-chat (cooldown)
-        self._ad_last = {}    # guild_id -> monotonic ts of last paid-AI pitch
+        self._ad_last = {}    # (guild_id, user_id) -> monotonic ts of last paid-AI pitch
         self._ai_msgs = deque(maxlen=400)  # ids of AI answers (reply-to-continue)
         self._commands = CommandIndex(COMMAND_DOCS_PATH)
         with self._conn() as c:
@@ -957,6 +968,15 @@ class AI(commands.Cog):
             return r
         return None
 
+    def _ad_ready(self, guild_id, user_id, now) -> bool:
+        """Per-member spam guard for the paid-AI pitch; records the fire."""
+        key = (int(guild_id), int(user_id))
+        last = self._ad_last.get(key)
+        if last is not None and now - last < AD_COOLDOWN_S:
+            return False
+        self._ad_last[key] = now
+        return True
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """MEE6-style chat: an @-mention of the bot with text is a question,
@@ -970,20 +990,22 @@ class AI(commands.Cog):
             return
         if self.provider is None or not self._ai_enabled(message.guild.id):
             # Non-enabled server: a deliberate @-mention gets the paid-add-on
-            # pitch instead of silence. Mentions only — replies, @everyone and
-            # role pings never trigger it — and at most once an hour per guild.
-            if (self.provider is not None and me in message.mentions
-                    and not message.mention_everyone):
-                now = time.monotonic()
-                if now - self._ad_last.get(message.guild.id, 0.0) >= AD_COOLDOWN_S:
-                    self._ad_last[message.guild.id] = now
-                    try:
-                        await message.reply(
-                            AD_TEXT, mention_author=False,
-                            allowed_mentions=discord.AllowedMentions.none(),
-                            suppress_embeds=True)
-                    except discord.HTTPException:
-                        pass
+            # pitch instead of silence. Explicit mention markup only — replies,
+            # reply-pings, @everyone and role pings never trigger it.
+            if (self.provider is not None and mentions_bot(message.content, me.id)
+                    and not message.mention_everyone
+                    and self._ad_ready(message.guild.id, message.author.id,
+                                       time.monotonic())):
+                try:
+                    await message.reply(
+                        AD_TEXT, mention_author=False,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                        suppress_embeds=True)
+                except discord.HTTPException as e:
+                    # print, not log: cog loggers have no handler in this bot.
+                    # Usually = no Send Messages / Read History in that channel.
+                    print(f"[ai-ad] couldn't post in guild {message.guild.id} "
+                          f"channel {message.channel.id}: {e}", flush=True)
             return
         question = strip_bot_mention(message.content, me.id)
         replied = await self._replied_to_me(message, me)
