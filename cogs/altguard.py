@@ -417,6 +417,30 @@ class HoldReplyView(discord.ui.View):
             f"🔒 Left {member.mention} held. Nothing changed.", ephemeral=True)
 
 
+def bulk_release_targets(members, qrole_id, almost_id, stored_uids):
+    """Who `/altguard-release everyone:True` acts on. Pure, so it's testable.
+
+    Returns (held, stale):
+      held  — in-server humans wearing the Quarantine or Almost Verified role,
+              OR listed in the quarantine store (a row with no role on the
+              member still makes the reconciliation listener re-strip anything
+              they gain, so it counts as held);
+      stale — store rows whose uid is no longer in the server. Left alone they
+              would re-quarantine that person on a rejoin after the gate is off.
+    """
+    present = set()
+    held = []
+    for m in members:
+        if getattr(m, "bot", False):
+            continue
+        present.add(m.id)
+        wearing = any(r.id in (qrole_id, almost_id) for r in m.roles)
+        if wearing or m.id in stored_uids:
+            held.append(m)
+    stale = sorted(u for u in stored_uids if u not in present)
+    return held, stale
+
+
 class AltGuard(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -2068,14 +2092,89 @@ class AltGuard(commands.Cog):
             await self._group_release_note(guild, actor, member, also, failed)
         return ok, restored, aged, also, failed
 
+    async def _release_all(self, interaction: discord.Interaction):
+        """`/altguard-release everyone:True` — let every held member in, at once.
+
+        For switching the gate off: `/altguard-gate enabled:False` stops NEW
+        joiners being held, this clears the backlog. Each member goes through
+        the same `_release` as a single release (Quarantine + Almost Verified
+        off, stored roles + defaults back, store row popped) — but nobody is
+        marked trusted (`qstore.clear`): a bulk let-in is a policy change, not
+        a vouch, so the alt-cascade still works if the gate comes back on.
+        Store rows for people who already left are dropped too, so a rejoin
+        after this doesn't re-strip them.
+        """
+        guild = interaction.guild
+        if guild.id != GUILD_ID:
+            await interaction.followup.send(
+                "⚠️ Bulk release only runs in the operator server — other servers are observe-only.",
+                ephemeral=True)
+            return
+        stored = set(qstore.list_quarantined(guild.id))
+        held, stale = bulk_release_targets(guild.members, QUARANTINE_ROLE_ID, ALMOST_ROLE_ID, stored)
+        done, failed = [], []
+        for m in held:
+            ok, _, _ = await self._release(m)   # pops the store row + unspares
+            (done if ok else failed).append(m)
+        for uid in stale:
+            qstore.pop(uid)
+            qstore.unspare(uid)
+
+        def names(ms):
+            return ", ".join(f"{m.mention} (`{m.id}`)" for m in ms)[:1024] or "—"
+
+        ch = guild.get_channel(MODLOG_CHANNEL_ID)
+        if ch and (done or failed or stale):
+            embed = discord.Embed(
+                title="🔓 Bulk release — everyone held was let in",
+                description=(f"{interaction.user.mention} ran `/altguard-release everyone:True`: "
+                             f"**{len(done)}** released, **{len(failed)}** failed, "
+                             f"**{len(stale)}** stale record(s) for members who had already left dropped."),
+                color=0x57F287,
+            )
+            if done:
+                embed.add_field(name="Released", value=names(done), inline=False)
+            if failed:
+                embed.add_field(name="⚠️ Couldn't restore (perms/hierarchy)", value=names(failed), inline=False)
+            embed.set_footer(text="Not marked trusted — a new alt of any of them is still held if the gate is on.")
+            try:
+                await ch.send(embed=embed)
+            except discord.Forbidden:
+                pass
+
+        msg = (f"✅ Released **{len(done)}** held member(s)"
+               + (f", **{len(failed)}** couldn't be restored (check my role position): {names(failed)}"
+                  if failed else "")
+               + (f". Dropped **{len(stale)}** stale record(s) for members who had already left."
+                  if stale else "."))
+        if not held and not stale:
+            msg = "Nobody is held right now — nothing to release."
+        gate = "🔒 ON — new joiners are still being held" if self.quarantine_on_join else "🔓 OFF"
+        await interaction.followup.send(
+            f"{msg}\n-# Forced quarantine-on-join is {gate}. Change it with `/altguard-gate`.",
+            ephemeral=True)
+
     @app_commands.command(
         name="altguard-release",
-        description="Clear a quarantine and restore removed roles — releases the whole matched-alt group",
+        description="Clear a quarantine and restore removed roles — one member (+ their alt group), or everyone held",
+    )
+    @app_commands.describe(
+        member="One member to release, together with their matched-alt group",
+        everyone="True = release EVERY held member in this server (for switching the gate off)",
     )
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
-    async def release(self, interaction: discord.Interaction, member: discord.Member):
+    async def release(self, interaction: discord.Interaction,
+                      member: discord.Member = None, everyone: bool = False):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        if everyone:
+            await self._release_all(interaction)
+            return
+        if member is None:
+            await interaction.followup.send(
+                "Pick a `member:` to release, or set `everyone:True` to release everyone held.",
+                ephemeral=True)
+            return
         ok, restored, aged, also, failed = await self._do_group_release(
             interaction.guild, interaction.user, member
         )

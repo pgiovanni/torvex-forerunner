@@ -434,16 +434,22 @@
   },
   {
    "path": "altguard-release",
-   "description": "Clear a quarantine and restore removed roles — releases the whole matched-alt group",
+   "description": "Clear a quarantine and restore removed roles — one member (+ their alt group), or everyone held",
    "params": [
     {
      "name": "member",
      "type": "user",
-     "required": true,
-     "description": "…"
+     "required": false,
+     "description": "One member to release, together with their matched-alt group"
+    },
+    {
+     "name": "everyone",
+     "type": "boolean",
+     "required": false,
+     "description": "True = release EVERY held member in this server (for switching the gate off)"
     }
    ],
-   "signature": "/altguard-release <member>",
+   "signature": "/altguard-release [member] [everyone]",
    "root": "altguard-release",
    "cog": "altguard",
    "permissions": [
