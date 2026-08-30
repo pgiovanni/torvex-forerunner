@@ -98,6 +98,67 @@ def notify_plan(kind, cfg, notify="default"):
     return do_dm, do_ping, (not do_dm and not do_ping)
 
 
+def _avatar_url(member):
+    try:
+        return member.display_avatar.url
+    except AttributeError:
+        return None
+
+
+def public_warning_card(member, reason, nth, entry_id, warns, cleared=0):
+    """The card posted in the channel where the behaviour happened.
+
+    Pure so it can be tested against a fake member. The member's mention is
+    NOT in here — embeds never ping, so the caller puts it in `content`.
+    Deliberately says nothing about which moderator issued it: the room needs
+    to see that the behaviour was dealt with, not who to argue with; the
+    moderator is on the mod-log card and in the ephemeral confirmation.
+    """
+    e = discord.Embed(color=WARN_COLOR, description=reason,
+                      timestamp=discord.utils.utcnow())
+    e.set_author(name=f"{member.display_name} was warned", icon_url=_avatar_url(member))
+    standing = f"{nth} warning" if int(warns) > 1 else "First warning"
+    if cleared:
+        standing += f" · {int(warns) + int(cleared)} total, {int(cleared)} cleared"
+    e.add_field(name="Standing", value=standing, inline=True)
+    e.set_footer(text=f"Warning #{entry_id}")
+    return e
+
+
+def log_card(member, moderator, kind, reason, nth, entry_id, counts, channel=None,
+             public=False, saved=(), silent=False, dmed=None):
+    """The mod-log card. Same information as before, laid out like the
+    moderation cog's action cards (author = the member, avatar thumbnail)."""
+    c = counts
+    e = discord.Embed(
+        title=(f"⚠️ Warning #{entry_id} — {nth} for this member" if kind == "warn"
+               else f"📗 Note #{entry_id}"),
+        description=reason, color=WARN_COLOR if kind == "warn" else NOTE_COLOR,
+        timestamp=discord.utils.utcnow())
+    e.set_author(name=str(member), icon_url=_avatar_url(member))
+    if _avatar_url(member):
+        e.set_thumbnail(url=_avatar_url(member))
+    e.add_field(name="Member", value=f"{member.mention}\n`{member.id}`", inline=True)
+    e.add_field(name="Moderator", value=moderator.mention, inline=True)
+    e.add_field(name="Standing record",
+                value=f"{c['warns']} warning(s) · {c['notes']} note(s)"
+                      + (f" · {c['cleared']} cleared" if c["cleared"] else ""), inline=True)
+    if channel is not None:
+        e.add_field(name="Where", value=channel.mention
+                    + (" · public notice posted" if public else ""), inline=True)
+    if dmed is not None:
+        e.add_field(name="Notified", value="DM sent" if dmed else "DMs closed", inline=True)
+    if saved:
+        e.add_field(
+            name=f"Evidence ({len(saved)})",
+            value="\n".join(f"`{s['filename']}` · {_human_bytes(s['bytes'])} · "
+                            f"`{s['sha256'][:12]}`" for s in saved)[:1024],
+            inline=False)
+    if silent:
+        e.set_footer(text="Silent — the member was not notified")
+    return e
+
+
 def _ordinal(n) -> str:
     n = int(n)
     suf = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
@@ -239,7 +300,9 @@ class Conduct(commands.Cog):
         if do_ping:
             try:
                 await interaction.channel.send(
-                    f"⚠️ {member.mention} — **warning** ({nth}): {reason}",
+                    content=f"⚠️ {member.mention}",
+                    embed=public_warning_card(member, reason, nth, entry_id,
+                                              c["warns"], c["cleared"]),
                     allowed_mentions=discord.AllowedMentions(users=[member]))
                 public = True
             except (discord.Forbidden, discord.HTTPException, AttributeError):
@@ -264,26 +327,9 @@ class Conduct(commands.Cog):
         await interaction.followup.send(" ".join(bits), ephemeral=True)
 
         # mod log
-        e = discord.Embed(
-            title=(f"⚠️ Warning #{entry_id} — {nth} for this member" if kind == "warn"
-                   else f"📗 Note #{entry_id}"),
-            description=reason, color=WARN_COLOR if kind == "warn" else NOTE_COLOR)
-        e.add_field(name="Member", value=f"{member.mention}\n`{member.id}`", inline=True)
-        e.add_field(name="Moderator", value=interaction.user.mention, inline=True)
-        e.add_field(name="Standing record",
-                    value=f"{c['warns']} warning(s) · {c['notes']} note(s)"
-                          + (f" · {c['cleared']} cleared" if c["cleared"] else ""), inline=True)
-        if interaction.channel is not None:
-            e.add_field(name="Where", value=interaction.channel.mention
-                        + (" · public notice posted" if public else ""), inline=True)
-        if saved:
-            e.add_field(
-                name=f"Evidence ({len(saved)})",
-                value="\n".join(f"`{s['filename']}` · {_human_bytes(s['bytes'])} · "
-                                f"`{s['sha256'][:12]}`" for s in saved)[:1024],
-                inline=False)
-        if silent:
-            e.set_footer(text="Silent — the member was not notified")
+        e = log_card(member, interaction.user, kind, reason, nth, entry_id, c,
+                     channel=interaction.channel, public=public, saved=saved,
+                     silent=silent, dmed=(dmed if do_dm else None))
         await _log(interaction.guild, cfg, e)
 
     @app_commands.command(name="warn", description="Warn a member and record it, with optional evidence.")
