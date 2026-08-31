@@ -32,6 +32,16 @@ bot posts ARE scanned and (enforce) deleted, but can't be timed out.
 
 Base hitlist: data/link_hitlist.json. Verification of new domains is DNS-only —
 the cog NEVER makes an HTTP request to a suspected tracker (that would fire it).
+
+INVITE CAPTURE (2026-08-31): every Discord invite link posted (discord.gg /
+discord.com/invite, in text, masked links, or embeds) is resolved via the API
+(metadata only — never a join) and recorded durably to linkguard.db
+`invite_posts`. Invites to THIS server or an allow-listed friendly server are
+captured quietly; a FOREIGN invite from a non-staff member raises a mod-log
+embed naming the server it points at, and a burst of them — counted ACROSS
+channels, the split that keeps invite-spam selfbots under the per-channel flood
+rule — trips a spam response: delete + timeout (enforce mode; shadow alerts).
+Configure with /hitlist invites.
 """
 import asyncio
 import datetime
@@ -102,6 +112,23 @@ _SKIP_RESOLVE = {
     "tenor.com", "youtube.com", "youtu.be", "google.com", "github.com",
     "twitter.com", "x.com", "reddit.com", "imgur.com", "twitch.tv", "spotify.com",
 }
+
+# Discord invite link — any of the real invite URL shapes, scheme optional.
+# The code keeps its case (vanity codes are case-sensitive).
+_INVITE_RE = re.compile(
+    r"(?:https?://)?(?:(?:www|ptb|canary)\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/"
+    r"([A-Za-z0-9][A-Za-z0-9-]{1,31})", re.I)
+
+# Perms that mean "trusted enough to share an invite deliberately" — staff posts
+# (partnerships etc.) are captured in the table but never alerted or punished.
+_STAFF_PERMS = ("administrator", "manage_guild", "manage_channels", "manage_messages",
+                "kick_members", "ban_members", "moderate_members", "manage_roles")
+
+
+def _is_staff(member):
+    p = member.guild_permissions
+    return any(getattr(p, name, False) for name in _STAFF_PERMS)
+
 
 # URL-ish token (with or without scheme, or bare www.) — greedy up to whitespace
 # or a delimiter. Used to pull hostnames for suffix matching + vector labelling.
@@ -335,6 +362,44 @@ def defang(s):
     return (s or "").replace("http", "hxxp").replace(".", "[.]")
 
 
+def extract_invite_codes(content, embed_dicts):
+    """Every Discord invite code visible in a message — raw text (which includes
+    masked-link targets) plus unfurled-embed URL fields. De-duped, first-seen
+    order, case preserved (vanity codes are case-sensitive)."""
+    blobs = [unquote(content or ""),
+             unquote(" \n ".join(_embed_url_strings(embed_dicts)))]
+    out, seen = [], set()
+    for blob in blobs:
+        for m in _INVITE_RE.finditer(blob):
+            code = m.group(1)
+            if code not in seen:
+                seen.add(code)
+                out.append(code)
+    return out
+
+
+def invite_spam_hit(times, now, count, window):
+    """Sliding-window spam check for one member. `times` is their mutable list of
+    prior post stamps: `now` is appended, stale stamps pruned, and True returned
+    once `count` foreign-invite posts landed inside `window` seconds. Deliberately
+    NOT keyed per channel — splitting a blast across channels is exactly how the
+    8/31 selfbot stayed under anti-nuke's per-channel flood counter."""
+    times.append(now)
+    while times and now - times[0] > window:
+        times.pop(0)
+    return len(times) >= count
+
+
+def format_age(delta):
+    """Human age of an account from a timedelta — '7h' / '12 days' / '2.4 years'."""
+    days = delta.days + delta.seconds / 86400.0
+    if days < 1:
+        return f"{max(0, int(delta.total_seconds() // 3600))}h"
+    if days < 60:
+        return f"{days:.0f} days"
+    return f"{days / 365.25:.1f} years"
+
+
 # ------------------------------------------------------- durable trip log
 def _tripdb():
     c = sqlite3.connect(_TRIPDB, timeout=10)
@@ -353,6 +418,51 @@ def _init_tripdb():
                    hidden INTEGER, is_webhook INTEGER, enforce INTEGER, actions TEXT)"""
         )
         c.execute("CREATE INDEX IF NOT EXISTS idx_trips_user ON trips(guild_id, user_id, ts)")
+        # invite capture — one row per invite code per message, own-guild included
+        # (quiet rows are still the record "who shared what, when"). NB the column
+        # is is_foreign because FOREIGN is an SQL keyword.
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS invite_posts (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL,
+                   guild_id TEXT, user_id TEXT, username TEXT,
+                   channel_id TEXT, message_id TEXT, code TEXT,
+                   target_guild_id TEXT, target_guild_name TEXT,
+                   member_count INTEGER, is_foreign INTEGER)"""
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_invite_user ON invite_posts(guild_id, user_id, ts)")
+
+
+def _persist_invite_post(row):
+    try:
+        with _tripdb() as c:
+            c.execute(
+                "INSERT INTO invite_posts(ts,guild_id,user_id,username,channel_id,message_id,"
+                "code,target_guild_id,target_guild_name,member_count,is_foreign) VALUES "
+                "(:ts,:guild_id,:user_id,:username,:channel_id,:message_id,"
+                ":code,:target_guild_id,:target_guild_name,:member_count,:is_foreign)", row)
+    except Exception:
+        log.exception("link_guard: persist invite post failed")
+
+
+def _count_user_invite_posts(guild_id, user_id):
+    """How many invite posts this member already has on record in this guild."""
+    try:
+        with _tripdb() as c:
+            return c.execute("SELECT COUNT(*) FROM invite_posts WHERE guild_id=? AND user_id=?",
+                             (str(guild_id), str(user_id))).fetchone()[0]
+    except Exception:
+        return 0
+
+
+def _guild_invite_stats(guild_id):
+    """(total, foreign) invite posts captured for a guild — for /hitlist invites."""
+    try:
+        with _tripdb() as c:
+            row = c.execute("SELECT COUNT(*), COALESCE(SUM(is_foreign),0) FROM invite_posts "
+                            "WHERE guild_id=?", (str(guild_id),)).fetchone()
+            return int(row[0]), int(row[1])
+    except Exception:
+        return 0, 0
 
 
 def _persist_trip(row):
@@ -408,6 +518,13 @@ class LinkGuard(commands.Cog):
         # cache so a repeated host isn't looked up twice. {host: (expiry_ts, {ips})}
         self._tracker_ips = set(_SEED_TRACKER_IPS)
         self._dns_cache = {}
+        # invite capture: resolved-code cache {code: (expiry, info|None)}, per-member
+        # sliding windows {(gid,uid): [ts,...]}, spam-trip suppression
+        # {(gid,uid): expiry} and per-message dedupe {message_id: expiry}.
+        self._invite_cache = {}
+        self._invite_times = {}
+        self._invite_tripped = {}
+        self._invite_msgs = {}
         _init_tripdb()
         log.info("link_guard: loaded %d base domains (%d shorteners)",
                  len(self.base), len(self.shortener_rules))
@@ -533,6 +650,10 @@ class LinkGuard(commands.Cog):
             is_webhook=bool(message.webhook_id),
             message=message,
         )
+        try:
+            await self._process_invites(message)
+        except Exception:
+            log.exception("link_guard: invite capture failed")
 
     @commands.Cog.listener()
     async def on_raw_message_edit(self, payload):
@@ -826,6 +947,167 @@ class LinkGuard(commands.Cog):
                       embed=embed,
                       allowed_mentions=discord.AllowedMentions.all())
 
+    # ------------------------------------------------------- invite capture
+    async def _resolve_invite(self, code):
+        """Invite metadata via the API — a read, never a join. Returns
+        {guild_id, guild_name, members} or None for an invalid/expired/
+        unresolvable code. Cached ~10 min either way, so a spammer repeating one
+        code costs a single API call."""
+        now = time.time()
+        hit = self._invite_cache.get(code)
+        if hit and hit[0] > now:
+            return hit[1]
+        info = None
+        try:
+            inv = await asyncio.wait_for(
+                self.bot.fetch_invite(code, with_counts=True), timeout=5)
+            g = inv.guild
+            info = {"guild_id": str(g.id) if g else None,
+                    "guild_name": getattr(g, "name", None),
+                    "members": getattr(inv, "approximate_member_count", None)}
+        except Exception:
+            info = None
+        if len(self._invite_cache) > 2048:
+            self._invite_cache = {k: v for k, v in self._invite_cache.items() if v[0] > now}
+        self._invite_cache[code] = (now + 600, info)
+        return info
+
+    async def _process_invites(self, message):
+        """Capture every Discord invite in a member's message; alert on foreign
+        ones and trip the cross-channel spam response on a burst. Runs from
+        on_message only (an unfurl edit adds no new invite codes — the URL was
+        already in the text)."""
+        guild, author = message.guild, message.author
+        if author is None or author.bot or message.webhook_id:
+            return
+        if not is_enabled(guild.id, "linkguard"):
+            return
+        cfg = get_config(guild.id)
+        if not cfg.get("linkguard_invites", 1):
+            return
+        if str(message.channel.id) in {str(c) for c in (cfg.get("linkguard_invite_exempt_channels") or [])}:
+            return
+        if self._exempt(guild, author.id, cfg):
+            return
+        codes = extract_invite_codes(message.content or "",
+                                     [e.to_dict() for e in message.embeds])
+        if not codes:
+            return
+        now = time.time()
+        if len(self._invite_msgs) > 4096:
+            self._invite_msgs = {k: v for k, v in self._invite_msgs.items() if v > now}
+        if self._invite_msgs.get(message.id, 0) > now:
+            return
+        self._invite_msgs[message.id] = now + 900
+
+        allow_guilds = {str(x) for x in (cfg.get("linkguard_invite_allow_guilds") or [])}
+        allow_guilds.add(str(guild.id))
+        foreign = []
+        for code in codes[:3]:   # resolve at most 3 codes per message
+            info = await self._resolve_invite(code)
+            is_foreign = info is None or info.get("guild_id") not in allow_guilds
+            _persist_invite_post({
+                "ts": now, "guild_id": str(guild.id),
+                "user_id": str(author.id), "username": str(author),
+                "channel_id": str(message.channel.id), "message_id": str(message.id),
+                "code": code,
+                "target_guild_id": (info or {}).get("guild_id"),
+                "target_guild_name": (info or {}).get("guild_name"),
+                "member_count": (info or {}).get("members"),
+                "is_foreign": 1 if is_foreign else 0})
+            if is_foreign:
+                foreign.append((code, info))
+        if not foreign:
+            return  # our own / friendly invites: captured quietly, nothing more
+        member = guild.get_member(author.id)
+        if member is None or _is_staff(member):
+            return  # staff share invites deliberately (partnerships) — table only
+
+        enforce = bool(cfg.get("linkguard_enforce"))
+        key = (guild.id, author.id)
+        if self._invite_tripped.get(key, 0) > now:
+            # already contained this run — keep sweeping, stay quiet
+            if enforce:
+                await self._delete(message.channel, message, message.id)
+            return
+        spam = cfg.get("linkguard_invite_spam") or [3, 60]
+        try:
+            s_count, s_win = max(2, int(spam[0])), max(5, int(spam[1]))
+        except (TypeError, ValueError, IndexError):
+            s_count, s_win = 3, 60
+        times = self._invite_times.setdefault(key, [])
+        hit = invite_spam_hit(times, now, s_count, s_win)
+        acts = {"deleted": False, "timed_out": False}
+        if hit:
+            # suppress further embeds/punishment for them either mode; enforce
+            # additionally keeps deleting whatever else they post (branch above)
+            self._invite_tripped[key] = now + 600
+            if len(self._invite_tripped) > 2048:
+                self._invite_tripped = {k: v for k, v in self._invite_tripped.items() if v > now}
+            if enforce:
+                acts["deleted"] = await self._delete(message.channel, message, message.id)
+                why = f"invite spam: {len(times)} server invites in {s_win}s"
+                try:
+                    await member.timeout(
+                        datetime.timedelta(minutes=int(cfg.get("linkguard_invite_timeout_min", 60))),
+                        reason=f"LinkGuard: {why}"[:400])
+                    acts["timed_out"] = True
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+        await self._invite_alert(guild, cfg, message.channel, member, foreign,
+                                 hit, enforce, acts, s_win, len(times))
+
+    async def _invite_alert(self, guild, cfg, channel, member, foreign, hit,
+                            enforce, acts, window, n):
+        ch = self._modlog(guild, cfg)
+        if ch is None:
+            return
+        if hit:
+            title, color = "📨🚨 LinkGuard — invite SPAM", 0x8B0000
+        else:
+            title, color = "📨 Foreign server invite posted", 0xE0A23B
+        lines = []
+        for code, info in foreign:
+            if info:
+                members = info.get("members")
+                lines.append(f"• `discord.gg/{code}` → **{info.get('guild_name') or 'unknown'}** "
+                             f"(`{info.get('guild_id')}`"
+                             + (f", ~{members:,} members)" if members else ")"))
+            else:
+                lines.append(f"• `discord.gg/{code}` — ⚠️ invalid, expired, or unresolvable")
+        embed = discord.Embed(
+            title=title, color=color,
+            description=f"{member.mention} (`{member.id}`) in {channel.mention}.")
+        embed.add_field(name="Invite(s)", value="\n".join(lines)[:1024], inline=False)
+        embed.add_field(name="Account age",
+                        value=format_age(discord.utils.utcnow() - member.created_at),
+                        inline=True)
+        prior = _count_user_invite_posts(guild.id, member.id)
+        if prior > 1:
+            embed.add_field(name="On record",
+                            value=f"{prior} invite post(s) logged", inline=True)
+        if hit:
+            embed.add_field(
+                name="Pattern",
+                value=f"**{n}** foreign invites inside **{window}s** — counted across "
+                      f"channels (the split that dodges the flood rule).", inline=False)
+            if enforce:
+                tmin = int(cfg.get("linkguard_invite_timeout_min", 60))
+                action = [("🗑️ deleted" if acts["deleted"] else "⚠️ not deleted"),
+                          (f"⏳ timed out {tmin}m" if acts["timed_out"] else "⚠️ timeout failed")]
+                embed.set_footer(text="Their further invite posts are auto-removed for "
+                                      "10 min. Review and ban if warranted.")
+            else:
+                action = [f"none — SHADOW (would delete + timeout "
+                          f"{int(cfg.get('linkguard_invite_timeout_min', 60))}m)"]
+            embed.add_field(name="Action", value=" · ".join(action), inline=False)
+        ping = self._ping_prefix(cfg) if (hit and enforce) else None
+        try:
+            await ch.send(content=ping, embed=embed,
+                          allowed_mentions=discord.AllowedMentions.all())
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
     # ------------------------------------------------------------- commands
     hitlist = app_commands.Group(
         name="hitlist", description="Canary-token / IP-grabber link detection (Manage Server)",
@@ -944,7 +1226,89 @@ class LinkGuard(commands.Cog):
         embed.add_field(name="Covers", value=(
             "• raw content (incl. scheme-less)\n• markdown-masked links `[x](url)`\n"
             "• unfurled embeds + proxied image URLs (the hidden-embed trick)"), inline=False)
-        embed.set_footer(text="/hitlist add · remove · test · enable · enforce")
+        embed.set_footer(text="/hitlist add · remove · test · enable · enforce · invites")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @hitlist.command(name="invites",
+                     description="Invite capture: log every Discord invite posted + invite-spam response.")
+    @app_commands.describe(
+        enabled="Capture invite links at all (on by default while LinkGuard is enabled).",
+        spam_count="Foreign invites inside the window that count as spam (default 3).",
+        spam_window_sec="The spam window, in seconds (default 60). Counted across channels.",
+        timeout_min="Timeout applied on an invite-spam trip, in minutes (default 60).",
+        exempt_channel="Toggle a channel where invites are ignored entirely (e.g. a promotions channel).",
+        allow_guild="Toggle a friendly server id whose invites are treated like our own.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def invites_cmd(self, interaction: discord.Interaction,
+                          enabled: bool = None,
+                          spam_count: app_commands.Range[int, 2, 20] = None,
+                          spam_window_sec: app_commands.Range[int, 10, 600] = None,
+                          timeout_min: app_commands.Range[int, 1, 40320] = None,
+                          exempt_channel: discord.TextChannel = None,
+                          allow_guild: str = None):
+        cfg = get_config(interaction.guild.id)
+        fields, notes = {}, []
+        if enabled is not None:
+            fields["linkguard_invites"] = 1 if enabled else 0
+            notes.append(f"capture **{'on' if enabled else 'off'}**")
+        spam = list(cfg.get("linkguard_invite_spam") or [3, 60])
+        if spam_count is not None or spam_window_sec is not None:
+            spam = [int(spam_count or spam[0]), int(spam_window_sec or spam[1])]
+            fields["linkguard_invite_spam"] = spam
+            notes.append(f"spam rule **{spam[0]} in {spam[1]}s**")
+        if timeout_min is not None:
+            fields["linkguard_invite_timeout_min"] = int(timeout_min)
+            notes.append(f"spam timeout **{timeout_min}m**")
+        if exempt_channel is not None:
+            ex = [str(c) for c in (cfg.get("linkguard_invite_exempt_channels") or [])]
+            cid = str(exempt_channel.id)
+            if cid in ex:
+                ex.remove(cid)
+                notes.append(f"{exempt_channel.mention} **watched again**")
+            else:
+                ex.append(cid)
+                notes.append(f"{exempt_channel.mention} **exempt** — invites there are ignored")
+            fields["linkguard_invite_exempt_channels"] = ex
+        if allow_guild is not None:
+            gid = allow_guild.strip()
+            if not gid.isdigit():
+                await interaction.response.send_message(
+                    "❌ `allow_guild` takes a numeric server id.", ephemeral=True)
+                return
+            al = [str(x) for x in (cfg.get("linkguard_invite_allow_guilds") or [])]
+            if gid in al:
+                al.remove(gid)
+                notes.append(f"server `{gid}` invites are **foreign again**")
+            else:
+                al.append(gid)
+                notes.append(f"server `{gid}` invites now count as **our own**")
+            fields["linkguard_invite_allow_guilds"] = al
+        if fields:
+            cfg = set_config(interaction.guild.id, **fields)
+
+        spam = list(cfg.get("linkguard_invite_spam") or [3, 60])
+        total, foreign_n = _guild_invite_stats(interaction.guild.id)
+        on = bool(cfg.get("linkguard_invites", 1)) and bool(cfg.get("linkguard_enabled"))
+        embed = discord.Embed(
+            title="📨 Invite capture",
+            color=0x5B8CFF,
+            description=("Changed: " + " · ".join(notes) + "\n\n" if notes else "")
+            + ("🟢 **Capturing**" if on else
+               "⚪ **Off**" + ("" if cfg.get("linkguard_enabled") else " — LinkGuard itself is disabled here")))
+        embed.add_field(name="Spam rule",
+                        value=f"{spam[0]} foreign invites / {spam[1]}s (across channels)\n"
+                              f"→ delete + timeout {cfg.get('linkguard_invite_timeout_min', 60)}m "
+                              f"({'🔴 ENFORCE' if cfg.get('linkguard_enforce') else '🟡 SHADOW — alert only'})",
+                        inline=False)
+        ex = cfg.get("linkguard_invite_exempt_channels") or []
+        embed.add_field(name="Exempt channels",
+                        value=", ".join(f"<#{c}>" for c in ex) or "none", inline=True)
+        al = cfg.get("linkguard_invite_allow_guilds") or []
+        embed.add_field(name="Friendly servers",
+                        value=", ".join(f"`{g}`" for g in al) or "none", inline=True)
+        embed.add_field(name="Captured so far",
+                        value=f"{total} invite post(s), {foreign_n} foreign", inline=False)
+        embed.set_footer(text="Own-server + friendly invites are logged quietly; staff posts never alert.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def cog_app_command_error(self, interaction, error):
