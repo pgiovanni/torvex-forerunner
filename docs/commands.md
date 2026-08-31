@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **225 commands** (100 top-level, the rest subcommands) across 39 cogs
+- **226 commands** (100 top-level, the rest subcommands) across 39 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -551,6 +551,25 @@ Toggle acting (delete + timeout) vs shadow (alert-only).
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `on` | boolean | Yes | True = delete the message + timeout the poster · False = alert only |
+
+#### `/hitlist invites`
+
+Invite capture: log every Discord invite posted + invite-spam response.
+
+```
+/hitlist invites [enabled] [spam_count] [spam_window_sec] [timeout_min] [exempt_channel] [allow_guild]
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `enabled` | boolean | No | Capture invite links at all (on by default while LinkGuard is enabled). |
+| `spam_count` | integer | No | Foreign invites inside the window that count as spam (default 3). *(range 2–20)* |
+| `spam_window_sec` | integer | No | The spam window, in seconds (default 60). Counted across channels. *(range 10–600)* |
+| `timeout_min` | integer | No | Timeout applied on an invite-spam trip, in minutes (default 60). *(range 1–40320)* |
+| `exempt_channel` | channel | No | Toggle a channel where invites are ignored entirely (e.g. a promotions channel). *(channel types: text, announcement)* |
+| `allow_guild` | string | No | Toggle a friendly server id whose invites are treated like our own. |
 
 #### `/hitlist list`
 
