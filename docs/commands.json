@@ -2025,6 +2025,66 @@
    "dm_allowed": false
   },
   {
+   "path": "hitlist invites",
+   "description": "Invite capture: log every Discord invite posted + invite-spam response.",
+   "params": [
+    {
+     "name": "enabled",
+     "type": "boolean",
+     "required": false,
+     "description": "Capture invite links at all (on by default while LinkGuard is enabled)."
+    },
+    {
+     "name": "spam_count",
+     "type": "integer",
+     "required": false,
+     "description": "Foreign invites inside the window that count as spam (default 3).",
+     "min": 2,
+     "max": 20
+    },
+    {
+     "name": "spam_window_sec",
+     "type": "integer",
+     "required": false,
+     "description": "The spam window, in seconds (default 60). Counted across channels.",
+     "min": 10,
+     "max": 600
+    },
+    {
+     "name": "timeout_min",
+     "type": "integer",
+     "required": false,
+     "description": "Timeout applied on an invite-spam trip, in minutes (default 60).",
+     "min": 1,
+     "max": 40320
+    },
+    {
+     "name": "exempt_channel",
+     "type": "channel",
+     "required": false,
+     "description": "Toggle a channel where invites are ignored entirely (e.g. a promotions channel).",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    },
+    {
+     "name": "allow_guild",
+     "type": "string",
+     "required": false,
+     "description": "Toggle a friendly server id whose invites are treated like our own."
+    }
+   ],
+   "signature": "/hitlist invites [enabled] [spam_count] [spam_window_sec] [timeout_min] [exempt_channel] [allow_guild]",
+   "root": "hitlist",
+   "cog": "link_guard",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "hitlist list",
    "description": "Show LinkGuard status + this server's domain counts.",
    "params": [],
@@ -5479,6 +5539,14 @@
    "server_owner_only": false
   },
   "hitlist list": {
+   "cog": "link_guard",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "hitlist invites": {
    "cog": "link_guard",
    "visibility_permissions": [],
    "runtime_permissions": [
