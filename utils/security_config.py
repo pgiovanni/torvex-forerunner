@@ -126,6 +126,15 @@ DEFAULTS = {
     "linkguard_taunt_text": "",          # override the default taunt line
     # response — LOW severity (URL-shortener-only hit, may be a legit member): gentle.
     "linkguard_timeout_min": 10,         # short timeout, no quarantine, no public shame
+    # invite capture (LinkGuard): log every Discord invite posted. Foreign-server
+    # invite bursts are the spam shape the flood rule can't see — a selfbot pacing
+    # ~1 msg/s and splitting across channels stays under 12-in-7s per channel
+    # forever, but 3 foreign invites in a minute from one member is the signature.
+    "linkguard_invites": 1,                  # capture invite links (rides linkguard_enabled)
+    "linkguard_invite_spam": [3, 60],        # foreign invites [count, window_s], counted ACROSS channels
+    "linkguard_invite_timeout_min": 60,      # spam response (enforce only): delete + this timeout
+    "linkguard_invite_exempt_channels": [],  # promo channels where invites are ignored entirely
+    "linkguard_invite_allow_guilds": [],     # friendly server ids whose invites count as our own
     # message archive + mod-log (msglog) — MEE6/Quark/Carl-bot log replacement
     "msglog_enabled": 0,             # master opt-in (archive + logging)
     "msglog_channel_id": None,       # log channel; falls back to modlog_channel_id
