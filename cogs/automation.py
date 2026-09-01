@@ -55,6 +55,8 @@ class Automation(commands.Cog):
         # also race the verification gate, so wait for on_member_update instead.
         if cfg.get("autorole_skip_pending") and getattr(member, "pending", False):
             return
+        if self._gate_defers(member):
+            return
         await self._grant(member, cfg)
 
     @commands.Cog.listener()
@@ -65,8 +67,21 @@ class Automation(commands.Cog):
         if not is_enabled(after.guild.id, "auto"):
             return
         cfg = get_config(after.guild.id)
-        if cfg.get("autorole_skip_pending"):
+        if cfg.get("autorole_skip_pending") and not self._gate_defers(after):
             await self._grant(after, cfg)
+
+    def _gate_defers(self, member) -> bool:
+        """Tandem with AltGuard: while the verification gate holds this guild's
+        joiners (or this member is already quarantined), join roles are granted
+        by the gate's release path instead — granting here would race the
+        quarantine reconciliation strip. No AltGuard cog → nothing defers."""
+        ag = self.bot.get_cog("AltGuard")
+        if ag is None:
+            return False
+        try:
+            return ag.joins_held(member.guild) or ag.is_held(member.id)
+        except Exception:
+            return False
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
