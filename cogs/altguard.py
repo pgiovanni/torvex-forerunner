@@ -87,6 +87,24 @@ PRUNE_HOURS_HINT = _env_int("PRUNE_HOURS", 72)  # display only; verify_prune own
 # gating, or on release after they verify). Replaces MEE6 autorole. Members can
 # remove any they don't want.
 DEFAULT_ROLE_IDS = [int(x) for x in os.environ.get("ALTGUARD_DEFAULT_ROLES", "").replace(",", " ").split() if x.strip().isdigit()]
+
+
+def join_default_ids(cfg, env_ids=None):
+    """Role ids granted as join defaults (detect-only join / gate release).
+    The Join & Welcome plugin owns the list when it's enabled for the guild —
+    the panel is the config surface of record — and switching that plugin off
+    means NO join roles, not a silent fall back to the env list. The env list
+    only serves a guild that never adopted the panel. A malformed config id is
+    skipped, never trusted (the antinuke coercion trap)."""
+    if cfg.get("auto_enabled"):
+        out = []
+        for x in cfg.get("autorole_ids") or []:
+            try:
+                out.append(int(x))
+            except (TypeError, ValueError):
+                continue
+        return out
+    return list(DEFAULT_ROLE_IDS if env_ids is None else env_ids)
 # Age roles granted from the verify page's age-group selection (results.age =
 # "18+" | "under18"). Picking one always clears the other. 0 = feature off.
 AGE_ROLE_18PLUS = _env_int("ALTGUARD_AGE_ROLE_18PLUS", 0)
@@ -514,14 +532,26 @@ class AltGuard(commands.Cog):
 
     def _default_roles(self, guild):
         """Opt-out default roles that exist and the bot can assign (below its top
-        role, not managed). Empty unless ALTGUARD_DEFAULT_ROLES is set."""
+        role, not managed). Ids come from join_default_ids — the Join & Welcome
+        panel when that plugin is on, else the ALTGUARD_DEFAULT_ROLES env."""
         me = guild.me
         out = []
-        for rid in DEFAULT_ROLE_IDS:
+        for rid in join_default_ids(get_config(guild.id)):
             r = guild.get_role(rid)
             if r and not r.managed and me and r < me.top_role:
                 out.append(r)
         return out
+
+    # ── tandem with the Join & Welcome cog (cogs/automation.py) ─────────────
+    def joins_held(self, guild) -> bool:
+        """True while this guild's joiners go straight into gate quarantine.
+        Join roles are then granted by _release; granting at join would only be
+        stripped again by the reconciliation listener."""
+        return guild.id == GUILD_ID and bool(self.quarantine_on_join)
+
+    def is_held(self, uid: int) -> bool:
+        """True while a member is quarantined by the gate (release pending)."""
+        return qstore.is_quarantined(uid)
 
     def _age_roles(self, guild, res):
         """(grant, [drop...]) for the age group picked on the verify page: the
@@ -718,7 +748,12 @@ class AltGuard(commands.Cog):
             # while the member is held.)
             me = member.guild.me
             bot_top = me.top_role if me else None
-            grants = list(self._default_roles(member.guild))
+            # tandem: when the Join & Welcome cog is on, IT grants the join
+            # roles (with its own delay / onboarding rules) — only restore here.
+            if get_config(member.guild.id).get("auto_enabled"):
+                grants = []
+            else:
+                grants = list(self._default_roles(member.guild))
             for r in rejoin_roles.safe_restorable(
                     member.guild,
                     rejoin_roles.last_known_role_ids(member.id, member.guild.id),
