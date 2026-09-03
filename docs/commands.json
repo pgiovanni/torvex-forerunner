@@ -890,6 +890,26 @@
    "dm_allowed": true
   },
   {
+   "path": "welcome sync",
+   "description": "Give one of the join roles to every current member who doesn't have it yet.",
+   "params": [
+    {
+     "name": "role",
+     "type": "role",
+     "required": true,
+     "description": "Which join role to back-fill — must already be in this server's join-roles list"
+    }
+   ],
+   "signature": "/welcome sync <role>",
+   "root": "welcome",
+   "cog": "automation",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
    "path": "chess",
    "description": "Play chess — vs bot or challenge a player.",
    "params": [
@@ -5097,6 +5117,14 @@
    "server_owner_only": false
   },
   "welcome enable": {
+   "cog": "automation",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "welcome sync": {
    "cog": "automation",
    "visibility_permissions": [],
    "runtime_permissions": [

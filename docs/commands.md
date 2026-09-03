@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **226 commands** (100 top-level, the rest subcommands) across 39 cogs
+- **227 commands** (100 top-level, the rest subcommands) across 39 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -1693,6 +1693,20 @@ Show this server's join & welcome settings.
 **Access:** Requires **Administrator**
 
 *No parameters.*
+
+#### `/welcome sync`
+
+Give one of the join roles to every current member who doesn't have it yet.
+
+```
+/welcome sync <role>
+```
+
+**Access:** Requires **Administrator**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `role` | role | Yes | Which join role to back-fill — must already be in this server's join-roles list |
 
 ### Reaction roles
 

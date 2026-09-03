@@ -15,6 +15,7 @@ renaming them would orphan every guild's stored settings for the sake of a label
 import asyncio
 import os
 import sys
+import time
 
 import discord
 from discord import app_commands
@@ -26,6 +27,28 @@ from utils.quiet_removals import is_quiet  # noqa: E402
 
 MAX_AUTOROLES = 10          # a runaway config shouldn't mean 50 role writes per join
 MAX_DELAY = 3600
+SYNC_PROGRESS_EVERY = 100   # members between progress edits of the ephemeral reply
+SYNC_TOKEN_LIFE = 14 * 60   # interaction tokens die at 15 min; stop editing before then
+
+
+def sync_targets(members, role, *, skip_pending=False, is_held=None):
+    """Who `/welcome sync` grants `role` to. Pure, so it's testable.
+
+    Everyone currently in the server who is human, doesn't already wear the
+    role, isn't still in Discord onboarding (when the panel says to wait for
+    it) and isn't held by the verification gate — a held member gets the
+    join roles from the gate's release path, same as at join time.
+    """
+    out = []
+    for m in members:
+        if getattr(m, "bot", False) or role in m.roles:
+            continue
+        if skip_pending and getattr(m, "pending", False):
+            continue
+        if is_held is not None and is_held(m.id):
+            continue
+        out.append(m)
+    return out
 
 
 def render(template: str, member: discord.Member) -> str:
@@ -43,6 +66,7 @@ def render(template: str, member: discord.Member) -> str:
 class Automation(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._syncing: set[int] = set()     # guild ids with a /welcome sync running
 
     # ───────────────────────────────────────────────────────────── join / leave
     @commands.Cog.listener()
@@ -80,6 +104,18 @@ class Automation(commands.Cog):
             return False
         try:
             return ag.joins_held(member.guild) or ag.is_held(member.id)
+        except Exception:
+            return False
+
+    def _held(self, uid: int) -> bool:
+        """Is this member currently quarantined by AltGuard? Unlike
+        `_gate_defers` this ignores whether the gate holds NEW joiners — a
+        back-fill of existing members must still run while the gate is on."""
+        ag = self.bot.get_cog("AltGuard")
+        if ag is None:
+            return False
+        try:
+            return bool(ag.is_held(uid))
         except Exception:
             return False
 
@@ -171,6 +207,109 @@ class Automation(commands.Cog):
         set_config(interaction.guild.id, auto_enabled=1 if on else 0)
         await interaction.response.send_message(
             f"Join & Welcome is now **{'on' if on else 'off'}**.", ephemeral=True)
+
+    @group.command(name="sync",
+                   description="Give one of the join roles to every current member who doesn't have it yet.")
+    @app_commands.describe(
+        role="Which join role to back-fill — must already be in this server's join-roles list")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def sync(self, interaction: discord.Interaction, role: discord.Role):
+        """Back-fill ONE join role across the existing membership.
+
+        For the case where a role is added to the join list after the server
+        already has members: joiners from now on get it at join, this catches
+        everyone who was already here. One role at a time, and only a role
+        that is on the join list — the other join roles may be ping roles
+        people have deliberately dropped, and this must never become a
+        generic "give everyone a role" that could hand out permissions.
+        """
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = interaction.guild
+        cfg = get_config(guild.id)
+        join_ids = {int(x) for x in (cfg.get("autorole_ids") or []) if str(x).isdigit()}
+        if not cfg.get("auto_enabled"):
+            await interaction.followup.send(
+                "🔴 Join & Welcome is **off** here — turn it on first (`/welcome enable on:True`).",
+                ephemeral=True)
+            return
+        if role.id not in join_ids:
+            await interaction.followup.send(
+                f"{role.mention} isn't one of this server's join roles, so new members wouldn't "
+                "get it either. Add it under **Join & Welcome → Roles given on join** on the "
+                "dashboard first, then run this again.", ephemeral=True)
+            return
+        me = guild.me
+        if role.managed or role.is_default() or not me or role >= me.top_role:
+            await interaction.followup.send(
+                f"I can't grant {role.mention} — it's managed, or at/above my top role.",
+                ephemeral=True)
+            return
+        if guild.id in self._syncing:
+            await interaction.followup.send(
+                "A sync is already running in this server — let it finish first.", ephemeral=True)
+            return
+        if guild.member_count and len(guild.members) < guild.member_count * 0.9:
+            try:
+                await guild.chunk()
+            except Exception:
+                pass
+        targets = sync_targets(guild.members, role,
+                               skip_pending=bool(cfg.get("autorole_skip_pending")),
+                               is_held=self._held)
+        if not targets:
+            await interaction.followup.send(
+                f"Everyone already has {role.mention} — nothing to do.", ephemeral=True)
+            return
+        eta = len(targets)          # Discord paces role writes at roughly one a second
+        await interaction.followup.send(
+            f"⏳ Giving {role.mention} to **{len(targets)}** member(s) — about "
+            f"{eta // 60}m {eta % 60}s. I'll update this message as it goes"
+            + (" and DM you the result if it outlives this reply." if eta > SYNC_TOKEN_LIFE else "."),
+            ephemeral=True)
+        self._syncing.add(guild.id)
+        self.bot.loop.create_task(self._sync_run(interaction, role, targets))
+
+    async def _sync_run(self, interaction, role, targets):
+        guild = interaction.guild
+        started = time.monotonic()
+        ok, gone, failed = 0, 0, []
+
+        async def progress(text, final=False):
+            # The ephemeral reply is editable only while the interaction token
+            # lives (15 min); past that, the final word goes by DM.
+            if time.monotonic() - started < SYNC_TOKEN_LIFE:
+                try:
+                    await interaction.edit_original_response(content=text)
+                    return
+                except (discord.HTTPException, discord.NotFound):
+                    pass
+            if final:
+                try:
+                    await interaction.user.send(text)
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+
+        try:
+            for i, m in enumerate(targets, 1):
+                try:
+                    await m.add_roles(role, reason=f"Join & Welcome: sync by {interaction.user}")
+                    ok += 1
+                except discord.NotFound:
+                    gone += 1                       # left mid-run
+                except (discord.Forbidden, discord.HTTPException):
+                    failed.append(m)
+                if i % SYNC_PROGRESS_EVERY == 0:
+                    await progress(f"⏳ {role.mention}: **{i}/{len(targets)}** done "
+                                   f"({ok} granted, {len(failed)} failed).")
+        finally:
+            self._syncing.discard(guild.id)
+        names = ", ".join(f"{m.mention} (`{m.id}`)" for m in failed[:20])
+        text = (f"✅ {role.mention} sync in **{guild.name}** finished: **{ok}** granted"
+                + (f", {gone} left mid-run" if gone else "")
+                + (f", **{len(failed)}** failed (perms/hierarchy): {names}" if failed else "")
+                + ".")
+        print(f"[WELCOME] sync {guild.id} role={role.id} ok={ok} gone={gone} failed={len(failed)}")
+        await progress(text, final=True)
 
 
 async def setup(bot):
