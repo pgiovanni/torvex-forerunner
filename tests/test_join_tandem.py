@@ -91,6 +91,36 @@ check("gate off + not held: grants normally",
 check("helper blowing up never blocks grants",
       auto.Automation(_Bot(_Boom()))._gate_defers(m), False)
 
+# ── sync_targets: who /welcome sync back-fills ──────────────────────────────
+class _Role:
+    pass
+
+
+R = _Role()
+OTHER = _Role()
+
+
+class _M:
+    def __init__(self, uid, roles=(), bot=False, pending=False):
+        self.id, self.roles, self.bot, self.pending = uid, list(roles), bot, pending
+
+
+members = [_M(1), _M(2, [R]), _M(3, bot=True), _M(4, [OTHER]), _M(5, pending=True), _M(6)]
+
+
+def ids(ms):
+    return [m.id for m in ms]
+
+
+check("sync: humans missing the role, holders/bots skipped",
+      ids(auto.sync_targets(members, R)), [1, 4, 5, 6])
+check("sync: wait-for-onboarding drops pending members",
+      ids(auto.sync_targets(members, R, skip_pending=True)), [1, 4, 6])
+check("sync: gate-held members left to the release path",
+      ids(auto.sync_targets(members, R, is_held=lambda uid: uid in (1, 6))), [4, 5])
+check("sync: nothing to do is an empty list, not an error",
+      auto.sync_targets([_M(2, [R]), _M(3, bot=True)], R), [])
+
 if _fails:
     print(f"FAIL {len(_fails)}/{_total}")
     for f in _fails:
