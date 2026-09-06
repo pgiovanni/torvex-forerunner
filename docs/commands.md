@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **227 commands** (100 top-level, the rest subcommands) across 39 cogs
+- **227 commands** (100 top-level, the rest subcommands) across 40 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -29,7 +29,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Server setup** — `/backup_emojis`, `/picount`, `/rolemenu`, `/server-info`, `/setup`, `/steal-emoji`, `/suggest`, `/welcome`
 
-**Members & invites** — `/activity`, `/backfill-chat-levels`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/invite`, `/levelroles`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/stats-status`, `/store`, `/tracked-invite`
+**Members & invites** — `/activity`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/invite`, `/levelroles`, `/mentions`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/stats-status`, `/store`, `/tracked-invite`
 
 **Games & fun** — `/8ball`, `/challenge`, `/chess`, `/connect4_bot`, `/connect4`, `/gear`, `/gift`, `/link`, `/market`, `/peepo`, `/roast`, `/rpg`, `/tictactoe_bot`, `/tictactoe`, `/trade`, `/unlink`, `/wordle`
 
@@ -2116,18 +2116,6 @@ Sweep all members: give each their highest Level N+ role, strip the rest
 
 <sub>`cogs/economy.py`</sub>
 
-#### `/backfill-chat-levels`
-
-[Admin] Sync all chat levels to RPG XP multipliers.
-
-```
-/backfill-chat-levels
-```
-
-**Access:** Requires **Administrator**
-
-*No parameters.*
-
 #### `/balance`
 
 Check your Peepo Bucks and level.
@@ -2371,6 +2359,27 @@ Activity-tracking status — totals, date range, top channels (admin)
 **Access:** Requires **Administrator** — ⚠️ visibility gate only, overridable in Server Settings → Integrations &nbsp;·&nbsp; Server only
 
 *No parameters.*
+
+### Mentions
+
+<sub>`cogs/mentions.py`</sub>
+
+#### `/mentions`
+
+Your latest pings with jump links — including the ones that were deleted.
+
+```
+/mentions [limit] [replies] [roles] [bots]
+```
+
+**Access:** Everyone &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `limit` | integer | No | How many to show (default 10, max 20) *(range 1–20)* |
+| `replies` | boolean | No | Include replies to your messages (default yes) |
+| `roles` | boolean | No | Include pings of roles you hold (default no — busy servers ping roles a lot) |
+| `bots` | boolean | No | Include pings from bots (default no) |
 
 ---
 

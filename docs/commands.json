@@ -1161,17 +1161,6 @@
    "dm_allowed": false
   },
   {
-   "path": "backfill-chat-levels",
-   "description": "[Admin] Sync all chat levels to RPG XP multipliers.",
-   "params": [],
-   "signature": "/backfill-chat-levels",
-   "root": "backfill-chat-levels",
-   "cog": "economy",
-   "permissions": [],
-   "cooldown_seconds": null,
-   "dm_allowed": true
-  },
-  {
    "path": "balance",
    "description": "Check your Peepo Bucks and level.",
    "params": [
@@ -2154,6 +2143,44 @@
    "permissions": [
     "Manage Server"
    ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "mentions",
+   "description": "Your latest pings with jump links — including the ones that were deleted.",
+   "params": [
+    {
+     "name": "limit",
+     "type": "integer",
+     "required": false,
+     "description": "How many to show (default 10, max 20)",
+     "min": 1,
+     "max": 20
+    },
+    {
+     "name": "replies",
+     "type": "boolean",
+     "required": false,
+     "description": "Include replies to your messages (default yes)"
+    },
+    {
+     "name": "roles",
+     "type": "boolean",
+     "required": false,
+     "description": "Include pings of roles you hold (default no — busy servers ping roles a lot)"
+    },
+    {
+     "name": "bots",
+     "type": "boolean",
+     "required": false,
+     "description": "Include pings from bots (default no)"
+    }
+   ],
+   "signature": "/mentions [limit] [replies] [roles] [bots]",
+   "root": "mentions",
+   "cog": "mentions",
+   "permissions": [],
    "cooldown_seconds": null,
    "dm_allowed": false
   },
@@ -5240,14 +5267,6 @@
    "runtime_permissions": [],
    "server_owner_only": false
   },
-  "backfill-chat-levels": {
-   "cog": "economy",
-   "visibility_permissions": [],
-   "runtime_permissions": [
-    "administrator"
-   ],
-   "server_owner_only": false
-  },
   "server-notifications": {
    "cog": "economy",
    "visibility_permissions": [],
@@ -5580,6 +5599,12 @@
    "runtime_permissions": [
     "manage_guild"
    ],
+   "server_owner_only": false
+  },
+  "mentions": {
+   "cog": "mentions",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
    "server_owner_only": false
   },
   "msglog enable": {
