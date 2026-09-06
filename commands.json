@@ -648,6 +648,12 @@
       "required_permissions": [
         "administrator"
       ]
+    },
+    {
+      "name": "mentions",
+      "description": "Your latest pings with jump links — including deleted ones",
+      "cog": "mentions",
+      "required_permissions": []
     }
   ]
 }
