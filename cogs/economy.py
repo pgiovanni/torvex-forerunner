@@ -755,29 +755,23 @@ class Economy(commands.Cog):
         embed = discord.Embed(title=title, description="\n".join(lines) or "No data yet.", color=0xE74C3C)
         await interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-    # ── /backfill-chat-levels ─────────────────────────────────────────────────
-    @app_commands.command(name="backfill-chat-levels", description="[Admin] Sync all chat levels to RPG XP multipliers.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def backfill_chat_levels(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+    # ── chat-level → game XP transfer (no slash command since 2026-09-06) ────
+    # `/backfill-chat-levels` was a one-shot MEE6-migration tool (ran 7/5) that
+    # kept holding one of Discord's 100 top-level command slots. Paul's call:
+    # it belongs on the web dashboard as a "MEE6 transfer" area, not in the
+    # tree. The slot went to `/mentions`. The sync itself stays callable for
+    # that future web hook.
+    async def sync_chat_levels_to_game(self):
+        """Push every user's chat level to the game as XP multipliers.
+        Returns (synced, total) or (None, total) when the game API refused."""
         rows = await self.pool.fetch("SELECT discord_id, level FROM discord_users WHERE level > 0")
         if not rows:
-            await interaction.followup.send("No users found.", ephemeral=True)
-            return
+            return 0, 0
         payload = [{"discordId": r["discord_id"], "newLevel": r["level"]} for r in rows]
         status, data = await _api("POST", "/api/bot/game/sync-level-bulk", json=payload)
         if status == 200:
-            await interaction.followup.send(
-                f"✅ Backfilled **{data.get('synced', 0)}** / {len(rows)} users.",
-                ephemeral=True
-            )
-        else:
-            await interaction.followup.send("❌ Backfill failed.", ephemeral=True)
-
-    @backfill_chat_levels.error
-    async def backfill_error(self, interaction: discord.Interaction, error):
-        if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message("❌ Admin only.", ephemeral=True)
+            return data.get("synced", 0), len(rows)
+        return None, len(rows)
 
     # ── /server-notifications ─────────────────────────────────────────────────
     @app_commands.command(

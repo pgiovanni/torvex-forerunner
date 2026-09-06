@@ -47,6 +47,7 @@ from discord.ext import commands, tasks
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.security_config import get_config, set_config, is_enabled, all_enabled  # noqa: E402
 from utils.quiet_removals import is_quiet  # noqa: E402
+from utils import mentions as mention_index  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 DB_PATH = os.path.join(ROOT, "messages.db")
@@ -654,6 +655,9 @@ class ModLog(commands.Cog):
                        edited_ts REAL, old_content TEXT, new_content TEXT
                    )""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_edits_msg ON edits(message_id)")
+            # 2026-09-06: who-was-pinged index for /mentions — a content scan of the
+            # 2 GB archive took 24 s; this is one indexed read (utils/mentions.py).
+            mention_index.ensure_schema(c)
             # 2026-07-28: identity/lifecycle ledger. Embeds in a log channel are
             # NOT searchable — a 2025 investigation stalled because the only
             # record of a deleted account's names and numeric id lived inside
@@ -973,6 +977,8 @@ class ModLog(commands.Cog):
                       r.get("poll"), r.get("forward"),
                       r.get("deleted_ts"), r.get("deleted_by"), r.get("deleted_by_name"),
                       r.get("delete_kind")) for r in items])
+                # Same transaction as the archive rows they point at.
+                mention_index.write_mentions(c, items, self._recent)
         except Exception:
             for r in items:  # retry on next flush
                 self._pending.setdefault(r["message_id"], r)
@@ -1658,6 +1664,7 @@ class ModLog(commands.Cog):
                               (gid, text_cutoff)).rowcount
                 n += c.execute("DELETE FROM edits WHERE guild_id=? AND edited_ts<?",
                                (gid, text_cutoff)).rowcount
+                n += mention_index.sweep(c, gid, text_cutoff)
                 n += c.execute("DELETE FROM guild_events WHERE guild_id=? AND ts<?",
                                (gid, text_cutoff)).rowcount
                 n += c.execute("DELETE FROM command_log WHERE guild_id=? AND ts<?",
