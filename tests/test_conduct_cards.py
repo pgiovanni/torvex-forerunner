@@ -104,5 +104,64 @@ class LogCard(unittest.TestCase):
         self.assertIn("`shot.png` · 2.0 KB · `abcdef123456`", f["Evidence (1)"])
 
 
+class EvidenceButtons(unittest.TestCase):
+    """9/6: evidence must be one tap away from /warnings and the mod-log card."""
+
+    def _rows(self):
+        return [{"id": 7, "kind": "warn"}, {"id": 8, "kind": "note"}, {"id": 9, "kind": "warn"}]
+
+    def test_one_button_per_entry_with_files_only(self):
+        v = cd.evidence_view(self._rows(), {7: 2, 8: 1, 9: 0})
+        ids = [c.custom_id for c in v.children]
+        self.assertEqual(ids, ["conduct:ev:7", "conduct:ev:8"])
+        labels = [c.label for c in v.children]
+        self.assertEqual(labels, ["#7 · 2 files", "#8 · 1 file"])
+
+    def test_warn_is_red_note_is_grey(self):
+        v = cd.evidence_view(self._rows(), {7: 1, 8: 1})
+        styles = {c.custom_id: c.style for c in v.children}
+        self.assertEqual(styles["conduct:ev:7"], cd.discord.ButtonStyle.danger)
+        self.assertEqual(styles["conduct:ev:8"], cd.discord.ButtonStyle.secondary)
+
+    def test_no_evidence_means_no_view(self):
+        # an empty View on a message is a Discord API error, so it must be None
+        self.assertIsNone(cd.evidence_view(self._rows(), {7: 0, 8: 0, 9: 0}))
+        self.assertIsNone(cd.evidence_view([], {}))
+
+    def test_buttons_are_persistent(self):
+        v = cd.evidence_view(self._rows(), {7: 1})
+        self.assertIsNone(v.timeout)
+
+    def test_button_cap(self):
+        rows = [{"id": i, "kind": "warn"} for i in range(1, 40)]
+        v = cd.evidence_view(rows, {i: 1 for i in range(1, 40)})
+        self.assertEqual(len(v.children), cd.MAX_BUTTONS)
+
+    def test_custom_id_roundtrip_and_rejects_foreign(self):
+        self.assertEqual(cd.parse_evidence_custom_id(cd.evidence_custom_id(42)), 42)
+        for bad in ("rm:1:2", "conduct:ev:", "conduct:ev:abc", None, 7, "altguard:verify_panel"):
+            self.assertIsNone(cd.parse_evidence_custom_id(bad), bad)
+
+    def test_evidence_card_matches_slash_view(self):
+        entry = {"id": 7, "kind": "warn", "reason": "spam", "user_id": "1", "moderator_id": "2",
+                 "created_at": 1700000000.0, "cleared_at": None, "cleared_by": None,
+                 "cleared_reason": None}
+        files = [{"filename": "shot.png", "bytes": 2048, "sha256": "abcdef1234567890", "path": "x"}]
+        e = cd.evidence_card(entry, files)
+        self.assertEqual(e.title, "⚠️ Warning #7")
+        f = {x.name: x.value for x in e.fields}
+        self.assertIn("`shot.png` · 2.0 KB · sha256 `abcdef123456`", f["Evidence (1)"])
+        self.assertNotIn("Cleared", f)
+
+    def test_evidence_card_cleared(self):
+        entry = {"id": 8, "kind": "note", "reason": "helped", "user_id": "1", "moderator_id": "2",
+                 "created_at": 1700000000.0, "cleared_at": 1700001000.0, "cleared_by": "3",
+                 "cleared_reason": None}
+        e = cd.evidence_card(entry, [])
+        f = {x.name: x.value for x in e.fields}
+        self.assertIn("no reason given", f["Cleared"])
+        self.assertEqual(e.color.value, cd.CLEAR_COLOR)
+
+
 if __name__ == "__main__":
     unittest.main()
