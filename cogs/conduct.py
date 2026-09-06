@@ -22,6 +22,13 @@ Two exceptions to that ladder, both deliberate:
 
 Nothing here truly deletes except /conduct-forget. Clears are stamped with who
 and why and stay visible under `show_cleared`.
+
+Evidence is one tap away, not one command away (Paul, 9/6: "evidence needs to
+be easier to bring up from warnings"): /warnings and the mod-log card carry a
+📎 button per entry that has files, custom_id `conduct:ev:<entry_id>`. The
+buttons are answered by an `on_interaction` listener keyed on that prefix, so
+they keep working after a restart without any View being re-registered — a
+mod-log card from last month still opens.
 """
 import os
 import sys
@@ -60,7 +67,7 @@ def _cfg(guild_id) -> dict:
     }
 
 
-async def _log(guild, cfg, embed, files=None):
+async def _log(guild, cfg, embed, files=None, view=None):
     """Post to the conduct/mod log if one is configured. Never raises."""
     cid = cfg.get("log_channel_id")
     if not cid:
@@ -69,7 +76,7 @@ async def _log(guild, cfg, embed, files=None):
     if ch is None:
         return
     try:
-        await ch.send(embed=embed, files=files or [],
+        await ch.send(embed=embed, files=files or [], view=view,
                       allowed_mentions=discord.AllowedMentions.none())
     except (discord.Forbidden, discord.HTTPException):
         pass
@@ -219,6 +226,71 @@ def _human_bytes(n):
         n /= 1024.0
 
 
+EV_PREFIX = "conduct:ev:"
+MAX_BUTTONS = 25         # Discord: 5 rows x 5 buttons per message
+
+
+def evidence_custom_id(entry_id) -> str:
+    return f"{EV_PREFIX}{int(entry_id)}"
+
+
+def parse_evidence_custom_id(custom_id):
+    """entry id from a 📎 button's custom_id, or None if it isn't ours."""
+    if not isinstance(custom_id, str) or not custom_id.startswith(EV_PREFIX):
+        return None
+    tail = custom_id[len(EV_PREFIX):]
+    return int(tail) if tail.isdigit() else None
+
+
+def evidence_view(entries, counts_by_entry):
+    """One 📎 button per entry that has stored files — or None when nothing
+    on the page has evidence (a message with an empty View is a Discord error).
+
+    Pure: takes the rows /warnings already fetched plus {entry_id: file_count}.
+    Warnings get the red style so a page of mixed entries reads at a glance.
+    timeout=None + fixed custom_ids = the buttons outlive the bot process; the
+    on_interaction listener answers them, no View registration needed.
+    """
+    with_files = [e for e in entries if counts_by_entry.get(e["id"], 0) > 0]
+    if not with_files:
+        return None
+    view = discord.ui.View(timeout=None)
+    for e in with_files[:MAX_BUTTONS]:
+        n = counts_by_entry[e["id"]]
+        view.add_item(discord.ui.Button(
+            label=f"#{e['id']} · {n} file{'s' if n != 1 else ''}",
+            emoji="📎",
+            style=(discord.ButtonStyle.danger if e["kind"] == "warn"
+                   else discord.ButtonStyle.secondary),
+            custom_id=evidence_custom_id(e["id"])))
+    return view
+
+
+def evidence_card(entry, files_meta):
+    """The full-detail embed for one entry — shared by /evidence and the 📎
+    buttons so both paths always show the same thing."""
+    entry_id = entry["id"]
+    e = discord.Embed(
+        title=f"{'⚠️ Warning' if entry['kind'] == 'warn' else '📗 Note'} #{entry_id}",
+        description=entry["reason"],
+        color=CLEAR_COLOR if entry["cleared_at"] else
+        (WARN_COLOR if entry["kind"] == "warn" else NOTE_COLOR))
+    e.add_field(name="Member", value=f"<@{entry['user_id']}>\n`{entry['user_id']}`", inline=True)
+    e.add_field(name="Moderator", value=f"<@{entry['moderator_id']}>", inline=True)
+    e.add_field(name="When", value=f"<t:{int(entry['created_at'])}:F>", inline=True)
+    if entry["cleared_at"]:
+        e.add_field(name="Cleared",
+                    value=f"<t:{int(entry['cleared_at'])}:F> by <@{entry['cleared_by']}>\n"
+                          f"{entry['cleared_reason'] or 'no reason given'}", inline=False)
+    if files_meta:
+        e.add_field(
+            name=f"Evidence ({len(files_meta)})",
+            value="\n".join(f"`{m['filename']}` · {_human_bytes(m['bytes'])} · "
+                            f"sha256 `{(m['sha256'] or '')[:12]}`" for m in files_meta)[:1024],
+            inline=False)
+    return e
+
+
 class Conduct(commands.Cog):
     """Warnings, positive notes, and the evidence behind them."""
 
@@ -330,7 +402,8 @@ class Conduct(commands.Cog):
         e = log_card(member, interaction.user, kind, reason, nth, entry_id, c,
                      channel=interaction.channel, public=public, saved=saved,
                      silent=silent, dmed=(dmed if do_dm else None))
-        await _log(interaction.guild, cfg, e)
+        await _log(interaction.guild, cfg, e,
+                   view=evidence_view([{"id": entry_id, "kind": kind}], {entry_id: len(saved)}))
 
     @app_commands.command(name="warn", description="Warn a member and record it, with optional evidence.")
     @app_commands.describe(
@@ -393,6 +466,7 @@ class Conduct(commands.Cog):
         e.description = (f"**{c['warns']}** standing warning(s) · **{c['notes']}** note(s)"
                          + (f" · {c['cleared']} cleared" if c["cleared"] else ""))
 
+        view = None
         if not rows:
             e.add_field(name="​",
                         value="Nothing on record." if not show_cleared
@@ -402,10 +476,18 @@ class Conduct(commands.Cog):
             counts_by_entry = {r["id"]: len(store.evidence_for(r["id"])) for r in shown}
             body = "\n\n".join(_fmt_entry(r, counts_by_entry[r["id"]]) for r in shown)
             e.add_field(name=f"Entries ({len(shown)} of {len(rows)})", value=body[:1024], inline=False)
+            # Evidence buttons only for mods — same gate as /evidence. A member
+            # reading their own record sees the 📎 marks, not the files.
+            if interaction.user.guild_permissions.moderate_members:
+                view = evidence_view(shown, counts_by_entry)
+            foot = []
+            if view:
+                foot.append("tap a 📎 button to open that entry's evidence")
             if len(rows) > PAGE:
-                e.set_footer(text=f"{len(rows) - PAGE} older entries not shown · "
-                                  "/evidence <id> for one in full")
-        await interaction.response.send_message(embed=e, ephemeral=True)
+                foot.append(f"{len(rows) - PAGE} older entries not shown · /evidence <id> for one in full")
+            if foot:
+                e.set_footer(text=" · ".join(foot))
+        await interaction.response.send_message(embed=e, ephemeral=True, view=view)
 
     @app_commands.command(name="evidence", description="Show one record entry in full, with its stored files.")
     @app_commands.describe(entry_id="The #id from /warnings")
@@ -413,6 +495,11 @@ class Conduct(commands.Cog):
     @app_commands.checks.has_permissions(moderate_members=True)
     @app_commands.guild_only()
     async def evidence(self, interaction: discord.Interaction, entry_id: int):
+        await self._send_evidence(interaction, entry_id)
+
+    async def _send_evidence(self, interaction, entry_id):
+        """Ephemeral full view of one entry with its files re-attached.
+        Shared by /evidence and the 📎 buttons."""
         entry = store.get_entry(interaction.guild_id, entry_id)
         if not entry:
             return await interaction.response.send_message(
@@ -420,19 +507,7 @@ class Conduct(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
         files_meta = store.evidence_for(entry_id)
-
-        e = discord.Embed(
-            title=f"{'⚠️ Warning' if entry['kind'] == 'warn' else '📗 Note'} #{entry_id}",
-            description=entry["reason"],
-            color=CLEAR_COLOR if entry["cleared_at"] else
-            (WARN_COLOR if entry["kind"] == "warn" else NOTE_COLOR))
-        e.add_field(name="Member", value=f"<@{entry['user_id']}>\n`{entry['user_id']}`", inline=True)
-        e.add_field(name="Moderator", value=f"<@{entry['moderator_id']}>", inline=True)
-        e.add_field(name="When", value=f"<t:{int(entry['created_at'])}:F>", inline=True)
-        if entry["cleared_at"]:
-            e.add_field(name="Cleared",
-                        value=f"<t:{int(entry['cleared_at'])}:F> by <@{entry['cleared_by']}>\n"
-                              f"{entry['cleared_reason'] or 'no reason given'}", inline=False)
+        e = evidence_card(entry, files_meta)
 
         attach, missing = [], []
         for m in files_meta:
@@ -440,16 +515,28 @@ class Conduct(commands.Cog):
                 attach.append(discord.File(m["path"], filename=m["filename"]))
             except OSError:
                 missing.append(m["filename"])
-        if files_meta:
-            e.add_field(
-                name=f"Evidence ({len(files_meta)})",
-                value="\n".join(f"`{m['filename']}` · {_human_bytes(m['bytes'])} · "
-                                f"sha256 `{(m['sha256'] or '')[:12]}`" for m in files_meta)[:1024],
-                inline=False)
         if missing:
             e.add_field(name="⚠️ Missing from disk", value=", ".join(missing)[:1024], inline=False)
 
         await interaction.followup.send(embed=e, files=attach, ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        """Answer the 📎 buttons. Keyed on custom_id prefix rather than a
+        registered View so cards posted before a restart still work."""
+        if interaction.type != discord.InteractionType.component:
+            return
+        entry_id = parse_evidence_custom_id((interaction.data or {}).get("custom_id"))
+        if entry_id is None or interaction.guild is None:
+            return
+        perms = getattr(interaction.user, "guild_permissions", None)
+        if not perms or not perms.moderate_members:
+            return await interaction.response.send_message(
+                "Evidence is for moderators (Timeout Members).", ephemeral=True)
+        try:
+            await self._send_evidence(interaction, entry_id)
+        except discord.HTTPException:
+            pass
 
     # ── clearing ──────────────────────────────────────────────────────────────
 
