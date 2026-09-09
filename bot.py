@@ -14,7 +14,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+# strip_after_prefix: "! slime" works the same as "!slime" (Paul, 9/8).
+bot = commands.Bot(command_prefix="!", intents=intents, strip_after_prefix=True)
 
 @bot.event
 async def on_message(message):
