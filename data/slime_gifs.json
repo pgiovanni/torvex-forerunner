@@ -1,0 +1,10 @@
+{
+  "_comment": "!slime — SFW slime GIFs (Klipy page links; Discord unfurls them). Add/remove URLs here, no code change needed. ping_user_id = who gets pinged once per !slime.",
+  "ping_user_id": 1140944880638640161,
+  "gifs": [
+    "https://klipy.com/gifs/elmo-slime-slime",
+    "https://klipy.com/gifs/slimecicle-dance-1",
+    "https://klipy.com/gifs/come-down-today-and-try-some-corn-meme",
+    "https://klipy.com/gifs/lasllen-nickelodeon"
+  ]
+}
