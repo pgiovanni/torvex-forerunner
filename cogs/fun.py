@@ -5,6 +5,8 @@ import random
 import json
 import asyncio
 
+from utils import slime as slime_util
+
 with open("data/roasts.json") as f:
     ROASTS = json.load(f)
 
@@ -252,6 +254,7 @@ class Connect4ChallengeView(discord.ui.View):
 class Fun(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._slime_last: dict[int, str] = {}  # channel id -> last GIF posted
 
     @app_commands.command(name="roast", description="Roast someone. All in good fun.")
     @app_commands.checks.cooldown(1, 10, key=lambda i: (i.guild_id, i.user.id))
@@ -303,6 +306,50 @@ class Fun(commands.Cog):
             content=f"{opponent.mention}, {interaction.user.mention} challenges you to Connect 4!",
             view=view
         )
+
+    # --- !slime (prefix command — no slash-tree slot used) ---
+
+    @commands.command(name="slime", help="Slime GIF, plus one ping for slime.")
+    @commands.guild_only()
+    @commands.cooldown(1, 5, commands.BucketType.channel)
+    async def slime(self, ctx: commands.Context):
+        """Post a random SFW slime GIF and ping the configured member exactly once."""
+        try:
+            cfg = slime_util.load_config()
+            gif = slime_util.pick(cfg.gifs, last=self._slime_last.get(ctx.channel.id))
+        except Exception as e:
+            print(f"[slime] config error: {e}")
+            return
+        self._slime_last[ctx.channel.id] = gif
+
+        # Ping only if that member is actually in THIS server (multi-guild bot).
+        target = None
+        if cfg.ping_user_id:
+            target = ctx.guild.get_member(cfg.ping_user_id)
+            if target is None:
+                try:
+                    target = await ctx.guild.fetch_member(cfg.ping_user_id)
+                except (discord.NotFound, discord.HTTPException):
+                    target = None
+
+        await ctx.send(
+            slime_util.build_content(gif, target.mention if target else None),
+            allowed_mentions=discord.AllowedMentions(
+                users=[target] if target else False, roles=False, everyone=False, replied_user=False
+            ),
+        )
+
+    @slime.error
+    async def slime_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.CommandOnCooldown):
+            try:
+                await ctx.send(f"Slime is cooling down — try again in {error.retry_after:.1f}s.", delete_after=5)
+            except discord.HTTPException:
+                pass
+        elif isinstance(error, commands.NoPrivateMessage):
+            pass
+        else:
+            raise error
 
     @roast.error
     @eight_ball.error

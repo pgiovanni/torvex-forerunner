@@ -34,7 +34,7 @@
     },
     {
       "name": "fun",
-      "description": "Fun commands — roast, 8ball, tictactoe, connect4",
+      "description": "Fun commands — roast, 8ball, tictactoe, connect4; !slime (prefix)",
       "cog": "fun",
       "cooldown_seconds": 0
     },
