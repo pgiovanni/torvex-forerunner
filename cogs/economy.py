@@ -12,7 +12,7 @@ import logging
 from datetime import date
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from utils import security_config, level_notify  # noqa: E402
+from utils import security_config, level_notify, leaderboard  # noqa: E402
 
 log = logging.getLogger("economy")
 
@@ -670,37 +670,44 @@ class Economy(commands.Cog):
         await interaction.response.send_message(msg, ephemeral=True)
 
     # ── /levels ───────────────────────────────────────────────────────────────
-    @app_commands.command(name="chat-levels", description="Top 10 members by chat level, Peepo Bucks, and Regular Bucks.")
+    @app_commands.command(name="chat-levels", description="Top 10 members by chat level and XP, with their bucks.")
     @app_commands.describe(scope="global = all servers, local = this server only (default)",
-                           sort="rank by experience (default) or Peepo Bucks")
+                           sort="rank by level & XP (default) or bucks (Peepo Bucks at home, Server Bucks elsewhere)")
     @app_commands.choices(scope=[
         app_commands.Choice(name="local (this server)", value="local"),
         app_commands.Choice(name="global (all servers)", value="global"),
     ], sort=[
-        app_commands.Choice(name="experience level", value="xp"),
-        app_commands.Choice(name="peepo bucks", value="bucks"),
+        app_commands.Choice(name="level & XP", value="xp"),
+        app_commands.Choice(name="bucks", value="bucks"),
     ])
     async def levels(self, interaction: discord.Interaction, scope: str = "local", sort: str = "xp"):
-        medals = ["🥇", "🥈", "🥉"]
+        # Deferred: a cold member-cache chunk on a big server can pass 3 s.
+        await interaction.response.defer()
         by_bucks = sort == "bucks"
+        # Peepo Bucks only exist in the home community — the card shows them
+        # there and nowhere else (utils/leaderboard.py has the rule).
+        is_home = interaction.guild_id == PEEPOS_GUILD_ID
 
         if scope == "global":
-            order = "peepo_bucks" if by_bucks else "xp"
+            order = leaderboard.order_clause(by_bucks, is_home, local=False)
             rows = await self.pool.fetch(
-                f"SELECT discord_id, level, peepo_bucks, regular_bucks FROM discord_users ORDER BY {order} DESC LIMIT 10"
+                f"SELECT discord_id, level, xp, peepo_bucks, regular_bucks FROM discord_users ORDER BY {order} LIMIT 10"
             )
             title = "⭐ Leaderboard — Global"
-            lines = [
-                f"{medals[i] if i < 3 else f'{i+1}.'} <@{r['discord_id']}> — Lv.{r['level']} | {r['peepo_bucks']:,} 💰 | {r['regular_bucks']:,} 💵"
-                for i, r in enumerate(rows)
-            ]
         else:
-            guild_id = str(interaction.guild_id)
-            member_ids = [str(m.id) for m in interaction.guild.members if not m.bot]
-            # Pull bucks from discord_users, levels from guild_xp. Peepo Bucks are
-            # a global balance, so the bucks sort ranks the same numbers here —
-            # just restricted to this server's members.
-            order = "peepo_bucks" if by_bucks else "g.xp"
+            guild = interaction.guild
+            if guild is None:
+                await interaction.followup.send("Local scope only works in a server.", ephemeral=True)
+                return
+            # Rank among CURRENT members only — make sure the member cache is
+            # complete before we build that population.
+            if not guild.chunked:
+                await guild.chunk()
+            guild_id = str(guild.id)
+            member_ids = [str(m.id) for m in guild.members if not m.bot]
+            # Levels/XP/Server Bucks from guild_xp; Peepo Bucks are a global
+            # (home-only) balance pulled from discord_users.
+            order = leaderboard.order_clause(by_bucks, is_home, local=True)
             rows = await self.pool.fetch(f"""
                 SELECT g.discord_id, g.level, g.xp,
                        COALESCE(u.peepo_bucks, 0)  AS peepo_bucks,
@@ -708,17 +715,14 @@ class Economy(commands.Cog):
                 FROM guild_xp g
                 LEFT JOIN discord_users u ON u.discord_id = g.discord_id
                 WHERE g.guild_id = $1 AND g.discord_id = ANY($2)
-                ORDER BY {order} DESC LIMIT 10
+                ORDER BY {order} LIMIT 10
             """, guild_id, member_ids)
-            title = f"⭐ Leaderboard — {interaction.guild.name}"
-            lines = [
-                f"{medals[i] if i < 3 else f'{i+1}.'} <@{r['discord_id']}> — Lv.{r['level']} | {r['peepo_bucks']:,} 💰 | {r['regular_bucks']:,} 💵"
-                for i, r in enumerate(rows)
-            ]
+            title = f"⭐ Leaderboard — {guild.name}"
+        lines = [leaderboard.format_line(i, r, is_home) for i, r in enumerate(rows)]
         if by_bucks:
-            title += " · by Peepo Bucks 💰"
+            title += f" · by {leaderboard.bucks_label(is_home)}"
         embed = discord.Embed(title=title, description="\n".join(lines) or "No data yet.", color=0x7289DA)
-        await interaction.response.send_message(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     # ── /rpg-leaderboard ──────────────────────────────────────────────────────
     @app_commands.command(name="rpg-leaderboard", description="Top 10 Torvex RPG players by level, coins, and kills.")
