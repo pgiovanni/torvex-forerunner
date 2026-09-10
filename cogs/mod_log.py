@@ -344,6 +344,25 @@ def poll_meta(poll):
             if getattr(poll, "expires_at", None) else None}
 
 
+_USER_MESSAGE_TYPES = {discord.MessageType.default, discord.MessageType.reply}
+
+
+def archive_text(message):
+    """What the archive stores as `content`. User messages: their text. System
+    messages (join, boost, pin, thread-start …) have an EMPTY `content` —
+    discord.py renders their line as `system_content` — so a ban's delete-days
+    cascade sweeping "X joined the server" used to leave a blank transcript
+    line that read like lost text (monki780, 2026-09-10). Keep the rendered
+    line, tagged, so the row is never empty for no visible reason."""
+    content = getattr(message, "content", None) or ""
+    mtype = getattr(message, "type", None)
+    if content or mtype in _USER_MESSAGE_TYPES:
+        return content
+    sys_text = (getattr(message, "system_content", None) or "").strip()
+    tag = f"[system: {getattr(mtype, 'name', mtype)}]"
+    return f"{tag} {sys_text}" if sys_text else tag
+
+
 def forward_meta(message):
     """Metadata for a forwarded message (message_snapshots) — the other
     message type whose own content is empty. The forwarded text lives in the
@@ -1028,7 +1047,7 @@ class ModLog(commands.Cog):
             "bot": 1 if message.author.bot else 0,
             "webhook": 1 if message.webhook_id else 0,
             "created_ts": message.created_at.timestamp(),
-            "content": message.content or "",
+            "content": archive_text(message),
             "reply_to": str(message.reference.message_id)
             if message.reference and message.reference.message_id else None,
             "attachments": json.dumps(atts) if atts else None,
@@ -1222,7 +1241,7 @@ class ModLog(commands.Cog):
                    "channel_id": str(payload.channel_id),
                    "author_id": str(m.author.id), "author_name": str(m.author),
                    "bot": 1 if m.author.bot else 0, "webhook": 1 if m.webhook_id else 0,
-                   "created_ts": m.created_at.timestamp(), "content": m.content or "",
+                   "created_ts": m.created_at.timestamp(), "content": archive_text(m),
                    "reply_to": str(m.reference.message_id)
                    if m.reference and m.reference.message_id else None,
                    # Names/sizes only — nothing is fetched or written to disk.
