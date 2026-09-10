@@ -1180,7 +1180,7 @@
   },
   {
    "path": "chat-levels",
-   "description": "Top 10 members by chat level, Peepo Bucks, and Regular Bucks.",
+   "description": "Top 10 members by chat level and XP, with their bucks.",
    "params": [
     {
      "name": "scope",
@@ -1196,10 +1196,10 @@
      "name": "sort",
      "type": "string",
      "required": false,
-     "description": "rank by experience (default) or Peepo Bucks",
+     "description": "rank by level & XP (default) or bucks (Peepo Bucks at home, Server Bucks elsewhere)",
      "choices": [
-      "experience level",
-      "peepo bucks"
+      "level & XP",
+      "bucks"
      ]
     }
    ],

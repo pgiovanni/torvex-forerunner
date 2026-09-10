@@ -2132,7 +2132,7 @@ Check your Peepo Bucks and level.
 
 #### `/chat-levels`
 
-Top 10 members by chat level, Peepo Bucks, and Regular Bucks.
+Top 10 members by chat level and XP, with their bucks.
 
 ```
 /chat-levels [scope] [sort]
@@ -2143,7 +2143,7 @@ Top 10 members by chat level, Peepo Bucks, and Regular Bucks.
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `scope` | string | No | global = all servers, local = this server only (default) *(one of: `local (this server)`, `global (all servers)`)* |
-| `sort` | string | No | rank by experience (default) or Peepo Bucks *(one of: `experience level`, `peepo bucks`)* |
+| `sort` | string | No | rank by level & XP (default) or bucks (Peepo Bucks at home, Server Bucks elsewhere) *(one of: `level & XP`, `bucks`)* |
 
 #### `/check-perms`
 
