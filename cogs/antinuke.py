@@ -936,14 +936,14 @@ class AntiNuke(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(count="role grants allowed", window="within this many seconds")
     async def role_grants(self, interaction: discord.Interaction,
-                          count: app_commands.Range[int, 1, 100], window: app_commands.Range[int, 1, 600]):
+                          count: app_commands.Range[int, 1, 100], window: app_commands.Range[int, 1, 86400]):
         await self._set_vector(interaction, "member_role", count, window)
 
     @group.command(name="role-removes", description="Limit how many role-REMOVES an actor may do before it's a nuke")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(count="role removals allowed", window="within this many seconds")
     async def role_removes(self, interaction: discord.Interaction,
-                           count: app_commands.Range[int, 1, 100], window: app_commands.Range[int, 1, 600]):
+                           count: app_commands.Range[int, 1, 100], window: app_commands.Range[int, 1, 86400]):
         await self._set_vector(interaction, "role_remove", count, window)
 
     @group.command(name="set-limit", description="Set the rate limit for any destructive vector")
@@ -952,7 +952,7 @@ class AntiNuke(commands.Cog):
     @app_commands.choices(vector=[
         app_commands.Choice(name=lbl, value=key) for key, lbl in VECTOR_LABELS.items()])
     async def set_limit(self, interaction: discord.Interaction, vector: app_commands.Choice[str],
-                        count: app_commands.Range[int, 1, 100], window: app_commands.Range[int, 1, 600]):
+                        count: app_commands.Range[int, 1, 100], window: app_commands.Range[int, 1, 86400]):
         await self._set_vector(interaction, vector.value, count, window)
 
     @group.command(name="window-open",
