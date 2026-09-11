@@ -2107,6 +2107,34 @@
    "dm_allowed": false
   },
   {
+   "path": "hitlist pass",
+   "description": "AutoMod: let a member post links for a short while (0 minutes = revoke).",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": true,
+     "description": "Who gets the pass"
+    },
+    {
+     "name": "minutes",
+     "type": "integer",
+     "required": false,
+     "description": "How long they may post links (1–1440). 0 revokes an existing pass.",
+     "min": 0,
+     "max": 1440
+    }
+   ],
+   "signature": "/hitlist pass <member> [minutes]",
+   "root": "hitlist",
+   "cog": "link_guard",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "hitlist remove",
    "description": "Remove a domain: drop a guild-added one, or allow-list a base one.",
    "params": [
@@ -5590,6 +5618,14 @@
    "visibility_permissions": [],
    "runtime_permissions": [
     "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "hitlist pass": {
+   "cog": "link_guard",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_messages"
    ],
    "server_owner_only": false
   },

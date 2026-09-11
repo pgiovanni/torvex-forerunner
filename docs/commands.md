@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **227 commands** (100 top-level, the rest subcommands) across 40 cogs
+- **228 commands** (100 top-level, the rest subcommands) across 40 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -582,6 +582,21 @@ Show LinkGuard status + this server's domain counts.
 **Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
 
 *No parameters.*
+
+#### `/hitlist pass`
+
+AutoMod: let a member post links for a short while (0 minutes = revoke).
+
+```
+/hitlist pass <member> [minutes]
+```
+
+**Access:** Requires **Manage Messages** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `member` | user | Yes | Who gets the pass |
+| `minutes` | integer | No | How long they may post links (1–1440). 0 revokes an existing pass. *(range 0–1440)* |
 
 #### `/hitlist remove`
 

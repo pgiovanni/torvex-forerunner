@@ -173,6 +173,23 @@ DEFAULTS = {
     "mod_require_reason": 0,         # refuse ban/kick/timeout with no reason given
     "mod_default_timeout_min": 60,   # /timeout default when no duration is passed
     "mod_ban_delete_days": 0,        # delete this many days of the banned user's messages (0-7)
+    # ── AutoMod (Moderation card, 2026-09-10) — utils/automod.py ─────────────
+    # Link policy: what happens when an ORDINARY member posts any link (the
+    # malicious-domain hitlist is LinkGuard's job and runs first). Staff,
+    # exempt roles/channels, Discord/Tenor/Giphy domains and members holding a
+    # `/hitlist pass` are let through.
+    "automod_links_mode": "off",           # off | delete | timeout
+    "automod_links_timeout_min": 10,       # timeout length in "timeout" mode
+    "automod_links_allow_domains": [],     # extra allowed domains (suffix match)
+    "automod_links_exempt_roles": [],      # role ids that may always post links
+    "automod_links_exempt_channels": [],   # channels where links are fine (links/media channels)
+    "automod_links_notice": 1,             # self-deleting "links aren't allowed here" line in-channel
+    # Raid detection: N human joins inside W seconds.
+    "automod_raid_enabled": 0,
+    "automod_raid": [10, 30],              # [joins, seconds]
+    "automod_raid_action": "alert",        # alert | invites_off | quarantine | kick
+    "automod_raid_invites_off_min": 30,    # invites_off: re-enable after this many minutes
+    "automod_raid_cooldown_min": 10,       # joiners during this window after a trip get the same response
     # ── conduct record (/warn /note /warnings) — utils/conduct.py ─────────────
     # The commands are always available (Discord permissions gate them); these
     # only govern behaviour. Clearing is always a soft delete that keeps who did
