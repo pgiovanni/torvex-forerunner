@@ -61,8 +61,9 @@ MEDIA_DIR = os.path.join(ROOT, "media_cache")
 #
 #   TEXT IS NEVER AGED OUT — any tier (Paul, 2026-09-10). Message text, edits,
 #   the mention index, the structure ledger, the command log and the identity
-#   ledger stay until the guild is purged (`/msglog forget`, `/msglog
-#   revoke-terms`, bot removed). The trigger: Dismiss's #general was wiped back
+#   ledger stay until somebody ASKS: `/msglog revoke-terms` (that server's
+#   Manage Server) or `/msglog forget <uid>` (erasure request). Leaving the
+#   guild does NOT purge. The trigger: Dismiss's #general was wiped back
 #   to the day the bot arrived, and the free 24h text window had already thrown
 #   away everything but the last day — an audit gap the log exists to close.
 #   Size was weighed and accepted. The tiers below govern FILES only.
@@ -1674,7 +1675,8 @@ class ModLog(commands.Cog):
     def _sweep_rows(self, now):
         """Blocking. Text rows are never aged out — messages, edits, mentions,
         guild_events, command_log and identity_events all stay until the guild
-        is purged (`/msglog forget`, `/msglog revoke-terms`, bot removed).
+        is purged on request (`/msglog forget`, `/msglog revoke-terms`);
+        the bot leaving a guild does not purge.
         Kept as the sweeper's hook so the tier logic has one place to live;
         returns {} because nothing is swept by time. (Until 2026-09-10 this
         deleted free-tier text after 24h — Dismiss's #general wipe showed that
