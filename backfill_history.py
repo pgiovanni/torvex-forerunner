@@ -11,7 +11,8 @@ download (old attachments' CDN URLs are recorded and stay fetchable while the
 message exists).
 
 Run on the VPS in /opt/peepos-reclaimer:
-    venv/bin/python backfill_history.py [--per-channel N]
+    venv/bin/python backfill_history.py [--per-channel N] [--since YYYY-MM-DD]
+(run as the peepos user so the WAL files stay writable by the live bot)
 """
 import asyncio
 import json
@@ -91,7 +92,9 @@ async def req(session, url, params=None):
     return None
 
 
-async def crawl(session, db, lock, cid, label, per_channel):
+async def crawl(session, db, lock, cid, label, per_channel, since_ts=0.0):
+    """Newest → oldest. `since_ts` stops the walk once a page dips below it,
+    so a gap sweep over the last N weeks doesn't re-read two years of history."""
     before, n = None, 0
     batch = []
     while True:
@@ -101,17 +104,22 @@ async def crawl(session, db, lock, cid, label, per_channel):
         msgs = await req(session, f"{API}/channels/{cid}/messages", params=params)
         if not msgs:
             break
+        reached_since = False
         for m in msgs:
+            row = _row(m, GUILD_ID)
+            if since_ts and row[7] is not None and row[7] < since_ts:
+                reached_since = True
+                break
             n += 1
             m.setdefault("channel_id", cid)
-            batch.append(_row(m, GUILD_ID))
+            batch.append(row)
         if len(batch) >= 1000:
             async with lock:
                 db.executemany(INSERT, batch)
                 db.commit()
             batch = []
         before = msgs[-1]["id"]
-        if len(msgs) < 100 or (per_channel and n >= per_channel):
+        if reached_since or len(msgs) < 100 or (per_channel and n >= per_channel):
             break
     if batch:
         async with lock:
@@ -123,7 +131,12 @@ async def crawl(session, db, lock, cid, label, per_channel):
 async def main():
     args = sys.argv[1:]
     per_channel = int(args[args.index("--per-channel") + 1]) if "--per-channel" in args else 0
+    # --since YYYY-MM-DD: gap sweep — only walk back this far (UTC midnight).
+    since_ts = 0.0
+    if "--since" in args:
+        since_ts = datetime.fromisoformat(args[args.index("--since") + 1] + "T00:00:00+00:00").timestamp()
     db = _conn()
+    before_rows = db.execute("SELECT COUNT(*) FROM messages WHERE guild_id=?", (GUILD_ID,)).fetchone()[0]
     if not db.execute("SELECT name FROM sqlite_master WHERE name='messages'").fetchone():
         raise SystemExit("messages table missing — start the bot once (mod_log cog creates the schema)")
     lock = asyncio.Lock()
@@ -142,14 +155,15 @@ async def main():
                     targets.append((t["id"], "thread:" + t.get("name", "?")))
 
         print(f"backfilling {len(targets)} channels/threads "
-              f"(per_channel={per_channel or 'ALL'})...", flush=True)
+              f"(per_channel={per_channel or 'ALL'}, since={args[args.index('--since') + 1] if since_ts else 'BEGINNING'})...",
+              flush=True)
         done = [0]
         sem = asyncio.Semaphore(8)
 
         async def worker(cid, label):
             async with sem:
                 try:
-                    n = await crawl(session, db, lock, cid, label, per_channel)
+                    n = await crawl(session, db, lock, cid, label, per_channel, since_ts)
                 except Exception as e:
                     done[0] += 1
                     print(f"  ERR {label}: {e}  [{done[0]}/{len(targets)}]", flush=True)
@@ -160,8 +174,10 @@ async def main():
 
         counts = await asyncio.gather(*(worker(cid, label) for cid, label in targets))
     total = db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    after_rows = db.execute("SELECT COUNT(*) FROM messages WHERE guild_id=?", (GUILD_ID,)).fetchone()[0]
     db.close()
-    print(f"\nDONE. crawled {sum(counts)} messages; archive now holds {total} rows.", flush=True)
+    print(f"\nDONE. crawled {sum(counts)} messages; archive now holds {total} rows; "
+          f"NEW rows for this guild (the gaps): {after_rows - before_rows}.", flush=True)
 
 
 asyncio.run(main())
