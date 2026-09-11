@@ -22,6 +22,7 @@ destructive vectors and the admin-grant instant rule stay armed against bots,
 because a hijacked or malicious bot nuking is exactly the threat (Jalapeño).
 Per-guild `antinuke_trusted_bots` grants a specific bot full exemption.
 """
+import asyncio
 import os
 import sys
 import time
@@ -38,6 +39,7 @@ import quarantine_store as qstore  # shared with AltGuard — stores stripped ro
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.security_config import get_config, set_config, is_enabled, all_enabled
 from utils import antinuke_window as awin
+from utils import automod as am
 
 log = logging.getLogger("antinuke")
 
@@ -159,6 +161,10 @@ class AntiNuke(commands.Cog):
         self.everyone = defaultdict(deque)                      # (gid, uid) -> ts
         self.cooldown = {}                                      # (gid, uid, key) -> last trip ts
         self.ban_victims = defaultdict(deque)                  # (gid, executor) -> (ts, victim_uid)
+        # AutoMod raid detection (Moderation card, 2026-09-10)
+        self.joins = defaultdict(list)                          # gid -> [(ts, member_id)]
+        self.raid_until = {}                                    # gid -> cooldown end ts (raid "in progress")
+        self._invite_resume = {}                                # gid -> asyncio.Task re-enabling invites
 
     async def cog_load(self):
         self.window_watch.start()
@@ -723,11 +729,115 @@ class AntiNuke(commands.Cog):
         tail = " — reverted" if reverted else (" (revert FAILED)" if self._enforce(cfg) else "")
         await self._respond_strip(after.guild, user, f"granted nuke perms to @{after.name}{tail}", cfg)
 
+    # ----------------------------------------------------------- raid detection
+    def _automod_log(self, guild, cfg):
+        cid = am.log_channel_id(cfg)
+        return guild.get_channel(cid) if cid else None
+
+    async def _raid_apply(self, guild, members, action, cfg):
+        """The configured response, applied to a batch of raid joiners.
+        Returns a short human summary."""
+        done, failed = 0, 0
+        if action == "quarantine":
+            for m in members:
+                ok = await self._quarantine_offender(guild, m, "raid joiner", cfg)
+                done, failed = done + ok, failed + (not ok)
+            return f"quarantined {done}" + (f", {failed} failed" if failed else "")
+        if action == "kick":
+            for m in members:
+                try:
+                    await m.kick(reason="AutoMod: join raid")
+                    done += 1
+                except (discord.Forbidden, discord.HTTPException):
+                    failed += 1
+            return f"kicked {done}" + (f", {failed} failed" if failed else "")
+        if action == "invites_off":
+            mins = int(cfg.get("automod_raid_invites_off_min", 30) or 30)
+            try:
+                await guild.edit(invites_disabled=True, reason="AutoMod: join raid — invites paused")
+            except (discord.Forbidden, discord.HTTPException, TypeError):
+                return "pausing invites FAILED (needs Manage Server)"
+            old = self._invite_resume.pop(guild.id, None)
+            if old:
+                old.cancel()
+
+            async def _resume():
+                await asyncio.sleep(mins * 60)
+                try:
+                    await guild.edit(invites_disabled=False, reason="AutoMod: raid window over — invites resumed")
+                    ch = self._automod_log(guild, get_config(guild.id))
+                    if ch:
+                        await ch.send("📨 Invites resumed after the raid pause.")
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+                self._invite_resume.pop(guild.id, None)
+            self._invite_resume[guild.id] = asyncio.create_task(_resume())
+            return f"invites paused for {mins} min"
+        return "alert only"
+
+    async def _track_join(self, member):
+        """Human join → raid bookkeeping. Trips once per cooldown; joiners
+        inside the cooldown after a trip get the same response."""
+        guild = member.guild
+        cfg = get_config(guild.id)
+        if not cfg.get("automod_raid_enabled"):
+            return
+        gid, now = guild.id, time.time()
+        count, window = am.raid_window(cfg)
+        action = am.raid_action(cfg)
+        cooldown = int(cfg.get("automod_raid_cooldown_min", 10) or 10) * 60
+        joins = [(t, mid) for t, mid in self.joins[gid] if t >= now - max(window, cooldown)]
+        joins.append((now, member.id))
+        self.joins[gid] = joins
+        ch = self._automod_log(guild, cfg)
+        in_raid = self.raid_until.get(gid, 0) > now
+        if in_raid:
+            summary = await self._raid_apply(guild, [member], action, cfg) if action != "invites_off" else "invites already paused"
+            if ch:
+                try:
+                    await ch.send(f"🚨 Raid continues: {member.mention} (`{member.id}`, account "
+                                  f"<t:{int(member.created_at.timestamp())}:R>) — {summary}",
+                                  allowed_mentions=discord.AllowedMentions.none())
+                except discord.HTTPException:
+                    pass
+            return
+        if not am.raid_tripped([t for t, _ in joins], count, window, now):
+            return
+        self.raid_until[gid] = now + cooldown
+        burst_ids = [mid for t, mid in joins if t >= now - window]
+        burst = [m for m in (guild.get_member(i) for i in burst_ids) if m is not None]
+        young = sum(1 for m in burst if (now - m.created_at.timestamp()) < 7 * 86400)
+        summary = await self._raid_apply(guild, burst, action, cfg)
+        if ch is None:
+            return
+        lines = [f"{m.mention} `{m.id}` · account <t:{int(m.created_at.timestamp())}:R>" for m in burst[:15]]
+        if len(burst) > 15:
+            lines.append(f"… +{len(burst) - 15} more")
+        embed = discord.Embed(
+            title=f"🚨 Join raid — {len(burst)} joins in {window}s",
+            color=0xE74C3C,
+            description="\n".join(lines) or "(members not cached)")
+        embed.add_field(name="Response", value=summary, inline=True)
+        embed.add_field(name="Accounts < 7 days", value=f"{young}/{len(burst)}", inline=True)
+        embed.add_field(name="Raid window", value=f"next {cooldown // 60} min: same response to every join", inline=False)
+        embed.set_footer(text="Threshold + response: dashboard → Moderation → AutoMod — raids")
+        try:
+            await ch.send(content=self._ping_prefix(cfg), embed=embed,
+                          allowed_mentions=discord.AllowedMentions(everyone=True, roles=True, users=False))
+        except discord.HTTPException:
+            pass
+
     @commands.Cog.listener()
     async def on_member_join(self, member):
+        if not member.bot:
+            try:
+                await self._track_join(member)
+            except Exception:
+                logging.getLogger("antinuke").exception("raid tracking failed")
+            return
         # bot added to the server = classic one-click nuke vector. Only trusted
         # users (owner/whitelist) may add bots; anyone else -> kick the bot.
-        if not member.bot or not is_enabled(member.guild.id, "antinuke"):
+        if not is_enabled(member.guild.id, "antinuke"):
             return
         cfg = get_config(member.guild.id)
         adder = await self._executor(member.guild, "bot_add", member.id)

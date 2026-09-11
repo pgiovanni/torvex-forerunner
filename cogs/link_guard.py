@@ -65,6 +65,7 @@ import quarantine_store as qstore  # shared with AntiNuke/AltGuard — /altguard
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.security_config import get_config, set_config, is_enabled
+from utils import automod as am
 
 log = logging.getLogger("link_guard")
 
@@ -430,6 +431,58 @@ def _init_tripdb():
                    member_count INTEGER, is_foreign INTEGER)"""
         )
         c.execute("CREATE INDEX IF NOT EXISTS idx_invite_user ON invite_posts(guild_id, user_id, ts)")
+        # AutoMod link passes (2026-09-10): a mod lets one member post links for
+        # a short while (`/hitlist pass`). One row per member per guild.
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS link_passes (
+                   guild_id TEXT, user_id TEXT, expires_ts REAL,
+                   granted_by TEXT, granted_ts REAL,
+                   PRIMARY KEY (guild_id, user_id))"""
+        )
+        # AutoMod link-policy hits — the durable record the mod-log card summarises
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS link_policy_hits (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL,
+                   guild_id TEXT, user_id TEXT, username TEXT,
+                   channel_id TEXT, message_id TEXT, urls TEXT, mode TEXT,
+                   deleted INTEGER, timed_out INTEGER)"""
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_lph_user ON link_policy_hits(guild_id, user_id, ts)")
+
+
+def _get_pass(guild_id, user_id):
+    try:
+        with _tripdb() as c:
+            r = c.execute("SELECT * FROM link_passes WHERE guild_id=? AND user_id=?",
+                          (str(guild_id), str(user_id))).fetchone()
+        return dict(r) if r else None
+    except sqlite3.Error:
+        return None
+
+
+def _set_pass(guild_id, user_id, minutes, granted_by):
+    """minutes <= 0 revokes. Returns the new expiry (or None when revoked)."""
+    with _tripdb() as c:
+        if minutes <= 0:
+            c.execute("DELETE FROM link_passes WHERE guild_id=? AND user_id=?",
+                      (str(guild_id), str(user_id)))
+            return None
+        exp = time.time() + minutes * 60
+        c.execute("INSERT INTO link_passes(guild_id,user_id,expires_ts,granted_by,granted_ts) "
+                  "VALUES (?,?,?,?,?) ON CONFLICT(guild_id,user_id) DO UPDATE SET "
+                  "expires_ts=excluded.expires_ts, granted_by=excluded.granted_by, "
+                  "granted_ts=excluded.granted_ts",
+                  (str(guild_id), str(user_id), exp, str(granted_by), time.time()))
+        return exp
+
+
+def _count_link_hits(guild_id, user_id):
+    try:
+        with _tripdb() as c:
+            return c.execute("SELECT COUNT(*) FROM link_policy_hits WHERE guild_id=? AND user_id=?",
+                             (str(guild_id), str(user_id))).fetchone()[0]
+    except sqlite3.Error:
+        return 0
 
 
 def _persist_invite_post(row):
@@ -654,6 +707,106 @@ class LinkGuard(commands.Cog):
             await self._process_invites(message)
         except Exception:
             log.exception("link_guard: invite capture failed")
+        try:
+            await self._links_policy(
+                guild=message.guild, channel=message.channel, message_id=message.id,
+                author_id=(message.author.id if message.author else None),
+                author_name=(str(message.author) if message.author else None),
+                content=message.content or "",
+                is_bot=bool(message.author and message.author.bot) or bool(message.webhook_id),
+                message=message)
+        except Exception:
+            log.exception("link_guard: link policy failed")
+
+    # ------------------------------------------------------------- AutoMod link policy
+    def _automod_log(self, guild, cfg):
+        """The Moderation card's log channel, then the usual fallbacks."""
+        for key in ("mod_log_channel_id", "msglog_channel_id", "modlog_channel_id"):
+            cid = cfg.get(key)
+            if cid:
+                ch = guild.get_channel(int(cid))
+                if ch is not None:
+                    return ch
+        return None
+
+    def _links_exempt(self, guild, channel, member, cfg):
+        """Who the link policy never touches: staff, exempt roles, exempt
+        channels (thread parents count), the whitelist, and pass holders."""
+        if member is None:
+            return True   # can't check their roles → never punish blind
+        if self._exempt(guild, member.id, cfg) or _is_staff(member):
+            return True
+        chan_ids = {str(channel.id), str(getattr(channel, "parent_id", "") or "")}
+        if chan_ids & {str(c) for c in (cfg.get("automod_links_exempt_channels") or [])}:
+            return True
+        exempt_roles = {str(r) for r in (cfg.get("automod_links_exempt_roles") or [])}
+        if exempt_roles and any(str(r.id) in exempt_roles for r in member.roles):
+            return True
+        return am.pass_active(_get_pass(guild.id, member.id))
+
+    async def _links_policy(self, *, guild, channel, message_id, author_id, author_name,
+                            content, is_bot, message):
+        cfg = get_config(guild.id)
+        mode = am.link_mode(cfg)
+        if mode == "off" or is_bot or author_id is None:
+            return
+        urls = am.blocked_urls(content, cfg.get("automod_links_allow_domains") or [])
+        if not urls:
+            return
+        member = guild.get_member(author_id)
+        if self._links_exempt(guild, channel, member, cfg):
+            return
+        # LinkGuard's hitlist runs first; if it already punished this message
+        # (grabber link) the policy has nothing to add.
+        if self._punished.get(message_id, 0) > time.time():
+            return
+        self._punished[message_id] = time.time() + 900
+        deleted = await self._delete(channel, message, message_id)
+        timed_out = False
+        minutes = int(cfg.get("automod_links_timeout_min", 10) or 10)
+        if mode == "timeout":
+            try:
+                await member.timeout(datetime.timedelta(minutes=minutes),
+                                     reason="AutoMod: posted a link (link policy)")
+                timed_out = True
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+        prior = _count_link_hits(guild.id, author_id)
+        try:
+            with _tripdb() as c:
+                c.execute("INSERT INTO link_policy_hits(ts,guild_id,user_id,username,channel_id,"
+                          "message_id,urls,mode,deleted,timed_out) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                          (time.time(), str(guild.id), str(author_id), author_name, str(channel.id),
+                           str(message_id), json.dumps(urls[:10]), mode, int(deleted), int(timed_out)))
+        except sqlite3.Error:
+            log.exception("link_guard: link_policy_hits insert failed")
+        if cfg.get("automod_links_notice", 1):
+            try:
+                await channel.send(
+                    f"🔗 <@{author_id}> links aren't allowed here"
+                    + (f" — you're timed out for {minutes} min." if timed_out else ".")
+                    + " A moderator can give you a temporary link pass.",
+                    delete_after=15,
+                    allowed_mentions=discord.AllowedMentions(users=[discord.Object(author_id)]))
+            except discord.HTTPException:
+                pass
+        ch = self._automod_log(guild, cfg)
+        if ch is None:
+            return
+        shown = "\n".join(f"`{u.replace('http', 'hxxp', 1)}`" for u in urls[:5])
+        embed = discord.Embed(
+            title="🔗 Link removed" + (" — member timed out" if timed_out else ""),
+            color=0xE0A23B,
+            description=f"<@{author_id}> (`{author_id}`) in <#{channel.id}>\n{shown}")
+        embed.add_field(name="Policy", value=("delete + timeout" if mode == "timeout" else "delete"), inline=True)
+        embed.add_field(name="Prior hits", value=str(prior), inline=True)
+        if not deleted:
+            embed.add_field(name="⚠️", value="delete failed — check Manage Messages", inline=True)
+        embed.set_footer(text=f"Message ID {message_id} · /hitlist pass @member minutes to allow a link")
+        try:
+            await ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            pass
 
     @commands.Cog.listener()
     async def on_raw_message_edit(self, payload):
@@ -682,6 +835,19 @@ class LinkGuard(commands.Cog):
             is_webhook=bool(data.get("webhook_id")),
             message=None,  # act via a partial message
         )
+        # A link edited INTO a message later is the obvious dodge — police the
+        # edit too. Discord's own unfurl edits carry the same content, and the
+        # policy dedupes on message id, so a legit post isn't hit twice.
+        if data.get("edited_timestamp"):
+            try:
+                await self._links_policy(
+                    guild=guild, channel=channel, message_id=payload.message_id,
+                    author_id=author_id, author_name=author_name,
+                    content=data.get("content") or "",
+                    is_bot=bool(author.get("bot")) or bool(data.get("webhook_id")),
+                    message=None)
+            except Exception:
+                log.exception("link_guard: link policy (edit) failed")
 
     def _already_punished(self, message_id):
         """True if this message already triggered enforcement (across the
@@ -1228,6 +1394,36 @@ class LinkGuard(commands.Cog):
             "• unfurled embeds + proxied image URLs (the hidden-embed trick)"), inline=False)
         embed.set_footer(text="/hitlist add · remove · test · enable · enforce · invites")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @hitlist.command(name="pass",
+                     description="AutoMod: let a member post links for a short while (0 minutes = revoke).")
+    @app_commands.describe(member="Who gets the pass",
+                           minutes="How long they may post links (1–1440). 0 revokes an existing pass.")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def pass_cmd(self, interaction: discord.Interaction, member: discord.Member,
+                       minutes: app_commands.Range[int, 0, 1440] = 10):
+        cfg = get_config(interaction.guild.id)
+        exp = _set_pass(interaction.guild.id, member.id, int(minutes), interaction.user.id)
+        mode = am.link_mode(cfg)
+        if exp is None:
+            msg = f"🔗 Link pass for {member.mention} **revoked**."
+        else:
+            msg = (f"🔗 {member.mention} may post links until <t:{int(exp)}:t> (<t:{int(exp)}:R>)."
+                   + ("" if mode != "off" else
+                      "\n-# Link policy is currently **off** on this server, so the pass changes nothing "
+                      "until it's switched on (dashboard → Moderation → AutoMod)."))
+        await interaction.response.send_message(msg, ephemeral=True,
+                                                allowed_mentions=discord.AllowedMentions.none())
+        ch = self._automod_log(interaction.guild, cfg)
+        if ch is not None:
+            try:
+                await ch.send(
+                    f"🔗 Link pass {'revoked for' if exp is None else 'granted to'} {member.mention} "
+                    f"by {interaction.user.mention}"
+                    + ("" if exp is None else f" — until <t:{int(exp)}:t>"),
+                    allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                pass
 
     @hitlist.command(name="invites",
                      description="Invite capture: log every Discord invite posted + invite-spam response.")
