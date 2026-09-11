@@ -478,6 +478,21 @@ def file_sha256(path):
     return h.hexdigest()
 
 
+def media_path_meta(path):
+    """(guild_id | None, message_id | None, kind) from a cache path. Per-guild
+    layout is media_cache/<gid>/<mid>_<i>_<name>; stickers use `_s<i>_`; the
+    legacy flat layout has no guild dir. Pure for tests."""
+    parent = os.path.basename(os.path.dirname(path))
+    gid = parent if parent.isdigit() else None
+    name = os.path.basename(path)
+    parts = name.split("_", 2)
+    # <mid>_<i>_ or <mid>_s<i>_ — the index slot is what proves the shape
+    idx = parts[1] if len(parts) > 1 else ""
+    is_sticker = idx.startswith("s") and idx[1:].isdigit()
+    mid = parts[0] if parts[0] and (idx.isdigit() or is_sticker) else None
+    return gid, mid, ("sticker" if is_sticker else "attachment")
+
+
 def match_delete_entry(entries, cache, channel_id, author_id, now_ts,
                        fresh_window=AUDIT_FRESH_WINDOW):
     """Attribute a deletion from audit-log entries (newest first, as dicts:
@@ -793,6 +808,29 @@ class ModLog(commands.Cog):
                    )""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_cmd_guild_ts ON command_log(guild_id, ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_cmd_user ON command_log(guild_id, user_id, ts)")
+            # Permanent record of every cached file: hash + metadata outlive the
+            # bytes (Paul, 2026-09-10: "we can store hashes forever, for all
+            # servers, and metadata"). A swept file keeps its row with swept_ts
+            # set, so "was this exact image posted here before" stays answerable.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS media_index (
+                       path         TEXT PRIMARY KEY,  -- cache path when written
+                       message_id   TEXT,
+                       guild_id     TEXT,
+                       channel_id   TEXT,
+                       author_id    TEXT,
+                       filename     TEXT,
+                       size         INTEGER,
+                       content_type TEXT,
+                       kind         TEXT,     -- 'attachment' | 'sticker'
+                       sha256       TEXT,
+                       cached_ts    REAL,
+                       swept_ts     REAL,     -- NULL while the bytes are still on disk
+                       swept_reason TEXT      -- 'window' | 'cap' | 'reposted' | 'purge'
+                   )""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_media_msg ON media_index(message_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_media_sha ON media_index(sha256)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_media_guild ON media_index(guild_id, cached_ts)")
         self._load_consent()
         self._load_pro()
         self._guild_bytes = {}          # guild_id -> cached-file bytes on disk (lazy, kept current)
@@ -882,8 +920,9 @@ class ModLog(commands.Cog):
         gid = str(guild_id)
         self._guild_bytes[gid] = max(0, self._guild_media_bytes(gid) + delta)
 
-    def _remove_media_file(self, path):
-        """Delete a cached file and keep the per-guild byte count honest."""
+    def _remove_media_file(self, path, reason="window"):
+        """Delete a cached file and keep the per-guild byte count honest. The
+        media_index row STAYS — it just records when and why the bytes went."""
         try:
             size = os.path.getsize(path)
             os.remove(path)
@@ -892,7 +931,56 @@ class ModLog(commands.Cog):
         parent = os.path.basename(os.path.dirname(path))
         if parent.isdigit():
             self._note_media_bytes(parent, -size)
+        try:
+            with self._conn() as c:
+                c.execute("UPDATE media_index SET swept_ts=?, swept_reason=? WHERE path=? AND swept_ts IS NULL",
+                          (time.time(), reason, path))
+        except sqlite3.Error as e:
+            print(f"[mod_log] media_index sweep note failed for {path}: {e!r}")
         return True
+
+    def _index_media_file(self, path, message_id, guild_id, channel_id=None, author_id=None,
+                          filename=None, content_type=None, kind="attachment", size=None):
+        """Blocking: hash one cached file and record it. Idempotent on path."""
+        try:
+            digest = file_sha256(path)
+            if size is None:
+                size = os.path.getsize(path)
+        except OSError:
+            return False
+        with self._conn() as c:
+            c.execute(
+                "INSERT OR IGNORE INTO media_index (path,message_id,guild_id,channel_id,author_id,"
+                "filename,size,content_type,kind,sha256,cached_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (path, str(message_id) if message_id else None,
+                 str(guild_id) if guild_id else None,
+                 str(channel_id) if channel_id else None,
+                 str(author_id) if author_id else None,
+                 filename, size, content_type, kind, digest, time.time()))
+        return True
+
+    def _index_existing_media(self):
+        """Blocking, one-shot at startup: files on disk that predate media_index
+        get hashed and recorded (message/channel/author looked up from the
+        archive by the id in the filename). Returns rows added."""
+        with self._conn() as c:
+            known = {r[0] for r in c.execute("SELECT path FROM media_index")}
+        added = 0
+        for path, _, size in self._all_media_entries():
+            if path in known:
+                continue
+            gid, mid, kind = media_path_meta(path)
+            row = self._row_from_db(mid) if mid else None
+            if row is not None:
+                gid = gid or row["guild_id"]
+            self._index_media_file(
+                path, mid, gid,
+                channel_id=row["channel_id"] if row else None,
+                author_id=row["author_id"] if row else None,
+                filename=os.path.basename(path).split("_", 2)[-1],
+                kind=kind, size=size)
+            added += 1
+        return added
 
     def _conn(self):
         c = sqlite3.connect(DB_PATH, timeout=30)
@@ -1098,6 +1186,9 @@ class ModLog(commands.Cog):
             except Exception:
                 continue  # CDN hiccup — the attachment URL metadata is still archived
             self._note_media_bytes(gid, att.size)
+            await asyncio.to_thread(
+                self._index_media_file, path, message.id, gid, message.channel.id,
+                message.author.id, att.filename, att.content_type, "attachment", att.size)
             # burst guard: the 12h pruner can't outrun a deliberate fill run, so
             # re-check the whole-cache cap every ~512MB of fresh writes
             self._bytes_since_cap_check += att.size
@@ -1118,6 +1209,9 @@ class ModLog(commands.Cog):
                 with open(path, "wb") as f:
                     f.write(data)
                 self._note_media_bytes(gid, len(data))
+                await asyncio.to_thread(
+                    self._index_media_file, path, message.id, gid, message.channel.id,
+                    message.author.id, f"{s.name}.{ext}", f"image/{ext}", "sticker", len(data))
             except Exception:
                 pass  # the archived sticker url is still a recovery path
 
@@ -1417,10 +1511,12 @@ class ModLog(commands.Cog):
             ref.set_footer(text=f"Message ID {payload.message_id}")
             await media_ch.send(embed=ref, files=files,
                                 allowed_mentions=discord.AllowedMentions.none())
-        # The re-post in Discord IS the evidence now — the local copy only
-        # existed for this moment. Drop it so the cache holds pending files,
-        # not history. Quarantined (non-media) files stay for review.
+        # For tenant guilds the re-post in Discord IS the evidence — the local
+        # copy only existed for this moment, so drop it. Operator guilds keep
+        # the bytes on disk until reviewed by hand (2026-09-10). Quarantined
+        # (non-media) files stay for review everywhere.
         if files:
+            keep_local = str(payload.guild_id) in ARCHIVE_GUILDS
             for f in files:
                 fp = getattr(f, "fp", None)
                 name = getattr(fp, "name", None)
@@ -1428,8 +1524,8 @@ class ModLog(commands.Cog):
                     f.close()
                 except Exception:
                     pass
-                if name:
-                    self._remove_media_file(name)
+                if name and not keep_local:
+                    self._remove_media_file(name, "reposted")
 
     # ---------------------------------------------------- mass self-delete tripwire
     def _alert_ping(self, guild, cfg):
@@ -1655,20 +1751,15 @@ class ModLog(commands.Cog):
         await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     # ------------------------------------------------------------- retention sweep
-    def _operator_media_cutoff(self, now):
-        # Only the operator's own guilds may influence how long THEIR media is
-        # kept — a granted tenant must not be able to extend retention on our disk.
-        days = MEDIA_DAYS
-        for gid in OPERATOR_GUILDS:
-            days = max(days, int(get_config(gid).get("msglog_media_days", MEDIA_DAYS)))
-        return now - days * 86400
-
     def _guild_windows(self, guild_id, now):
         """(text_cutoff, media_cutoff) for one guild — None = never swept.
         text_cutoff is ALWAYS None: text is never aged out (see the header)."""
         gid = str(guild_id)
         if gid in ARCHIVE_GUILDS:
-            return None, self._operator_media_cutoff(now)
+            # Operator guilds: files are kept until Paul reviews and wipes by
+            # hand (2026-09-10) — no age sweep, no cap eviction, no post-repost
+            # cleanup. MSGLOG_MEDIA_DAYS is retired for them.
+            return None, None
         # Lapsed Pro keeps its files for PRO_GRACE_DAYS so a late renewal
         # doesn't lose them; after that they are swept down to the free window.
         if consent_ok(gid) and pro_active(gid, now, grace_days=PRO_GRACE_DAYS):
@@ -1689,15 +1780,14 @@ class ModLog(commands.Cog):
     def _sweep_files(self, now):
         """Blocking: age out cached files per guild window, then the global cap."""
         removed = 0
-        legacy_cutoff = self._operator_media_cutoff(now)
         for path, mtime, _ in self._all_media_entries():
             parent = os.path.basename(os.path.dirname(path))
             if parent.isdigit() and parent not in ARCHIVE_GUILDS:
                 _, media_cutoff = self._guild_windows(parent, now)
             else:
-                media_cutoff = legacy_cutoff      # operator guilds + the old flat layout
+                media_cutoff = None   # operator guilds + the old flat layout: kept until reviewed
             if media_cutoff is not None and mtime < media_cutoff:
-                if self._remove_media_file(path):
+                if self._remove_media_file(path, "window"):
                     removed += 1
         self._guild_bytes.clear()  # recomputed lazily from disk after a sweep
         return removed
@@ -1706,6 +1796,15 @@ class ModLog(commands.Cog):
     async def retention_sweeper(self):
         now = time.time()
         self._flush()
+        if not getattr(self, "_media_indexed", False):
+            # One-shot: files cached before media_index existed get hashed.
+            try:
+                added = await asyncio.to_thread(self._index_existing_media)
+                if added:
+                    print(f"[mod_log] media_index: recorded {added} pre-existing cached file(s)")
+            except Exception as e:
+                print(f"[mod_log] media_index backfill failed: {e!r}")
+            self._media_indexed = True
         try:
             swept = await asyncio.to_thread(self._sweep_rows, now)
             removed = await asyncio.to_thread(self._sweep_files, now)
@@ -1726,11 +1825,23 @@ class ModLog(commands.Cog):
         # granted server raise a shared global limit from its own settings page.
         cap_gb = MEDIA_CAP_GB
         entries = self._all_media_entries()
-        evict = files_to_evict(entries, cap_gb * 1024 ** 3)
+        # Operator files (per-guild dirs on the allowlist + the legacy flat
+        # layout) are never evicted — only reviewed by hand. The cap is enforced
+        # against everyone else's files; if the operator's own files alone
+        # exceed it, say so loudly and leave them alone.
+        def _protected(path):
+            parent = os.path.basename(os.path.dirname(path))
+            return (not parent.isdigit()) or parent in ARCHIVE_GUILDS
+        protected_bytes = sum(s for p, _, s in entries if _protected(p))
+        budget = max(0, cap_gb * 1024 ** 3 - protected_bytes)
+        evict = files_to_evict([e for e in entries if not _protected(e[0])], budget)
         for path in evict:
-            self._remove_media_file(path)
+            self._remove_media_file(path, "cap")
         if evict:
             print(f"[mod_log] media cache over {cap_gb}GB cap — evicted {len(evict)} oldest file(s)")
+        if protected_bytes > cap_gb * 1024 ** 3:
+            print(f"[mod_log] WARNING: operator media alone is {protected_bytes / 1024 ** 3:.1f}GB, "
+                  f"over the {cap_gb}GB cap — nothing evicted; review media_cache by hand")
 
     @retention_sweeper.before_loop
     async def _before_sweep(self):
@@ -3047,6 +3158,9 @@ class ModLog(commands.Cog):
             counts["messages"] = c.execute("DELETE FROM messages WHERE guild_id=?", (gid,)).rowcount
             counts["identity"] = c.execute("DELETE FROM identity_events WHERE guild_id=?",
                                            (gid,)).rowcount
+            # A requested purge takes the hash/metadata index with it too —
+            # "delete everything held for this server" means everything.
+            c.execute("DELETE FROM media_index WHERE guild_id=?", (gid,))
             # Avatar blobs are shared across guilds by design (one picture, one
             # row) — drop only those no surviving identity row still points at.
             c.execute("DELETE FROM avatar_blobs WHERE uid NOT IN"

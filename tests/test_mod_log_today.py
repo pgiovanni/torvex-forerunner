@@ -175,10 +175,20 @@ class EditGate(unittest.IsolatedAsyncioTestCase, _ModLogCase):
         self.assertEqual(rows[0]["old_content"], "original")
         self.assertEqual(rows[0]["new_content"], "changed")
 
-    async def test_disabled_guild_records_nothing(self):
+    async def test_disabled_guild_still_records_the_edit(self):
+        # 2026-09-10: the archive runs for every guild; the msglog switch only
+        # gates the embed (log channel is None in this fixture, so nothing posts)
         ml.is_enabled = lambda gid, feature: False
-        await self.cog.on_raw_message_edit(_real_edit_payload())
-        self.assertEqual(self._edit_rows(), [])
+        self.cog._remember({
+            "message_id": "9001", "guild_id": GUILD, "channel_id": "5",
+            "author_id": "77", "author_name": "a", "bot": 0, "webhook": 0,
+            "created_ts": NOW, "content": "original", "reply_to": None,
+            "attachments": None, "stickers": None})
+        self.cog._flush()
+        await self.cog.on_raw_message_edit(_real_edit_payload("changed"))
+        rows = self._edit_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["old_content"], "original")
 
 
 # ── 2. evict-after-repost ─────────────────────────────────────────────────

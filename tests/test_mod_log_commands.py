@@ -117,22 +117,22 @@ class CommandLog(unittest.TestCase):
         self.cog._record_command(i2, error=RuntimeError("x"))
         self.assertEqual(self.rows(), [])
 
-    def test_dm_rows_tagged_and_swept(self):
+    def test_dm_rows_tagged_and_kept(self):
         i = _Interaction(None, 8, command=_Cmd("help"))
         self.cog._record_command(i, _Cmd("help"))
         self.assertEqual(self.rows()[0]["guild_id"], "dm")
         with self.cog._conn() as c:
-            c.execute("UPDATE command_log SET ts=?", (NOW - 2 * D,))
+            c.execute("UPDATE command_log SET ts=?", (NOW - 400 * D,))
         self.cog._sweep_rows(NOW)
-        self.assertEqual(self.rows(), [])
+        self.assertEqual(len(self.rows()), 1, "2026-09-10: text is never aged out, DMs included")
 
-    def test_sweep_respects_guild_window(self):
+    def test_sweep_keeps_every_guilds_commands(self):
         for gid in (OPERATOR, FREE):
             self.cog._record_command(_Interaction(int(gid), 8, command=_Cmd("help")), _Cmd("help"))
         with self.cog._conn() as c:
-            c.execute("UPDATE command_log SET ts=?", (NOW - 3 * D,))
+            c.execute("UPDATE command_log SET ts=?", (NOW - 400 * D,))
         self.cog._sweep_rows(NOW)
-        self.assertEqual([r["guild_id"] for r in self.rows()], [OPERATOR])
+        self.assertEqual(sorted(r["guild_id"] for r in self.rows()), sorted([OPERATOR, FREE]))
 
     def test_purge_guild_drops_its_commands_only(self):
         for gid in (OPERATOR, FREE):

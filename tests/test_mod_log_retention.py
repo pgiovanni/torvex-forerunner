@@ -118,17 +118,68 @@ class RetentionSweep(unittest.TestCase):
         self.assertEqual(self._ids(FREE), set())
 
     def test_files_follow_each_guilds_window(self):
+        self.cog._index_existing_media()   # rows exist so the sweep can mark them
         removed = self.cog._sweep_files(NOW)
         left = {os.path.relpath(p, ml.MEDIA_DIR).replace(os.sep, "/") for p, _, _ in self.cog._all_media_entries()}
-        self.assertIn(f"{OPERATOR}/{OPERATOR}2d_0_b.png", left, "operator media kept for MEDIA_DAYS")
-        self.assertNotIn(f"{OPERATOR}/{OPERATOR}120d_0_c.png", left, "operator media past MEDIA_DAYS goes")
+        self.assertIn(f"{OPERATOR}/{OPERATOR}2d_0_b.png", left, "operator media is never age-swept")
+        self.assertIn(f"{OPERATOR}/{OPERATOR}120d_0_c.png", left, "operator media kept until reviewed by hand")
         self.assertIn(f"{PRO}/{PRO}2d_0_b.png", left)
         self.assertNotIn(f"{PRO}/{PRO}120d_0_c.png", left)
         self.assertIn(f"{FREE}/{FREE}fresh_0_a.png", left)
         self.assertNotIn(f"{FREE}/{FREE}2d_0_b.png", left, "free files swept after 24h")
-        self.assertIn("legacy_0_new.png", left, "flat layout aged by the operator window")
-        self.assertNotIn("legacy_0_old.png", left)
-        self.assertEqual(removed, 5)  # op 120d, pro 120d, free 2d + 120d, legacy old
+        self.assertIn("legacy_0_new.png", left, "flat layout = operator, kept")
+        self.assertIn("legacy_0_old.png", left)
+        self.assertEqual(removed, 3)  # pro 120d, free 2d + 120d
+        with self.cog._conn() as c:
+            swept = {r[0]: r[1] for r in c.execute("SELECT path, swept_reason FROM media_index WHERE swept_ts IS NOT NULL")}
+        self.assertEqual(len(swept), 3, "every removed file keeps its index row, marked swept")
+        self.assertTrue(all(v == "window" for v in swept.values()))
+
+    def test_cap_never_evicts_operator_files(self):
+        ml.MEDIA_CAP_GB = 1
+        self.cog._all_media_entries = lambda: [
+            (os.path.join(ml.MEDIA_DIR, OPERATOR, "a"), NOW - 9 * D, 900 * 1024 ** 3),   # oldest, protected
+            (os.path.join(ml.MEDIA_DIR, "legacy_0_x.png"), NOW - 8 * D, 50 * 1024 ** 3),  # flat = protected
+            (os.path.join(ml.MEDIA_DIR, FREE, "b"), NOW - 7 * D, 100 * 1024 ** 3),        # evictable
+            (os.path.join(ml.MEDIA_DIR, FREE, "c"), NOW - 1 * D, 10 * 1024 ** 3),
+        ]
+        gone = []
+        self.cog._remove_media_file = lambda p, reason="window": gone.append((p, reason)) or True
+        self.cog._enforce_media_cap()
+        self.assertEqual([os.path.basename(p) for p, _ in gone], ["b", "c"],
+                         "only tenant files go, oldest first, even though the operator's alone exceed the cap")
+        self.assertTrue(all(r == "cap" for _, r in gone))
+
+    def test_media_index_records_and_backfills(self):
+        # startup pass hashes files that predate the index; a second pass adds nothing
+        added = self.cog._index_existing_media()
+        self.assertEqual(added, 11)   # 3 guilds x 3 files + 2 legacy
+        self.assertEqual(self.cog._index_existing_media(), 0)
+        with self.cog._conn() as c:
+            r = dict(c.execute("SELECT * FROM media_index WHERE path=?",
+                               (os.path.join(ml.MEDIA_DIR, FREE, f"{FREE}fresh_0_a.png"),)).fetchone())
+        self.assertEqual((r["guild_id"], r["message_id"], r["kind"], r["size"]), (FREE, f"{FREE}fresh", "attachment", 10))
+        self.assertEqual(r["author_id"], "9", "author/channel looked up from the archive row")
+        self.assertEqual(len(r["sha256"]), 64)
+        self.assertIsNone(r["swept_ts"])
+        # removing the bytes keeps the row
+        self.cog._remove_media_file(os.path.join(ml.MEDIA_DIR, FREE, f"{FREE}fresh_0_a.png"), "reposted")
+        with self.cog._conn() as c:
+            r2 = dict(c.execute("SELECT swept_reason, sha256 FROM media_index WHERE path=?",
+                                (os.path.join(ml.MEDIA_DIR, FREE, f"{FREE}fresh_0_a.png"),)).fetchone())
+        self.assertEqual(r2["swept_reason"], "reposted")
+        self.assertEqual(r2["sha256"], r["sha256"])
+        # a requested purge drops the guild's index rows
+        self.cog._purge_guild(FREE)
+        with self.cog._conn() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM media_index WHERE guild_id=?", (FREE,)).fetchone()[0], 0)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM media_index WHERE guild_id=?", (PRO,)).fetchone()[0], 3)
+
+    def test_media_path_meta(self):
+        self.assertEqual(ml.media_path_meta("/x/media_cache/123/456_0_pic.png"), ("123", "456", "attachment"))
+        self.assertEqual(ml.media_path_meta("/x/media_cache/123/456_s1_peepo.png"), ("123", "456", "sticker"))
+        self.assertEqual(ml.media_path_meta("/x/media_cache/789_2_a_b.gif"), (None, "789", "attachment"))
+        self.assertEqual(ml.media_path_meta("/x/media_cache/weird.bin"), (None, None, "attachment"))
 
     def test_cached_media_finds_both_layouts(self):
         found = self.cog._cached_media(f"{FREE}fresh", FREE)
@@ -154,6 +205,7 @@ class RetentionSweep(unittest.TestCase):
     def test_windows(self):
         t, m = self.cog._guild_windows(OPERATOR, NOW)
         self.assertIsNone(t)
+        self.assertIsNone(m, "operator files: kept until reviewed by hand")
         t, m = self.cog._guild_windows(FREE, NOW)
         self.assertIsNone(t, "text window: none, on every tier")
         self.assertAlmostEqual(NOW - m, ml.RECENT_HOURS * H, delta=1)
