@@ -175,6 +175,65 @@ class RetentionSweep(unittest.TestCase):
             self.assertEqual(c.execute("SELECT COUNT(*) FROM media_index WHERE guild_id=?", (FREE,)).fetchone()[0], 0)
             self.assertEqual(c.execute("SELECT COUNT(*) FROM media_index WHERE guild_id=?", (PRO,)).fetchone()[0], 3)
 
+    def test_identical_files_share_bytes_via_hardlink(self):
+        # same content in two guilds (and twice in one) → one inode, three paths
+        a = os.path.join(ml.MEDIA_DIR, FREE, "7001_0_meme.png")
+        b = os.path.join(ml.MEDIA_DIR, OPERATOR, "7002_0_meme.png")
+        c = os.path.join(ml.MEDIA_DIR, OPERATOR, "7003_0_again.png")
+        for p in (a, b, c):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "wb") as f:
+                f.write(b"same bytes" * 100)
+        self.cog._index_media_file(a, "7001", FREE)
+        self.cog._index_media_file(b, "7002", OPERATOR)
+        self.cog._index_media_file(c, "7003", OPERATOR)
+        self.assertTrue(os.path.samefile(a, b) and os.path.samefile(b, c))
+        with self.cog._conn() as cn:
+            shas = {r[0] for r in cn.execute("SELECT sha256 FROM media_index WHERE path IN (?,?,?)", (a, b, c))}
+        self.assertEqual(len(shas), 1)
+        # byte accounting counts the shared inode once
+        self.assertEqual(self.cog._unique_bytes([(a, 0, 1000), (b, 0, 1000), (c, 0, 1000)]), 1000)
+        self.cog._guild_bytes.clear()
+        self.assertEqual(self.cog._guild_media_bytes(OPERATOR), 30 + 1000)  # 3 fixture files + one shared blob
+        # sweeping one link leaves the others readable
+        self.assertTrue(self.cog._remove_media_file(a, "window"))
+        self.assertFalse(os.path.exists(a))
+        with open(b, "rb") as fh:
+            self.assertEqual(fh.read(), b"same bytes" * 100)
+        # the startup pass also collapses duplicates that were indexed before dedupe existed
+        e1 = os.path.join(ml.MEDIA_DIR, FREE, "7005_0_dup.png")
+        e2 = os.path.join(ml.MEDIA_DIR, OPERATOR, "7006_0_dup.png")
+        for p in (e1, e2):
+            with open(p, "wb") as f:
+                f.write(b"dup bytes" * 50)
+        self.cog._index_media_file(e1, "7005", FREE, dedupe=False)
+        self.cog._index_media_file(e2, "7006", OPERATOR, dedupe=False)
+        self.assertFalse(os.path.samefile(e1, e2))
+        self.assertEqual(self.cog._dedupe_existing(), 1)
+        self.assertTrue(os.path.samefile(e1, e2))
+        self.assertEqual(self.cog._dedupe_existing(), 0)
+        # a swept row is no longer a dedupe target, a live one still is
+        d = os.path.join(ml.MEDIA_DIR, FREE, "7004_0_meme.png")
+        with open(d, "wb") as f:
+            f.write(b"same bytes" * 100)
+        self.cog._index_media_file(d, "7004", FREE)
+        self.assertTrue(os.path.samefile(d, b))
+
+    def test_sweep_ages_by_cached_ts_not_inode_mtime(self):
+        # a fresh tenant link to an OLD home file must not be swept immediately
+        old = os.path.join(ml.MEDIA_DIR, OPERATOR, "8001_0_x.png")
+        new = os.path.join(ml.MEDIA_DIR, FREE, "8002_0_x.png")
+        _touch(old, 400 * D, size=64)
+        with open(new, "wb") as f:
+            f.write(b"x" * 64)
+        self.cog._index_media_file(old, "8001", OPERATOR, cached_ts=NOW - 400 * D)
+        self.cog._index_media_file(new, "8002", FREE)          # cached now, linked to `old`
+        self.assertTrue(os.path.samefile(old, new))
+        self.cog._index_existing_media()   # index the fixture files so the sweep has rows
+        self.cog._sweep_files(NOW)
+        self.assertTrue(os.path.exists(new), "fresh link survives despite the shared old mtime")
+        self.assertTrue(os.path.exists(old))
+
     def test_media_path_meta(self):
         self.assertEqual(ml.media_path_meta("/x/media_cache/123/456_0_pic.png"), ("123", "456", "attachment"))
         self.assertEqual(ml.media_path_meta("/x/media_cache/123/456_s1_peepo.png"), ("123", "456", "sticker"))
