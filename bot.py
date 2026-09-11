@@ -42,6 +42,24 @@ async def setup_hook():
     with open("commands.json") as f:
         schema = json.load(f)
 
+    # Shelved commands: the code stays, the command never enters the tree.
+    # Discord caps a bot at 100 top-level commands and enforces it at
+    # REGISTRATION (CommandLimitReached inside load_extension), so the 101st
+    # knocks a whole cog out — removing after the loads is too late. The
+    # least-used commands are parked by name in commands.json "shelved" and
+    # filtered right here in add_command; edit that list to swap one back.
+    shelved = set(schema.get("shelved", []))
+    _tree_add = bot.tree.add_command
+
+    def _add_command(command, /, *args, **kwargs):
+        name = getattr(command, "name", None)
+        if name in shelved and getattr(command, "parent", None) is None:
+            print(f"Shelved command: /{name}")
+            return None
+        return _tree_add(command, *args, **kwargs)
+
+    bot.tree.add_command = _add_command
+
     cogs = set(cmd["cog"] for cmd in schema["commands"])
     for cog in cogs:
         try:

@@ -2,7 +2,7 @@
   "commands": [
     {
       "name": "simpleverify",
-      "description": "Role-swap verify with no AltGuard gate \u2014 Unverified on join, button to Verified (Admin)",
+      "description": "Role-swap verify with no AltGuard gate — Unverified on join, button to Verified (Admin)",
       "cog": "simpleverify",
       "required_permissions": [
         "administrator"
@@ -10,7 +10,7 @@
     },
     {
       "name": "honeypot",
-      "description": "Trap channel that punishes intruders \u2014 timeout, kick, or ban (Admin)",
+      "description": "Trap channel that punishes intruders — timeout, kick, or ban (Admin)",
       "cog": "honeypot",
       "required_permissions": [
         "administrator"
@@ -42,6 +42,26 @@
       "name": "games",
       "description": "Bot vs player games — tictactoe_bot, connect4_bot",
       "cog": "games",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "race",
+      "description": "Last to survive (ban race) — open a lobby, stop, standings (Manage Server)",
+      "cog": "ban_race",
+      "required_permissions": [
+        "manage_guild"
+      ]
+    },
+    {
+      "name": "vote",
+      "description": "Last to survive — fire this round's shot at a player (secret until the round closes)",
+      "cog": "ban_race",
+      "cooldown_seconds": 0
+    },
+    {
+      "name": "powerup",
+      "description": "Last to survive — your kit: shield, shots, Overload, Transfuse",
+      "cog": "ban_race",
       "cooldown_seconds": 0
     },
     {
@@ -655,5 +675,11 @@
       "cog": "mentions",
       "required_permissions": []
     }
+  ],
+  "shelved_note": "Commands listed in 'shelved' stay in the code but are removed from the slash tree at startup (Discord caps a bot at 100 top-level commands). Move a name out of this list to bring it back; picked 9/11 from command_log usage (zero uses since logging began 8/29).",
+  "shelved": [
+    "add-bot",
+    "backup_emojis",
+    "structure-status"
   ]
 }

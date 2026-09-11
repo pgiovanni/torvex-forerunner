@@ -15,7 +15,7 @@ SECTIONS = [
                            "pi_count", "suggestions", "tickets", "server_info"]),
     ("Members & invites", ["invites", "level_roles", "economy", "activity", "stats",
                            "mentions"]),
-    ("Games & fun",       ["fun", "games", "rpg", "pvp", "wordle", "chess_cog",
+    ("Games & fun",       ["fun", "games", "ban_race", "rpg", "pvp", "wordle", "chess_cog",
                            "trading", "gear", "gifts", "peepo"]),
     ("AI",                ["ai"]),
     ("Help",              ["help"]),
@@ -23,7 +23,8 @@ SECTIONS = [
 
 FRIENDLY = {
     "activity": "Activity graphs", "ai": "AI", "altguard": "AltGuard (alt detection)",
-    "antinuke": "Anti-nuke", "automation": "Automation", "chess_cog": "Chess",
+    "antinuke": "Anti-nuke", "automation": "Automation", "ban_race": "Last to survive (ban race)",
+    "chess_cog": "Chess",
     "conduct": "Conduct record", "economy": "Economy & levels", "emojis": "Emojis",
     "fun": "Fun", "games": "Games vs the bot", "gear": "Gear", "gifts": "Gifts",
     "help": "Help", "honeypot": "Honeypot", "invites": "Invites",
