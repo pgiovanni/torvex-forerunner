@@ -136,7 +136,8 @@ DEFAULTS = {
     "linkguard_invite_exempt_channels": [],  # promo channels where invites are ignored entirely
     "linkguard_invite_allow_guilds": [],     # friendly server ids whose invites count as our own
     # message archive + mod-log (msglog) — MEE6/Quark/Carl-bot log replacement
-    "msglog_enabled": 0,             # master opt-in (archive + logging)
+    "msglog_enabled": 1,             # log EMBEDS on by default (Paul 9/10: "it defaults to on");
+                                     # the text archive itself runs for every guild regardless
     "msglog_channel_id": None,       # log channel; falls back to modlog_channel_id
     "msglog_deletes": 1,             # log single deletes (with audit-log WHO attribution)
     "msglog_edits": 1,               # log before/after on edits
