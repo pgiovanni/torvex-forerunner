@@ -81,30 +81,41 @@ class RetentionSweep(unittest.TestCase):
         with self.cog._conn() as c:
             return {r[0] for r in c.execute("SELECT message_id FROM messages WHERE guild_id=?", (gid,))}
 
-    def test_rows_follow_each_guilds_window(self):
-        self.cog._sweep_rows(NOW)
-        self.assertEqual(self._ids(OPERATOR), {f"{OPERATOR}fresh", f"{OPERATOR}2d", f"{OPERATOR}120d"},
-                         "operator guild is never swept")
-        self.assertEqual(self._ids(PRO), {f"{PRO}fresh", f"{PRO}2d"}, "pro keeps 90d, drops 120d")
-        self.assertEqual(self._ids(FREE), {f"{FREE}fresh"}, "free keeps only the 24h window")
-        self.assertEqual(self._ids(LAPSED), {f"{LAPSED}fresh"}, "lapsed past grace = free window")
+    def test_text_is_never_swept_on_any_tier(self):
+        # 2026-09-10 (Paul): text is never deleted by time — the free 24h text
+        # window let Dismiss's #general wipe erase the audit trail. Tiers now
+        # govern FILES only. Every row, every tier, every age survives.
+        self.assertEqual(self.cog._sweep_rows(NOW), {})
+        for gid in (OPERATOR, PRO, FREE, LAPSED):
+            self.assertEqual(self._ids(gid), {f"{gid}fresh", f"{gid}2d", f"{gid}120d"},
+                             f"{gid}: text rows must all survive the sweep")
         with self.cog._conn() as c:
-            self.assertEqual(c.execute("SELECT COUNT(*) FROM edits WHERE guild_id=?", (FREE,)).fetchone()[0], 0)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM edits WHERE guild_id=?", (FREE,)).fetchone()[0], 1)
             self.assertEqual(c.execute("SELECT COUNT(*) FROM identity_events WHERE guild_id=?",
-                                       (LAPSED,)).fetchone()[0], 0, "ledger is a Pro feature")
+                                       (LAPSED,)).fetchone()[0], 1, "ledger text is kept on free too")
             self.assertEqual(c.execute("SELECT COUNT(*) FROM identity_events WHERE guild_id=?",
                                        (PRO,)).fetchone()[0], 1)
 
-    def test_in_memory_rows_do_not_outlive_db_rows(self):
+    def test_in_memory_rows_survive_too(self):
         self.cog._sweep_rows(NOW)
         self.assertIn(f"{FREE}fresh", self.cog._recent)
-        self.assertNotIn(f"{FREE}2d", self.cog._recent)
+        self.assertIn(f"{FREE}2d", self.cog._recent)
         self.assertIn(f"{OPERATOR}120d", self.cog._recent)
 
-    def test_lapsed_inside_grace_keeps_pro_window(self):
+    def test_lapsed_inside_grace_keeps_pro_file_window(self):
         ml._PRO[LAPSED] = {"expires_ts": NOW - 1 * D}   # lapsed yesterday, grace = 3d
-        self.cog._sweep_rows(NOW)
-        self.assertEqual(self._ids(LAPSED), {f"{LAPSED}fresh", f"{LAPSED}2d"})
+        t, m = self.cog._guild_windows(LAPSED, NOW)
+        self.assertIsNone(t)
+        self.assertAlmostEqual(NOW - m, ml.PRO_MEDIA_DAYS * D, delta=1)
+        ml._PRO[LAPSED] = {"expires_ts": NOW - (ml.PRO_GRACE_DAYS + 1) * D}
+        t, m = self.cog._guild_windows(LAPSED, NOW)
+        self.assertIsNone(t)
+        self.assertAlmostEqual(NOW - m, ml.RECENT_HOURS * H, delta=1, msg="past grace = free file window")
+
+    def test_purge_still_removes_text(self):
+        # "never swept by time" is not "never deletable": guild purge is the exit.
+        self.cog._purge_guild(FREE)
+        self.assertEqual(self._ids(FREE), set())
 
     def test_files_follow_each_guilds_window(self):
         removed = self.cog._sweep_files(NOW)
@@ -144,10 +155,10 @@ class RetentionSweep(unittest.TestCase):
         t, m = self.cog._guild_windows(OPERATOR, NOW)
         self.assertIsNone(t)
         t, m = self.cog._guild_windows(FREE, NOW)
-        self.assertAlmostEqual(NOW - t, ml.RECENT_HOURS * H, delta=1)
+        self.assertIsNone(t, "text window: none, on every tier")
         self.assertAlmostEqual(NOW - m, ml.RECENT_HOURS * H, delta=1)
         t, m = self.cog._guild_windows(PRO, NOW)
-        self.assertAlmostEqual(NOW - t, ml.PRO_TEXT_DAYS * D, delta=1)
+        self.assertIsNone(t)
         self.assertAlmostEqual(NOW - m, ml.PRO_MEDIA_DAYS * D, delta=1)
 
 

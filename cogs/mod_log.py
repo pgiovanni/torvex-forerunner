@@ -59,21 +59,26 @@ MEDIA_DIR = os.path.join(ROOT, "media_cache")
 # shape is the one Quark uses (2026-08-23): a SHORT rolling window for everyone,
 # a LONG archive only where somebody took responsibility for it. Three tiers:
 #
+#   TEXT IS NEVER AGED OUT — any tier (Paul, 2026-09-10). Message text, edits,
+#   the mention index, the structure ledger, the command log and the identity
+#   ledger stay until the guild is purged (`/msglog forget`, `/msglog
+#   revoke-terms`, bot removed). The trigger: Dismiss's #general was wiped back
+#   to the day the bot arrived, and the free 24h text window had already thrown
+#   away everything but the last day — an audit gap the log exists to close.
+#   Size was weighed and accepted. The tiers below govern FILES only.
+#
 #   0. RECENT WINDOW (default, every msglog guild, no agreement needed)
-#      Messages AND attachments are kept for MSGLOG_RECENT_HOURS (24h) and then
-#      swept. That is enough to show what a deleted message said and re-post the
-#      deleted image — the thing a mod log is for — without anyone's history
-#      accumulating on our disk. Files are capped per guild (MSGLOG_RECENT_MEDIA_MB)
-#      so a GIF-heavy stranger's server can't evict the operator's evidence.
-#      Quark free: 12h + a per-channel message cap. We give 24h and no cap.
+#      Attachments are kept for MSGLOG_RECENT_HOURS (24h) and then swept, capped
+#      per guild (MSGLOG_RECENT_MEDIA_MB) so a GIF-heavy stranger's server can't
+#      evict the operator's evidence. Quark free: 12h + a per-channel cap.
 #
 #   1. PRO ARCHIVE (paid entitlement + Manage Server accepts the retention terms)
-#      Text for MSGLOG_PRO_TEXT_DAYS (90), files for MSGLOG_PRO_MEDIA_DAYS (30),
-#      the identity ledger, `/msglog deleted` / `/msglog history`. The entitlement
-#      is granted by the operator (`/msglog pro-grant`, fed by the web checkout);
-#      the terms acceptance is what makes the server's admin — not us — the one
-#      who decided to keep their members' history. Both are required: a paid
-#      guild that never accepts stays on the 24h window. Quark Pro: 4 weeks.
+#      Files for MSGLOG_PRO_MEDIA_DAYS (30), the identity ledger surfaced through
+#      `/msglog deleted` / `/msglog history`. The entitlement is granted by the
+#      operator (`/msglog pro-grant`, fed by the web checkout); the terms
+#      acceptance is what makes the server's admin — not us — the one who decided
+#      to keep their members' files longer. Both are required. Quark Pro: 4 weeks.
+#      (MSGLOG_PRO_TEXT_DAYS is kept as a knob for copy/compat; it no longer sweeps.)
 #
 #   2. OPERATOR ARCHIVE (MSGLOG_ARCHIVE_GUILDS — the operator's own servers)
 #      Unlimited, nothing swept, full disk budget. Unchanged from before.
@@ -118,19 +123,19 @@ _CONSENT = {}
 # DRAFT — operator should review the wording before this ships publicly.
 TERMS_TEXT = (
     "📜 **Message archive — data retention terms (v2)**\n"
-    "**Every server already gets the free window:** messages and attachments are held for "
-    f"{RECENT_HOURS} hours so deletions and edits can be logged with their content and images, "
-    "then swept automatically. Nothing older is kept and nothing needs accepting for that.\n\n"
+    "**Every server already gets this, nothing to accept:** message text, edits and who-deleted-it "
+    "are kept for as long as the bot is in the server, so a purge can always be audited. "
+    f"Attachments are held for {RECENT_HOURS} hours, then swept automatically.\n\n"
     "**Logging Pro** keeps a real archive. Turning it on means the person who runs this bot "
     "stores your server's data on their machine for longer. Read this before you accept.\n"
     "**Stored:** message text, author, channel and timestamps · edit history · deletions and who "
     f"performed them · attachments, stickers and avatars (files for {PRO_MEDIA_DAYS} days) · "
     "member events (joins, leaves, nickname/username changes, timeouts, kicks, bans). "
-    "Storage begins when you accept — there is no history from before that.\n"
-    f"**How long:** text for {PRO_TEXT_DAYS} days, files for {PRO_MEDIA_DAYS} days, rolling, "
+    "Files are stored from the moment you accept.\n"
+    f"**How long:** text for as long as the bot is here; files for {PRO_MEDIA_DAYS} days, rolling, "
     "while the Pro entitlement is active. `/msglog revoke-terms` stops storage and permanently "
-    "deletes everything held for this server; when Pro lapses the archive falls back to the "
-    "free window.\n"
+    "deletes everything held for this server; when Pro lapses files fall back to the "
+    f"{RECENT_HOURS}-hour window.\n"
     "**Who can read it:** people with Manage Server *in this server* (via the bot's commands), "
     "and the bot operator, who maintains the database and cannot be locked out of it.\n"
     "**Your side of it:** you tell your members what is logged, and you remain responsible for "
@@ -194,10 +199,10 @@ MEDIA_DAYS = max(1, int(os.environ.get("MSGLOG_MEDIA_DAYS") or 30))
 
 
 def archives_messages(guild_id) -> bool:
-    """LONG archive (Pro or operator): rows outlive the recent window, the text
-    identity ledger is kept, `/msglog deleted` + `/msglog history` are meaningful.
-    Every msglog guild stores rows for the recent window regardless — this
-    governs how long they live, not whether they exist."""
+    """Pro or operator: the identity ledger is SURFACED (`/msglog deleted`,
+    `/msglog history`). Since 2026-09-10 this no longer governs how long text
+    lives — every guild's rows are kept until the guild is purged — only which
+    commands can read it back."""
     return retention_tier(guild_id) != "recent"
 
 
@@ -834,6 +839,7 @@ class ModLog(commands.Cog):
                 "recent_hours": RECENT_HOURS, "recent_media_mb": RECENT_MEDIA_MB,
                 "pro_text_days": PRO_TEXT_DAYS, "pro_media_days": PRO_MEDIA_DAYS,
                 "pro_media_mb": PRO_MEDIA_MB, "pro_url": PRO_URL,
+                "text_kept_forever": True,   # since 2026-09-10: tiers govern files only
                 "terms_version": TERMS_VERSION,
                 "guilds": guilds, "generated_at": int(time.time()),
             }
@@ -1330,8 +1336,7 @@ class ModLog(commands.Cog):
         else:
             # No upsell here: this embed is read by another server's mods all day.
             # Pro is explained where an admin asks — /msglog pro, the dashboard.
-            why = (f"older than the {RECENT_HOURS}h recovery window"
-                   if not archives_messages(payload.guild_id) else "predates tracking")
+            why = "predates tracking"   # text is never swept, so this is the only way
             embed.description = (f"Message `{payload.message_id}` in <#{payload.channel_id}> "
                                  f"— **content not recoverable** ({why}).")
         if hit:
@@ -1655,53 +1660,26 @@ class ModLog(commands.Cog):
         return now - days * 86400
 
     def _guild_windows(self, guild_id, now):
-        """(text_cutoff, media_cutoff) for one guild — None = never swept."""
+        """(text_cutoff, media_cutoff) for one guild — None = never swept.
+        text_cutoff is ALWAYS None: text is never aged out (see the header)."""
         gid = str(guild_id)
         if gid in ARCHIVE_GUILDS:
             return None, self._operator_media_cutoff(now)
-        # Lapsed Pro keeps its archive for PRO_GRACE_DAYS so a late renewal
-        # doesn't lose history; after that it is swept down to the free window.
+        # Lapsed Pro keeps its files for PRO_GRACE_DAYS so a late renewal
+        # doesn't lose them; after that they are swept down to the free window.
         if consent_ok(gid) and pro_active(gid, now, grace_days=PRO_GRACE_DAYS):
-            return now - PRO_TEXT_DAYS * 86400, now - PRO_MEDIA_DAYS * 86400
-        return now - RECENT_HOURS * 3600, now - RECENT_HOURS * 3600
+            return None, now - PRO_MEDIA_DAYS * 86400
+        return None, now - RECENT_HOURS * 3600
 
     def _sweep_rows(self, now):
-        """Blocking: delete rows past their guild's window. Returns {gid: n}."""
-        swept = {}
-        with self._conn() as c:
-            gids = {r[0] for r in c.execute("SELECT DISTINCT guild_id FROM messages")}
-            gids |= {r[0] for r in c.execute("SELECT DISTINCT guild_id FROM identity_events")}
-            gids |= {r[0] for r in c.execute("SELECT DISTINCT guild_id FROM guild_events")}
-            gids |= {r[0] for r in c.execute("SELECT DISTINCT guild_id FROM command_log")}
-            for gid in gids:
-                if not gid:
-                    continue
-                text_cutoff, _ = self._guild_windows(gid, now)
-                if text_cutoff is None:
-                    continue
-                n = c.execute("DELETE FROM messages WHERE guild_id=? AND created_ts<?",
-                              (gid, text_cutoff)).rowcount
-                n += c.execute("DELETE FROM edits WHERE guild_id=? AND edited_ts<?",
-                               (gid, text_cutoff)).rowcount
-                n += mention_index.sweep(c, gid, text_cutoff)
-                n += c.execute("DELETE FROM guild_events WHERE guild_id=? AND ts<?",
-                               (gid, text_cutoff)).rowcount
-                n += c.execute("DELETE FROM command_log WHERE guild_id=? AND ts<?",
-                               (gid, text_cutoff)).rowcount
-                if retention_tier(gid) == "recent":
-                    # The ledger is a Pro feature; a lapsed/never-Pro guild keeps none.
-                    n += c.execute("DELETE FROM identity_events WHERE guild_id=?", (gid,)).rowcount
-                if n:
-                    swept[gid] = n
-            if swept:
-                c.execute("DELETE FROM avatar_blobs WHERE uid NOT IN"
-                          " (SELECT DISTINCT uid FROM identity_events)")
-        # In-memory copies must not outlive the rows they mirror.
-        for mid, row in list(self._recent.items()):
-            text_cutoff, _ = self._guild_windows(row.get("guild_id"), now)
-            if text_cutoff is not None and float(row.get("created_ts") or 0) < text_cutoff:
-                self._recent.pop(mid, None)
-        return swept
+        """Blocking. Text rows are never aged out — messages, edits, mentions,
+        guild_events, command_log and identity_events all stay until the guild
+        is purged (`/msglog forget`, `/msglog revoke-terms`, bot removed).
+        Kept as the sweeper's hook so the tier logic has one place to live;
+        returns {} because nothing is swept by time. (Until 2026-09-10 this
+        deleted free-tier text after 24h — Dismiss's #general wipe showed that
+        to be an audit gap, and disk growth was weighed and accepted.)"""
+        return {}
 
     def _sweep_files(self, now):
         """Blocking: age out cached files per guild window, then the global cap."""
@@ -2845,11 +2823,11 @@ class ModLog(commands.Cog):
                + (f" to <#{target}>." if target else
                   ".\n⚠️ No log channel set — pass `channel:` or nothing will post."))
         if archives_messages(interaction.guild.id):
-            msg += ("\n🗄️ **Logging Pro archive is on** — deleted text and images are recoverable "
-                    f"for {PRO_TEXT_DAYS} days and searchable with `/msglog deleted`.")
+            msg += ("\n🗄️ **Logging Pro archive is on** — text is kept for good, deleted images "
+                    f"for {PRO_MEDIA_DAYS} days, searchable with `/msglog deleted`.")
         else:
-            msg += (f"\n🕐 **Free window:** deleted/edited messages and their images are recoverable "
-                    f"for {RECENT_HOURS} hours, then swept. `/msglog pro` for the long archive.")
+            msg += ("\n🗄️ **Text is kept for good** — deleted/edited messages stay recoverable. "
+                    f"Images are held {RECENT_HOURS} hours, then swept. `/msglog pro` for longer.")
         await interaction.response.send_message(msg, ephemeral=True)
 
     # ------------------------------------------------------------- Pro
@@ -2863,23 +2841,23 @@ class ModLog(commands.Cog):
         elif tier == "pro":
             exp = row.get("expires_ts") if row else None
             until = f"until <t:{int(exp)}:D>" if exp else "no expiry"
-            lines.append(f"🟢 **Logging Pro active** ({until}) — text kept {PRO_TEXT_DAYS} days, "
+            lines.append(f"🟢 **Logging Pro active** ({until}) — text kept for good, "
                          f"files {PRO_MEDIA_DAYS} days ({PRO_MEDIA_MB} MB), identity history, "
                          "`/msglog deleted` + `/msglog history`.")
         else:
-            lines.append(f"🕐 **Free window** — deleted/edited messages and images recoverable for "
-                         f"{RECENT_HOURS}h ({RECENT_MEDIA_MB} MB of files), then swept.")
+            lines.append("🗄️ **Free tier** — deleted/edited message text is kept for good; deleted "
+                         f"images recoverable for {RECENT_HOURS}h ({RECENT_MEDIA_MB} MB of files), then swept.")
             if row and not pro_active(gid):
-                lines.append(f"⏳ Pro **expired** <t:{int(row['expires_ts'])}:R>. Archive is kept "
-                             f"{PRO_GRACE_DAYS} more days, then falls back to the free window. "
+                lines.append(f"⏳ Pro **expired** <t:{int(row['expires_ts'])}:R>. Files are kept "
+                             f"{PRO_GRACE_DAYS} more days, then fall back to the {RECENT_HOURS}h window. "
                              f"Renew: {PRO_URL}")
             elif row and pro_active(gid) and not consent_ok(gid):
                 lines.append("💳 Pro is **paid for** but the archive is still off — anyone with "
                              "Manage Server must accept the retention terms: "
                              "`/msglog accept-terms confirm:True` (read `/msglog terms` first).")
             else:
-                lines.append(f"⬆️ **Logging Pro** — {PRO_TEXT_DAYS} days of deleted-message history, "
-                             f"{PRO_MEDIA_DAYS} days of deleted images, searchable. Quark Pro keeps 4 "
+                lines.append(f"⬆️ **Logging Pro** — {PRO_MEDIA_DAYS} days of deleted images, identity "
+                             "history, and the archive searchable by member. Quark Pro keeps 4 "
                              f"weeks. Get it at {PRO_URL}, then accept the terms here with "
                              "`/msglog accept-terms confirm:True`.")
         return lines
@@ -2973,12 +2951,14 @@ class ModLog(commands.Cog):
                      f"<t:{int(row.get('accepted_ts') or 0)}:D> (v{row.get('version')}). "
                      f"Revoke any time with `/msglog revoke-terms`.")
             if not pro_active(gid):
-                state += f"\n⚪ No active Pro entitlement, so only the free {RECENT_HOURS}h window applies."
+                state += (f"\n⚪ No active Pro entitlement, so files follow the free {RECENT_HOURS}h "
+                          "window (text is kept regardless).")
         elif row:
             state = (f"⚠️ Accepted **v{row.get('version')}** — the terms have changed (now "
                      f"v{TERMS_VERSION}). Re-accept with `/msglog accept-terms confirm:True`.")
         else:
-            state = (f"⚪ **Not accepted** — only the free {RECENT_HOURS}h window applies. Anyone with "
+            state = (f"⚪ **Not accepted** — files follow the free {RECENT_HOURS}h window (text is kept "
+                     "regardless). Anyone with "
                      "**Manage Server** can accept with `/msglog accept-terms confirm:True` "
                      "(takes effect with an active Pro entitlement — `/msglog pro`).")
         await interaction.response.send_message(f"{TERMS_TEXT}\n\n{state}", ephemeral=True)
@@ -3009,15 +2989,15 @@ class ModLog(commands.Cog):
         self._load_consent()
         gid = str(interaction.guild.id)
         if archives_messages(gid):
-            msg = (f"✅ **Archive on** (terms v{TERMS_VERSION} accepted). Text is kept {PRO_TEXT_DAYS} "
-                   f"days and files {PRO_MEDIA_DAYS} days from now on — nothing before the free "
-                   f"window exists. `/msglog deleted` and `/msglog history` now work here.\n"
+            msg = (f"✅ **Archive on** (terms v{TERMS_VERSION} accepted). Text is kept for good and "
+                   f"files {PRO_MEDIA_DAYS} days from now on. `/msglog deleted` and `/msglog history` "
+                   "now work here.\n"
                    "↩️ `/msglog revoke-terms` stops it and deletes everything.")
         else:
             msg = (f"✅ **Terms v{TERMS_VERSION} accepted** and recorded. This server has no active "
-                   f"Logging Pro entitlement yet, so the free {RECENT_HOURS}h window still applies; "
-                   f"the archive switches on by itself the moment Pro is granted. `/msglog pro` "
-                   f"for how to get it.")
+                   f"Logging Pro entitlement yet, so files still follow the free {RECENT_HOURS}h window "
+                   "(text is kept regardless); Pro switches on by itself the moment it is granted. "
+                   "`/msglog pro` for how to get it.")
         await interaction.response.send_message(msg, ephemeral=True)
 
     @msglog.command(name="revoke-terms",
