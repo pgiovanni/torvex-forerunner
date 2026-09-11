@@ -130,18 +130,17 @@ class Ledger(unittest.TestCase):
         self.assertEqual(len(self._rows(FREE)), 1)  # row still written, changes=None
         self.assertIsNone(self._rows(FREE)[0]["changes"])
 
-    def test_sweep_honours_text_window(self):
+    def test_sweep_never_touches_the_ledger(self):
+        # 2026-09-10: text (the ledger included) is never aged out on any tier
         with self.cog._conn() as c:
             for gid in (OPERATOR, FREE):
-                for age in (1 * H, 2 * D):
+                for age in (1 * H, 2 * D, 400 * D):
                     c.execute("INSERT INTO guild_events (ts, guild_id, kind, action) VALUES (?,?,?,?)",
                               (NOW - age, gid, "channel", "create"))
         swept = self.cog._sweep_rows(NOW)
-        self.assertEqual(len(self._rows(OPERATOR)), 2)          # operator: never swept
-        free = self._rows(FREE)
-        self.assertEqual(len(free), 1)                           # free: 24h window
-        self.assertGreater(free[0]["ts"], NOW - ml.RECENT_HOURS * H)
-        self.assertEqual(swept.get(FREE), 1)
+        self.assertEqual(len(self._rows(OPERATOR)), 3)
+        self.assertEqual(len(self._rows(FREE)), 3)
+        self.assertEqual(swept, {})
 
     def test_purge_guild_drops_ledger(self):
         self.cog._record_guild_event(FREE, "channel", "delete", "channel", 5, "gone")
