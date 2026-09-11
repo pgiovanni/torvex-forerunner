@@ -906,14 +906,15 @@ class ModLog(commands.Cog):
     def _guild_media_bytes(self, guild_id):
         gid = str(guild_id)
         if gid not in self._guild_bytes:
-            total = 0
+            entries = []
             try:
                 for e in os.scandir(self._media_dir(gid)):
                     if e.is_file():
-                        total += e.stat().st_size
+                        st = e.stat()
+                        entries.append((e.path, st.st_mtime, st.st_size))
             except OSError:
                 pass
-            self._guild_bytes[gid] = total
+            self._guild_bytes[gid] = self._unique_bytes(entries)
         return self._guild_bytes[gid]
 
     def _note_media_bytes(self, guild_id, delta):
@@ -940,14 +941,21 @@ class ModLog(commands.Cog):
         return True
 
     def _index_media_file(self, path, message_id, guild_id, channel_id=None, author_id=None,
-                          filename=None, content_type=None, kind="attachment", size=None):
-        """Blocking: hash one cached file and record it. Idempotent on path."""
+                          filename=None, content_type=None, kind="attachment", size=None,
+                          cached_ts=None, dedupe=True):
+        """Blocking: hash one cached file, record it, and — when an identical
+        file is already cached anywhere — replace it with a hardlink to that
+        copy so the bytes exist once on disk (Paul, 9/10: "only one of each
+        hash"). Every message keeps its own path; a link going away never
+        touches the others. Idempotent on path."""
         try:
             digest = file_sha256(path)
             if size is None:
                 size = os.path.getsize(path)
         except OSError:
             return False
+        if dedupe:
+            self._dedupe_into(path, digest)
         with self._conn() as c:
             c.execute(
                 "INSERT OR IGNORE INTO media_index (path,message_id,guild_id,channel_id,author_id,"
@@ -956,8 +964,77 @@ class ModLog(commands.Cog):
                  str(guild_id) if guild_id else None,
                  str(channel_id) if channel_id else None,
                  str(author_id) if author_id else None,
-                 filename, size, content_type, kind, digest, time.time()))
+                 filename, size, content_type, kind, digest,
+                 cached_ts if cached_ts is not None else time.time()))
         return True
+
+    def _dedupe_into(self, path, digest):
+        """Blocking: if another live cache entry has the same sha256, turn `path`
+        into a hardlink of it. Returns True when linked. Same filesystem is a
+        given (one media_cache tree); anything odd just leaves the file as is."""
+        with self._conn() as c:
+            others = [r[0] for r in c.execute(
+                "SELECT path FROM media_index WHERE sha256=? AND swept_ts IS NULL AND path!=? "
+                "ORDER BY cached_ts LIMIT 8", (digest, path))]
+        for other in others:
+            try:
+                if not os.path.isfile(other) or os.path.samefile(other, path):
+                    continue
+                tmp = path + ".dedupe"
+                os.link(other, tmp)
+                os.replace(tmp, path)
+                return True
+            except OSError:
+                continue
+        return False
+
+    def _dedupe_existing(self):
+        """Blocking, one-shot: collapse live index rows that share a sha256 but
+        still hold separate copies on disk (files indexed before dedupe
+        existed). Oldest cached copy is the one the others link to. Returns
+        the number of files turned into links."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT sha256, path FROM media_index WHERE swept_ts IS NULL AND sha256 IN "
+                "(SELECT sha256 FROM media_index WHERE swept_ts IS NULL GROUP BY sha256 HAVING COUNT(*) > 1) "
+                "ORDER BY sha256, cached_ts").fetchall()
+        linked = 0
+        canonical = {}
+        for digest, path in rows:
+            if not os.path.isfile(path):
+                continue
+            head = canonical.get(digest)
+            if head is None:
+                canonical[digest] = path
+                continue
+            try:
+                if os.path.samefile(head, path):
+                    continue
+                tmp = path + ".dedupe"
+                os.link(head, tmp)
+                os.replace(tmp, path)
+                linked += 1
+            except OSError:
+                continue
+        if linked:
+            self._guild_bytes.clear()
+        return linked
+
+    @staticmethod
+    def _unique_bytes(entries):
+        """Sum sizes counting each inode once — hardlinked duplicates share bytes."""
+        seen, total = set(), 0
+        for path, _, size in entries:
+            try:
+                st = os.stat(path)
+                key = (st.st_dev, st.st_ino)
+            except OSError:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            total += size
+        return total
 
     def _index_existing_media(self):
         """Blocking, one-shot at startup: files on disk that predate media_index
@@ -966,19 +1043,22 @@ class ModLog(commands.Cog):
         with self._conn() as c:
             known = {r[0] for r in c.execute("SELECT path FROM media_index")}
         added = 0
-        for path, _, size in self._all_media_entries():
+        for path, mtime, size in sorted(self._all_media_entries(), key=lambda e: e[1]):
             if path in known:
                 continue
             gid, mid, kind = media_path_meta(path)
             row = self._row_from_db(mid) if mid else None
             if row is not None:
                 gid = gid or row["guild_id"]
+            # cached_ts = the file's mtime: it WAS cached then, and the sweep
+            # ages by cached_ts (a hardlink shares its inode's mtime, so mtime
+            # alone would let an old home copy age a fresh tenant link out).
             self._index_media_file(
                 path, mid, gid,
                 channel_id=row["channel_id"] if row else None,
                 author_id=row["author_id"] if row else None,
                 filename=os.path.basename(path).split("_", 2)[-1],
-                kind=kind, size=size)
+                kind=kind, size=size, cached_ts=mtime)
             added += 1
         return added
 
@@ -1780,13 +1860,19 @@ class ModLog(commands.Cog):
     def _sweep_files(self, now):
         """Blocking: age out cached files per guild window, then the global cap."""
         removed = 0
+        # Age by the index's cached_ts, not the inode mtime: deduped files are
+        # hardlinks and share one mtime, which could be years old.
+        with self._conn() as c:
+            cached_at = {r[0]: r[1] for r in c.execute(
+                "SELECT path, cached_ts FROM media_index WHERE swept_ts IS NULL")}
         for path, mtime, _ in self._all_media_entries():
             parent = os.path.basename(os.path.dirname(path))
             if parent.isdigit() and parent not in ARCHIVE_GUILDS:
                 _, media_cutoff = self._guild_windows(parent, now)
             else:
                 media_cutoff = None   # operator guilds + the old flat layout: kept until reviewed
-            if media_cutoff is not None and mtime < media_cutoff:
+            age_ts = cached_at.get(path, mtime)
+            if media_cutoff is not None and age_ts < media_cutoff:
                 if self._remove_media_file(path, "window"):
                     removed += 1
         self._guild_bytes.clear()  # recomputed lazily from disk after a sweep
@@ -1802,6 +1888,9 @@ class ModLog(commands.Cog):
                 added = await asyncio.to_thread(self._index_existing_media)
                 if added:
                     print(f"[mod_log] media_index: recorded {added} pre-existing cached file(s)")
+                linked = await asyncio.to_thread(self._dedupe_existing)
+                if linked:
+                    print(f"[mod_log] media_index: deduped {linked} file(s) into hardlinks")
             except Exception as e:
                 print(f"[mod_log] media_index backfill failed: {e!r}")
             self._media_indexed = True
@@ -1832,7 +1921,7 @@ class ModLog(commands.Cog):
         def _protected(path):
             parent = os.path.basename(os.path.dirname(path))
             return (not parent.isdigit()) or parent in ARCHIVE_GUILDS
-        protected_bytes = sum(s for p, _, s in entries if _protected(p))
+        protected_bytes = self._unique_bytes([e for e in entries if _protected(e[0])])
         budget = max(0, cap_gb * 1024 ** 3 - protected_bytes)
         evict = files_to_evict([e for e in entries if not _protected(e[0])], budget)
         for path in evict:
