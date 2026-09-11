@@ -1040,7 +1040,10 @@ class ModLog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.guild is None or not is_enabled(message.guild.id, "msglog"):
+        # EVERY guild is archived (Paul, 2026-09-10: "it defaults to on"). The
+        # msglog_enabled switch only decides whether log embeds get POSTED —
+        # 13 servers had sat on the old opt-in default with nothing recorded.
+        if message.guild is None:
             return
         # Every msglog guild is remembered — for the recent window at least. The
         # sweeper, not this path, decides how long the row lives (tier 0: hours).
@@ -1235,8 +1238,8 @@ class ModLog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
-        if payload.guild_id is None or not is_enabled(payload.guild_id, "msglog"):
-            return
+        if payload.guild_id is None:
+            return   # bookkeeping runs for every guild; posting is gated below
         guild = self.bot.get_guild(payload.guild_id)
         if guild is None:
             return
@@ -1271,7 +1274,7 @@ class ModLog(commands.Cog):
 
         cfg = get_config(payload.guild_id)
         log_ch = self._log_channel(guild, cfg)
-        if not cfg.get("msglog_deletes") or log_ch is None:
+        if not cfg.get("msglog_enabled") or not cfg.get("msglog_deletes") or log_ch is None:
             return
         # mass-self-delete tripwire BEFORE the per-channel ignore check — a
         # scrub is a scrub no matter which channel it happens in
@@ -1533,8 +1536,8 @@ class ModLog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent):
-        if payload.guild_id is None or not is_enabled(payload.guild_id, "msglog"):
-            return
+        if payload.guild_id is None:
+            return   # bookkeeping runs for every guild; posting is gated below
         guild = self.bot.get_guild(payload.guild_id)
         if guild is None:
             return
@@ -1560,7 +1563,7 @@ class ModLog(commands.Cog):
 
         cfg = get_config(payload.guild_id)
         log_ch = self._log_channel(guild, cfg)
-        if not cfg.get("msglog_bulk") or log_ch is None \
+        if not cfg.get("msglog_enabled") or not cfg.get("msglog_bulk") or log_ch is None \
                 or self._skip_logging(cfg, payload.channel_id, log_ch):
             return
         embed = discord.Embed(
@@ -1588,8 +1591,8 @@ class ModLog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_message_edit(self, payload: discord.RawMessageUpdateEvent):
-        if payload.guild_id is None or not is_enabled(payload.guild_id, "msglog"):
-            return
+        if payload.guild_id is None:
+            return   # bookkeeping runs for every guild; posting is gated below
         guild = self.bot.get_guild(payload.guild_id)
         data = payload.data or {}
         if guild is None or "content" not in data:
@@ -1624,7 +1627,7 @@ class ModLog(commands.Cog):
 
         cfg = get_config(payload.guild_id)
         log_ch = self._log_channel(guild, cfg)
-        if not cfg.get("msglog_edits") or log_ch is None \
+        if not cfg.get("msglog_enabled") or not cfg.get("msglog_edits") or log_ch is None \
                 or self._skip_logging(cfg, payload.channel_id, log_ch):
             return
         author = data.get("author") or {}
