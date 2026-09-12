@@ -821,6 +821,55 @@ class BanRace(commands.Cog):
         await self._abort(interaction.guild, channel, race, interaction.user)
         await interaction.followup.send("Stopped.", ephemeral=True)
 
+    # Paul 9/12: "someone said 15 is too high" — the join threshold has to be
+    # changeable on an OPEN lobby, not only at /race start. Same auto-start
+    # rule as a join: if the lobby already holds that many, it goes now.
+    @race.command(name="edit", description="Change an open lobby's join threshold before the race starts.")
+    @app_commands.describe(min_players="Players needed before the race starts — it starts the moment the lobby holds this many")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def race_edit(self, interaction: discord.Interaction,
+                        min_players: app_commands.Range[int, 3, None]):
+        guild = interaction.guild
+        race = engine.active_race(guild.id)
+        if not race:
+            return await interaction.response.send_message("No race running here.", ephemeral=True)
+        if race["status"] != "lobby":
+            return await interaction.response.send_message(
+                "The race is on — the join threshold only matters in the lobby.", ephemeral=True)
+        s = race["settings"]
+        old = s.get("min_players", engine.MIN_PLAYERS)
+        if min_players == old:
+            return await interaction.response.send_message(
+                f"It's already set to **{old}**.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        s["min_players"] = min_players
+        if s.get("lives_auto"):
+            # auto lives track the lobby size until start; keep the lobby's number honest
+            s["lives"] = engine.recommended_lives(min_players)
+        engine.update_race(race["id"], settings=s)
+        race = engine.get_race(race["id"])
+        rows = engine.players(race["id"])
+        channel = await self._channel_for(guild, race)
+        lobby_msg = None
+        if channel and race.get("lobby_msg_id"):
+            try:
+                lobby_msg = await channel.fetch_message(int(race["lobby_msg_id"]))
+            except (discord.HTTPException, ValueError):
+                lobby_msg = None
+        if len(rows) >= min_players and channel and lobby_msg:
+            await self._begin(guild, channel, lobby_msg, race, rows)
+            return await interaction.followup.send(
+                f"Threshold {old} → **{min_players}** — the lobby already had {len(rows)} in, so it's starting now.",
+                ephemeral=True)
+        if lobby_msg:
+            try:
+                await lobby_msg.edit(embed=lobby_embed(race, rows, guild.name), view=lobby_view(race["id"]))
+            except discord.HTTPException:
+                pass
+        await interaction.followup.send(
+            f"Threshold {old} → **{min_players}**. {len(rows)} in so far — it starts at {min_players}.",
+            ephemeral=True)
+
     @race.command(name="status", description="Standings for the race in progress.")
     async def race_status(self, interaction: discord.Interaction):
         race = engine.active_race(interaction.guild.id)

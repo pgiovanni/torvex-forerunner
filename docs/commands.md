@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **230 commands** (100 top-level, the rest subcommands) across 42 cogs
+- **231 commands** (100 top-level, the rest subcommands) across 42 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -2479,6 +2479,20 @@ Last to survive: your power-ups — or aim an Overload / Transfuse.
 | `use` | string | No | Which power-up to use (leave empty to see what you hold) *(one of: `Overload — take 1 damage to deal 2 (needs a player)`, `Transfuse — give someone 1 life, lose 1 (needs a player)`, `Patch — heal yourself 1`, `Medkit — heal yourself 2, skip this round's vote`)* |
 | `player` | user | No | Who it's aimed at |
 
+#### `/race edit`
+
+Change an open lobby's join threshold before the race starts.
+
+```
+/race edit <min_players>
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `min_players` | integer | Yes | Players needed before the race starts — it starts the moment the lobby holds this many *(range 3–?)* |
+
 #### `/race start`
 
 Open a lobby. Posts in #last-to-survive (created if missing) or the channel you pick.
@@ -2491,11 +2505,11 @@ Open a lobby. Posts in #last-to-survive (created if missing) or the channel you 
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `lives` | integer | No | Lives per player (blank = recommended for however many join) *(range 1–8)* |
+| `lives` | integer | No | Lives per player (blank = recommended for however many join) *(range 1–50)* |
 | `round_minutes` | integer | No | Minutes per round (default 3) *(range 1–30)* |
 | `mode` | string | No | ghost = no bans (default); real = actual bans, auto-unban at the end *(one of: `ghost — no bans, eliminated players are just out (default)`, `real — actual bans, auto-unban when it ends`)* |
 | `min_account_days` | integer | No | Minimum account age to enter (default 7) *(range 0–365)* |
-| `min_players` | integer | No | Players needed before the race can start (default 3) *(range 3–500)* |
+| `min_players` | integer | No | Players needed before the race can start (default 3) *(range 3–?)* |
 | `channel` | channel | No | Where the race runs (default: #last-to-survive, created if missing) *(channel types: text, announcement)* |
 
 #### `/race status`
