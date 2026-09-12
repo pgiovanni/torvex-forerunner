@@ -221,6 +221,14 @@ DEFAULTS = {
     "welcome_message": "",           # {user} {mention} {server} {count} are substituted
     "goodbye_channel_id": None,
     "goodbye_message": "",
+    # ── dead chat ping (cogs/deadchat.py) ─────────────────────────────────────
+    # /deadchat lets ANY member ping one role to wake the server up. The role is
+    # picked on the dashboard; the cooldown is server-wide (whoever pinged
+    # last); the channel list confines it (empty = anywhere).
+    "deadchat_enabled": 0,
+    "deadchat_role_id": None,
+    "deadchat_cooldown_min": 30,
+    "deadchat_channels": [],
     # ── automation rules (cogs/auto_rules.py) ─────────────────────────────────
     # The dashboard's rule builder writes these. `rules` is a LIST of rule
     # objects, not flat keys — see cogs/auto_rules.py for the shape and for why
