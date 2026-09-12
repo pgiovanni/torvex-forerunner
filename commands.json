@@ -71,7 +71,7 @@
       "required_permissions": []
     },
     {
-      "name": "deadchat",
+      "name": "deadchatping",
       "description": "Ping the Dead Chat role to wake the server up — add a question if you like",
       "cog": "deadchat",
       "required_permissions": []
