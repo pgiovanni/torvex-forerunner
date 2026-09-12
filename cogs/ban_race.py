@@ -42,6 +42,7 @@ COLOR = 0xE74C3C
 COLOR_ROUND = 0xF1C40F
 COLOR_DROP = 0x9B59B6
 COLOR_SUPER = 0xFFD700
+COLOR_RARE = 0xF1C40F      # rare drops: no-strings power-ups (Paul 9/12 tiers)
 COLOR_WIN = 0x2ECC71
 MENTIONS = discord.AllowedMentions(users=True, roles=False, everyone=False)
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -186,9 +187,18 @@ def _lives_bar(n):
 
 
 def powerup_guide():
-    """Every power-up with its benefit and its cost — the same text the drop
-    shows, so nobody grabs something they don't understand."""
-    return "\n".join(f"{emoji} **{name}** — {blurb}" for emoji, name, blurb in engine.POWERUPS.values())
+    """Every power-up with its benefit and its cost, grouped by drop tier —
+    the same text the drop shows, so nobody grabs something they don't
+    understand."""
+    out = []
+    for tier, (t_emoji, t_label, _) in engine.TIERS.items():
+        kinds = [k for k, t in engine.POWERUP_TIER.items() if t == tier]
+        note = "they bite back — drop often" if tier == "common" else "no strings — drop rarely"
+        out.append(f"{t_emoji} **{t_label.upper()}** · {note}")
+        for k in kinds:
+            emoji, name, blurb = engine.POWERUPS[k]
+            out.append(f"{emoji} **{name}** — {blurb}")
+    return "\n".join(out)
 
 
 def lobby_embed(race, rows, guild_name):
@@ -244,7 +254,9 @@ def drop_embed(kind, is_super=False):
         emoji, name, blurb = engine.SUPER[kind]
         return discord.Embed(title=f"🌟 SUPER DROP — {emoji} {name}", description=blurb, color=COLOR_SUPER)
     emoji, name, blurb = engine.POWERUPS[kind]
-    return discord.Embed(title=f"⚡ POWER-UP DROP — {emoji} {name}", description=blurb, color=COLOR_DROP)
+    t_emoji, t_label = engine.tier_of(kind)
+    return discord.Embed(title=f"⚡ POWER-UP DROP — {emoji} {name} · {t_emoji} {t_label}",
+                         description=blurb, color=COLOR_RARE if t_label == "Rare" else COLOR_DROP)
 
 
 def elimination_dm(race, round_no, killer_id, guild_name):
