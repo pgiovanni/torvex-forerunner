@@ -462,6 +462,15 @@ class Rounds(unittest.TestCase):
         rows[0]["alive"] = 0
         self.assertTrue(E.is_sudden_death(rows, 5))
 
+    def test_recommended_lives_scale_with_players(self):
+        # Paul 9/12: "scale lives with the amount of people playing — recommended, not forced"
+        self.assertEqual([E.recommended_lives(n) for n in (0, 3, 5, 6, 10, 15, 20, 100)],
+                         [2, 2, 3, 3, 4, 5, 6, 6])
+        # explicit lives survive create_race untouched; auto is a flag the cog acts on at start
+        r = E.create_race(9191, 3, 9, settings={"lives": 5, "lives_auto": False, "min_players": 15})
+        self.assertEqual((r["settings"]["lives"], r["settings"]["lives_auto"]), (5, False))
+        E.update_race(r["id"], status="aborted")
+
     def test_purge_round_never_round_one(self):
         rng = random.Random(1)
         for n in (3, 8, 30, 200):

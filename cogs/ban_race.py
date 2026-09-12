@@ -207,6 +207,23 @@ def powerup_guide():
     return "\n".join(out)
 
 
+def lives_line(s, n_joined):
+    """The lobby's lives line. Auto = the recommendation for whoever's in so
+    far (locked in at start); fixed = the host's number, with the
+    recommendation shown beside it when it differs — advice, never override."""
+    need = s.get("min_players", engine.MIN_PLAYERS)
+    rec_now = engine.recommended_lives(max(n_joined, engine.MIN_PLAYERS))
+    rec_full = engine.recommended_lives(need)
+    if s.get("lives_auto"):
+        return (f"❤️ **Auto** — {rec_now} for the {n_joined} in so far, {rec_full} at {need}. "
+                f"Locked in for whoever's actually here when it starts.")
+    fixed = s["lives"]
+    if fixed == rec_full:
+        return f"❤️ **{fixed}** (the host's call — also the recommendation for {need} players)."
+    return (f"❤️ **{fixed}** (the host's call). Recommended for {need} players: **{rec_full}**"
+            + (f", for the {n_joined} in so far: **{rec_now}**" if rec_now != rec_full and n_joined else "") + ".")
+
+
 def lobby_embed(race, rows, guild_name):
     s = race["settings"]
     e = discord.Embed(title="🔫 LAST TO SURVIVE", color=COLOR,
@@ -220,6 +237,7 @@ def lobby_embed(race, rows, guild_name):
            f"Sudden death adds **super drops**.\n"
            f"• Last one standing wins. 🎁")
     e.add_field(name="How it works", value=how, inline=False)
+    e.add_field(name="Lives", value=lives_line(s, len(rows)), inline=False)
     e.add_field(name="Power-ups (drop in the channel — first click takes it)", value=powerup_guide(), inline=False)
     names = [p["name"] for p in rows]
     shown = ", ".join(names[:40]) + (f" … +{len(names) - 40}" if len(names) > 40 else "")
@@ -680,7 +698,8 @@ class BanRace(commands.Cog):
                               guild_only=True, default_permissions=discord.Permissions(manage_guild=True))
 
     @race.command(name="start", description="Open a lobby. Posts in #last-to-survive (created if missing) or the channel you pick.")
-    @app_commands.describe(lives="Lives per player (default 3)", round_minutes="Minutes per round (default 3)",
+    @app_commands.describe(lives="Lives per player (blank = recommended for however many join)",
+                           round_minutes="Minutes per round (default 3)",
                            mode="ghost = no bans (default); real = actual bans, auto-unban at the end",
                            min_account_days="Minimum account age to enter (default 7)",
                            min_players="Players needed before the race can start (default 3)",
@@ -688,7 +707,7 @@ class BanRace(commands.Cog):
     @app_commands.choices(mode=MODE_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def race_start(self, interaction: discord.Interaction,
-                         lives: app_commands.Range[int, 1, 5] = 3,
+                         lives: app_commands.Range[int, 1, 8] = None,
                          round_minutes: app_commands.Range[int, 1, 30] = 3,
                          mode: app_commands.Choice[str] = None,
                          min_account_days: app_commands.Range[int, 0, 365] = 7,
@@ -739,8 +758,14 @@ class BanRace(commands.Cog):
             pass
 
         try:
+            # lives blank = auto: recommended for the lobby size, re-computed for the
+            # actual head-count the moment the race starts. An explicit value is the
+            # host's call and is never touched.
+            lives_auto = lives is None
             race = engine.create_race(guild.id, channel.id, interaction.user.id, settings={
-                "lives": lives, "round_secs": round_minutes * 60, "mode": mode_v,
+                "lives": engine.recommended_lives(min_players) if lives_auto else lives,
+                "lives_auto": lives_auto,
+                "round_secs": round_minutes * 60, "mode": mode_v,
                 "min_account_days": min_account_days, "min_players": min_players,
                 "racer_role_id": racer_role_id})
         except ValueError as e:
@@ -752,8 +777,13 @@ class BanRace(commands.Cog):
         if not invite_url:
             warn.append("⚠️ Couldn't mint a return invite (need Create Invite in that channel) — post one yourself before it starts.")
         note = ("\n" + "\n".join(warn)) if warn else ""
+        lives_note = (f" Lives are on **auto** — {race['settings']['lives']} for {min_players} players, "
+                      f"re-checked for whoever's actually in when it starts."
+                      if lives_auto else
+                      f" Lives fixed at **{lives}** (recommended for {min_players} players: "
+                      f"{engine.recommended_lives(min_players)}).")
         await interaction.followup.send(f"Lobby's open in {channel.mention}. Hit **Start the race** on it when "
-                                        f"enough people have joined.{note}", ephemeral=True)
+                                        f"enough people have joined.{lives_note}{note}", ephemeral=True)
 
     @race.command(name="stop", description="Stop the race. Unbans everyone it banned.")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -1010,8 +1040,10 @@ class BanRace(commands.Cog):
         engine.join(race["id"], m.id, m.display_name, s["lives"])
         rows = engine.players(race["id"])
         need = s.get("min_players", engine.MIN_PLAYERS)
+        lives_txt = ("lives get set when it starts — recommended for the head-count"
+                     if s.get("lives_auto") else f"{s['lives']} lives")
         await interaction.response.send_message(
-            f"You're in. {s['lives']} lives. Don't trust anyone. 🔫"
+            f"You're in. {lives_txt}. Don't trust anyone. 🔫"
             + (f" ({len(rows)}/{need} — it starts the moment the lobby fills.)" if len(rows) < need else ""),
             ephemeral=True)
         await self._set_racer(interaction.guild, race, m.id, True)
@@ -1051,6 +1083,13 @@ class BanRace(commands.Cog):
         if engine.get_race(race["id"])["status"] != "lobby":
             return
         purge = engine.pick_purge_round(self._rng, len(rows))
+        s = race["settings"]
+        if s.get("lives_auto"):
+            s["lives"] = engine.recommended_lives(len(rows))
+            for p in rows:
+                p["lives"] = s["lives"]
+            engine.save_players(race["id"], rows)
+            engine.update_race(race["id"], settings=s)
         engine.update_race(race["id"], status="running", started_at=time.time(), purge_round=purge)
         race = engine.get_race(race["id"])
         try:
