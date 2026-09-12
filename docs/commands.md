@@ -2487,7 +2487,7 @@ Change an open lobby's settings before the race starts.
 /race edit [min_players] [sudden_death_at]
 ```
 
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+**Access:** Everyone &nbsp;·&nbsp; Server only
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
@@ -2502,7 +2502,7 @@ Open a lobby. Posts in #last-to-survive (created if missing) or the channel you 
 /race start [lives] [round_minutes] [mode] [min_account_days] [min_players] [sudden_death_at] [channel]
 ```
 
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+**Access:** Everyone &nbsp;·&nbsp; Server only
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
@@ -2522,19 +2522,19 @@ Standings for the race in progress.
 /race status
 ```
 
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+**Access:** Everyone &nbsp;·&nbsp; Server only
 
 *No parameters.*
 
 #### `/race stop`
 
-Stop the race. Unbans everyone it banned.
+Stop the race (host or a mod). Unbans everyone it banned.
 
 ```
 /race stop
 ```
 
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+**Access:** Everyone &nbsp;·&nbsp; Server only
 
 *No parameters.*
 
