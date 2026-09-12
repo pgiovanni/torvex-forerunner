@@ -910,6 +910,40 @@
    "dm_allowed": true
   },
   {
+   "path": "lastrace",
+   "description": "Last to survive stats — all-time leaderboard, or one race round by round.",
+   "params": [
+    {
+     "name": "player",
+     "type": "user",
+     "required": false,
+     "description": "One player: their all-time record, or their story in the race you pick"
+    },
+    {
+     "name": "round",
+     "type": "integer",
+     "required": false,
+     "description": "Only this round of a race (blank = every round)",
+     "min": 1,
+     "max": 500
+    },
+    {
+     "name": "race",
+     "type": "integer",
+     "required": false,
+     "description": "A race by its number — blank = all-time stats",
+     "min": 1,
+     "max": 1000000000
+    }
+   ],
+   "signature": "/lastrace [player] [round] [race]",
+   "root": "lastrace",
+   "cog": "ban_race",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "powerup",
    "description": "Last to survive: your power-ups — or aim an Overload / Transfuse.",
    "params": [
@@ -4512,19 +4546,6 @@
    "dm_allowed": false
   },
   {
-   "path": "roster-missing",
-   "description": "Members on record who AREN'T in the server now — your re-invite list (admin)",
-   "params": [],
-   "signature": "/roster-missing",
-   "root": "roster-missing",
-   "cog": "server_backup",
-   "permissions": [
-    "Administrator"
-   ],
-   "cooldown_seconds": null,
-   "dm_allowed": false
-  },
-  {
    "path": "structure-restore",
    "description": "Recreate roles/channels deleted since the last backup (admin)",
    "params": [
@@ -5314,6 +5335,12 @@
    "server_owner_only": false
   },
   "race status": {
+   "cog": "ban_race",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "lastrace": {
    "cog": "ban_race",
    "visibility_permissions": [],
    "runtime_permissions": [],
