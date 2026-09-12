@@ -224,6 +224,15 @@ def lives_line(s, n_joined):
             + (f", for the {n_joined} in so far: **{rec_now}**" if rec_now != rec_full and n_joined else "") + ".")
 
 
+def super_guide():
+    """The sudden-death supers, golden apple flagged as the super-rare one."""
+    lines = ["🌟 **SUPER** · sudden death only, one per round, fires the moment it's grabbed"]
+    for kind, (emoji, name, blurb) in engine.SUPER.items():
+        tag = " · 🍎 **SUPER RARE**" if kind == "goldapple" else ""
+        lines.append(f"{emoji} **{name}**{tag} — {blurb}")
+    return "\n".join(lines)
+
+
 def lobby_embed(race, rows, guild_name):
     s = race["settings"]
     e = discord.Embed(title="🔫 LAST TO SURVIVE", color=COLOR,
@@ -239,6 +248,7 @@ def lobby_embed(race, rows, guild_name):
     e.add_field(name="How it works", value=how, inline=False)
     e.add_field(name="Lives", value=lives_line(s, len(rows)), inline=False)
     e.add_field(name="Power-ups (drop in the channel — first click takes it)", value=powerup_guide(), inline=False)
+    e.add_field(name="Super drops (sudden death)", value=super_guide(), inline=False)
     names = [p["name"] for p in rows]
     shown = ", ".join(names[:40]) + (f" … +{len(names) - 40}" if len(names) > 40 else "")
     e.add_field(name=f"Players ({len(rows)})", value=shown or "*nobody yet — hit Join*", inline=False)
@@ -277,7 +287,7 @@ def drop_embed(kind, is_super=False):
     if is_super:
         emoji, name, blurb = engine.SUPER[kind]
         if kind == "goldapple":
-            return discord.Embed(title=f"🍎 LEGENDARY DROP — {name}", description=blurb, color=COLOR_LEGENDARY)
+            return discord.Embed(title=f"🍎 SUPER RARE DROP — {name}", description=blurb, color=COLOR_LEGENDARY)
         return discord.Embed(title=f"🌟 SUPER DROP — {emoji} {name}", description=blurb, color=COLOR_SUPER)
     emoji, name, blurb = engine.POWERUPS[kind]
     t_emoji, t_label = engine.tier_of(kind)
@@ -324,6 +334,21 @@ class BanRace(commands.Cog):
         for race in engine.running_races():
             self._start_task(race)
             log.info("resumed race %s in guild %s", race["id"], race["guild_id"])
+        # Open lobbies: re-render their embed so the rules on it are the rules
+        # that will run (power-ups, tiers, lives line) — a deploy mid-lobby
+        # used to leave a stale card up until the next join.
+        for race in engine.lobby_races():
+            guild = self.bot.get_guild(int(race["guild_id"]))
+            channel = guild and await self._channel_for(guild, race)
+            if channel is None or not race.get("lobby_msg_id"):
+                continue
+            try:
+                msg = await channel.fetch_message(int(race["lobby_msg_id"]))
+                await msg.edit(embed=lobby_embed(race, engine.players(race["id"]), guild.name),
+                               view=lobby_view(race["id"]))
+                log.info("refreshed lobby embed for race %s", race["id"])
+            except (discord.HTTPException, ValueError):
+                pass
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -988,6 +1013,7 @@ class BanRace(commands.Cog):
         e.set_footer(text="Shields and extra shots work on their own. Overload and Transfuse need a target. "
                           "Patch and Medkit heal you.")
         e.add_field(name="What they do", value=powerup_guide(), inline=False)
+        e.add_field(name="Super drops (sudden death)", value=super_guide(), inline=False)
         view = _PowerupView(self, race["id"], p, rows)
         # discord.py treats view=None as "a view" and calls .is_finished() on it —
         # pass the kwarg only when there are buttons to show (crashed live 9/12).

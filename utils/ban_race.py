@@ -141,7 +141,7 @@ SUPER = {
                  "❌ Still one target per shot, and unfired shots die with you."),
     "goldapple": ("🍎", "Golden apple",
                   "✅ +2 lives that go ABOVE max — the only thing in the race that does. "
-                  "❌ Legendary: one super in ten, sudden death only; a shot still takes 1 (it's a buffer, "
+                  "❌ SUPER RARE: one super in ten, sudden death only; a shot still takes 1 (it's a buffer, "
                   "not armor), heals can't stack past max+2."),
 }
 GOLDAPPLE_OVER = 2          # how far above max lives a golden apple can take you
@@ -345,6 +345,12 @@ def leaderboard(players, limit=15):
     rows = sorted(players.items(), key=lambda kv: (-kv[1]["wins"], -kv[1]["kills"], -kv[1]["races"],
                                                    kv[1]["name"].lower()))
     return [(uid, st) for uid, st in rows[:limit]]
+
+
+def lobby_races(db=None):
+    init(db)
+    with _conn(db) as c:
+        return [_race_row(r) for r in c.execute("SELECT * FROM races WHERE status='lobby'")]
 
 
 def running_races(db=None):
