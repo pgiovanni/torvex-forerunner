@@ -48,8 +48,8 @@ INVITE_DAYS = 7
 MAX_PINGS = 60
 
 MODE_CHOICES = [
+    app_commands.Choice(name="ghost — no bans, eliminated players are just out (default)", value="ghost"),
     app_commands.Choice(name="real — actual bans, auto-unban when it ends", value="real"),
-    app_commands.Choice(name="ghost — no bans, eliminated players are just out", value="ghost"),
 ]
 USE_CHOICES = [
     app_commands.Choice(name="Overload — take 1 damage to deal 2", value="overload"),
@@ -538,7 +538,7 @@ class BanRace(commands.Cog):
 
     @race.command(name="start", description="Open a lobby. Posts in #last-to-survive (created if missing) or the channel you pick.")
     @app_commands.describe(lives="Lives per player (default 3)", round_minutes="Minutes per round (default 3)",
-                           mode="real = actual bans, auto-unban at the end; ghost = no bans",
+                           mode="ghost = no bans (default); real = actual bans, auto-unban at the end",
                            min_account_days="Minimum account age to enter (default 7)",
                            min_players="Players needed before the race can start (default 3)",
                            channel="Where the race runs (default: #last-to-survive, created if missing)")
@@ -552,7 +552,7 @@ class BanRace(commands.Cog):
                          min_players: app_commands.Range[int, 3, 500] = 3,
                          channel: discord.TextChannel = None):
         guild = interaction.guild
-        mode_v = mode.value if mode else "real"
+        mode_v = mode.value if mode else engine.DEFAULTS["mode"]
         if engine.active_race(guild.id):
             return await interaction.response.send_message(
                 "A race is already on here — `/race stop` it first.", ephemeral=True)

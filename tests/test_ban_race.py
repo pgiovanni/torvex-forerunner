@@ -293,6 +293,7 @@ class Store(unittest.TestCase):
         self.assertIsNone(E.active_race(100))
         self.assertEqual(E.get_race(r1["id"])["winner_ids"], ["5"])
         self.assertEqual(E.get_race(r1["id"])["settings"]["lives"], 3)
+        self.assertEqual(E.get_race(r1["id"])["settings"]["mode"], "ghost")   # real bans are opt-in
         E.update_race(r2["id"], status="aborted")
 
     def test_players_shots_and_retarget_round_trip(self):

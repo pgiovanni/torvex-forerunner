@@ -49,7 +49,7 @@ DEFAULT_CHANNEL = "last-to-survive"
 DEFAULTS = dict(
     lives=3,
     round_secs=180,
-    mode="real",             # real = actual bans, ghost = marked out only
+    mode="ghost",            # ghost = marked out only; real = actual bans (opt-in)
     backfire=0.10,
     sudden_death_at=5,
     min_account_days=7,
