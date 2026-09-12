@@ -537,6 +537,10 @@ class Store(unittest.TestCase):
         E.update_race(rid, status="finished")
         self.assertIsNone(E.active_race(777))
         self.assertEqual(E.latest_race(777)["id"], rid)
+        r2 = E.create_race(777, 3, 9, settings={"lives": 3, "mode": "ghost"})
+        E.update_race(r2["id"], status="aborted")
+        self.assertEqual([r["id"] for r in E.guild_races(777)], [r2["id"], rid])   # newest first
+        self.assertEqual(E.guild_races(778), [])                                     # guild-scoped
         # player one: cast first, then what happened, per round; two's cast at one is NOT shown
         story = E.timeline(1, E.player_shots(rid, 1), E.player_log(rid, 1))
         self.assertEqual([r for r, _ in story], [1, 2])

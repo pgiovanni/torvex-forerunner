@@ -782,15 +782,26 @@ class BanRace(commands.Cog):
     @app_commands.command(name="lastrace",
                           description="Last to survive stats — the latest race round by round: every hit, miss, heal and drop.")
     @app_commands.describe(player="Only this player's story (blank = the whole race)",
-                           round="Only this round (blank = every round)")
+                           round="Only this round (blank = every round)",
+                           race="An earlier race by its number (blank = the latest)")
     @app_commands.guild_only()
     @app_commands.checks.cooldown(1, 5, key=lambda i: (i.guild_id, i.user.id))
     async def lastrace(self, interaction: discord.Interaction, player: discord.Member = None,
-                       round: app_commands.Range[int, 1, 500] = None):
-        race = engine.active_race(interaction.guild.id) or engine.latest_race(interaction.guild.id)
+                       round: app_commands.Range[int, 1, 500] = None,
+                       race: app_commands.Range[int, 1, 10 ** 9] = None):
+        history = engine.guild_races(interaction.guild.id, limit=8)
+        if race is not None:
+            race = next((r for r in history if r["id"] == race), None) or engine.get_race(race)
+            if not race or str(race["guild_id"]) != str(interaction.guild.id):
+                return await interaction.response.send_message(
+                    "No race with that number here. Recent ones: "
+                    + (", ".join(f"#{r['id']}" for r in history) or "none"), ephemeral=True)
+        else:
+            race = engine.active_race(interaction.guild.id) or engine.latest_race(interaction.guild.id)
         if not race:
             return await interaction.response.send_message("No race has been run here.", ephemeral=True)
         s = race["settings"]
+        earlier = ", ".join(f"#{r['id']}" for r in history if r["id"] != race["id"])
         if player is not None:
             p = engine.player(race["id"], player.id)
             if not p:
@@ -820,7 +831,9 @@ class BanRace(commands.Cog):
             e.add_field(name=f"Round {r}", value=text, inline=False)
         if dropped:
             footer = f"Earliest {dropped} round(s) don't fit — use round: to see one. " + footer
-        e.set_footer(text=footer)
+        if earlier:
+            footer += f" · Other races: {earlier} (race: to open one)"
+        e.set_footer(text=footer[:2048])
         # Public (Paul 9/12: "everyone should see it"). Mentions live inside the
         # embed, which never pings; AllowedMentions.none() makes that explicit.
         await interaction.response.send_message(embed=e, allowed_mentions=discord.AllowedMentions.none())
