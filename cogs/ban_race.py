@@ -1,6 +1,7 @@
 """Last to survive — the ban race. Discord side of utils/ban_race.py.
 
-    /race start|stop|status   host controls (Manage Server)
+    /race start|stop|edit|status   anyone can open a ghost race; real bans and
+                              channel: need Manage Server; stop/edit = host or mod
     /vote <player>            fire this round's shot — private until the round closes
     /powerup [use] [target]   inventory, or aim an Overload / Transfuse
 
@@ -788,10 +789,12 @@ class BanRace(commands.Cog):
 
     # ── /race ─────────────────────────────────────────────────────────────────
 
-    # Open to everyone (Paul 9/12: "anyone can see anyone's rounds") — start and
-    # stop carry their own Manage Server check; status/breakdown are for players.
-    race = app_commands.Group(name="race", description="Last to survive — the ban race (host controls)",
-                              guild_only=True, default_permissions=discord.Permissions(manage_guild=True))
+    # Open to everyone (Paul 9/12: "anyone should be able to start the race").
+    # Whoever runs /race start is the host. Real bans and picking the channel
+    # stay behind Manage Server (the bot bans people / locks a channel down);
+    # stop and edit are the host's or a mod's.
+    race = app_commands.Group(name="race", description="Last to survive — the ban race (anyone can start one)",
+                              guild_only=True)
 
     @race.command(name="start", description="Open a lobby. Posts in #last-to-survive (created if missing) or the channel you pick.")
     @app_commands.describe(lives="Lives per player (blank = recommended for however many join)",
@@ -802,7 +805,6 @@ class BanRace(commands.Cog):
                            sudden_death_at="Alive count that starts sudden death (blank = sized to the field: ~¼, 2–5)",
                            channel="Where the race runs (default: #last-to-survive, created if missing)")
     @app_commands.choices(mode=MODE_CHOICES)
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def race_start(self, interaction: discord.Interaction,
                          lives: app_commands.Range[int, 1, 50] = None,
                          round_minutes: app_commands.Range[int, 1, 30] = 3,
@@ -816,6 +818,15 @@ class BanRace(commands.Cog):
         if engine.active_race(guild.id):
             return await interaction.response.send_message(
                 "A race is already on here — `/race stop` it first.", ephemeral=True)
+        is_mod = interaction.user.guild_permissions.manage_guild
+        if not is_mod and mode_v == "real":
+            return await interaction.response.send_message(
+                "Real bans are a mod's call — anyone can open a **ghost** race, but `mode: real` needs "
+                "**Manage Server**.", ephemeral=True)
+        if not is_mod and channel is not None:
+            return await interaction.response.send_message(
+                f"Picking the channel needs **Manage Server** (the race locks it down). Leave `channel:` blank "
+                f"and it runs in #{engine.DEFAULT_CHANNEL}.", ephemeral=True)
         me = guild.me.guild_permissions
         if mode_v == "real" and not me.ban_members:
             return await interaction.response.send_message(
@@ -887,12 +898,14 @@ class BanRace(commands.Cog):
         await interaction.followup.send(f"Lobby's open in {channel.mention}. Hit **Start the race** on it when "
                                         f"enough people have joined.{lives_note}{note}", ephemeral=True)
 
-    @race.command(name="stop", description="Stop the race. Unbans everyone it banned.")
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @race.command(name="stop", description="Stop the race (host or a mod). Unbans everyone it banned.")
     async def race_stop(self, interaction: discord.Interaction):
         race = engine.active_race(interaction.guild.id)
         if not race:
             return await interaction.response.send_message("No race running here.", ephemeral=True)
+        if not self._is_host(interaction, race):
+            return await interaction.response.send_message(
+                "Only the host or a mod (**Manage Server**) can stop this race.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         channel = await self._channel_for(interaction.guild, race) or interaction.channel
         await self._abort(interaction.guild, channel, race, interaction.user)
@@ -904,7 +917,6 @@ class BanRace(commands.Cog):
     @race.command(name="edit", description="Change an open lobby's settings before the race starts.")
     @app_commands.describe(min_players="Players needed before the race starts — it starts the moment the lobby holds this many",
                            sudden_death_at="Alive count that starts sudden death (0 = back to auto, sized to the field)")
-    @app_commands.checks.has_permissions(manage_guild=True)
     async def race_edit(self, interaction: discord.Interaction,
                         min_players: app_commands.Range[int, 3, None] = None,
                         sudden_death_at: app_commands.Range[int, 0, 50] = None):
@@ -912,6 +924,9 @@ class BanRace(commands.Cog):
         race = engine.active_race(guild.id)
         if not race:
             return await interaction.response.send_message("No race running here.", ephemeral=True)
+        if not self._is_host(interaction, race):
+            return await interaction.response.send_message(
+                "Only the host or a mod (**Manage Server**) can change this lobby.", ephemeral=True)
         if race["status"] != "lobby":
             return await interaction.response.send_message(
                 "The race is on — these only matter in the lobby.", ephemeral=True)
@@ -981,7 +996,7 @@ class BanRace(commands.Cog):
         await interaction.response.send_message(embed=standings_embed(race, rows), ephemeral=True)
 
     # Top-level and open to everyone (Paul 9/12: "last race stats or something,
-    # anyone can see anyone's rounds") — /race itself stays the host's group.
+    # anyone can see anyone's rounds") — /race stays a group (subcommands cost no tree slot).
     @app_commands.command(name="lastrace",
                           description="Last to survive stats — all-time leaderboard, or one race round by round.")
     @app_commands.describe(player="One player: their all-time record, or their story in the race you pick",
@@ -1098,7 +1113,7 @@ class BanRace(commands.Cog):
     async def cog_app_command_error(self, interaction: discord.Interaction, error):
         """Say why a command was refused instead of letting it time out."""
         if isinstance(error, app_commands.MissingPermissions):
-            msg = "That one's for the host — it needs **Manage Server**."
+            msg = "That one needs **Manage Server**."
         elif isinstance(error, app_commands.CommandOnCooldown):
             msg = f"Easy — try again in {error.retry_after:.0f}s."
         elif isinstance(error, app_commands.CheckFailure):
