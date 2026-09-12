@@ -24,7 +24,7 @@ Round model (all resolution is SIMULTANEOUS at round close):
   * `backfire` fraction of shots hit the shooter instead;
   * AFK costs a life: a survivor who cast nothing in a round loses one at
     round close (shields don't apply, no kill credit) — you play or you bleed;
-  * the STORM takes a life from the least active survivor each round from
+  * the STORM takes a life from the survivor who sent the fewest chat messages each round from
     `storm_from_round` on, whenever 3+ are alive — hiding is not a strategy;
   * the top killer (2+ kills, unique max) carries a BOUNTY: finishing them is
     worth two extra shots;
@@ -874,7 +874,7 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
                 _die(p, round_no, lines, f"😴 {m(p['user_id'])} didn't vote and had nothing left. **Eliminated.**")
                 dead.append(p["user_id"])
 
-    # the storm: least active survivor bleeds one life, shields don't help;
+    # the storm: fewest-chat-messages survivor bleeds one life, shields don't help;
     # it skips anyone the AFK penalty already hit this round
     if storm and len(alive(rows)) >= 3:
         cands = [p for p in alive(rows) if p["user_id"] not in afk_hit] or alive(rows)
@@ -883,10 +883,10 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
         v = rng.choice(pool)
         v["lives"] -= 1
         if v["lives"] > 0:
-            lines.append(f"🌪️ The **storm** took a life from {m(v['user_id'])} (quietest this round) — "
+            lines.append(f"🌪️ The **storm** took a life from {m(v['user_id'])} (sent the fewest chat messages this round) — "
                          f"**{v['lives']}** left.")
         else:
-            _die(v, round_no, lines, f"🌪️ The **storm** swept {m(v['user_id'])} away (quietest this round). "
+            _die(v, round_no, lines, f"🌪️ The **storm** swept {m(v['user_id'])} away (sent the fewest chat messages this round). "
                                      f"**Eliminated.**")
             dead.append(v["user_id"])
 
