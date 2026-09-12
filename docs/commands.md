@@ -2450,18 +2450,19 @@ Play Tic Tac Toe against the bot.
 
 #### `/lastrace`
 
-Last to survive stats — the latest race round by round: every hit, miss, heal and drop.
+Last to survive stats — all-time leaderboard, or one race round by round.
 
 ```
-/lastrace [player] [round]
+/lastrace [player] [round] [race]
 ```
 
 **Access:** Everyone &nbsp;·&nbsp; Server only
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `player` | user | No | Only this player's story (blank = the whole race) |
-| `round` | integer | No | Only this round (blank = every round) *(range 1–500)* |
+| `player` | user | No | One player: their all-time record, or their story in the race you pick |
+| `round` | integer | No | Only this round of a race (blank = every round) *(range 1–500)* |
+| `race` | integer | No | A race by its number — blank = all-time stats *(range 1–1000000000)* |
 
 #### `/powerup`
 
@@ -2490,7 +2491,7 @@ Open a lobby. Posts in #last-to-survive (created if missing) or the channel you 
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `lives` | integer | No | Lives per player (default 3) *(range 1–5)* |
+| `lives` | integer | No | Lives per player (blank = recommended for however many join) *(range 1–8)* |
 | `round_minutes` | integer | No | Minutes per round (default 3) *(range 1–30)* |
 | `mode` | string | No | ghost = no bans (default); real = actual bans, auto-unban at the end *(one of: `ghost — no bans, eliminated players are just out (default)`, `real — actual bans, auto-unban when it ends`)* |
 | `min_account_days` | integer | No | Minimum account age to enter (default 7) *(range 0–365)* |
