@@ -996,9 +996,7 @@
    "signature": "/race edit [min_players] [sudden_death_at]",
    "root": "race",
    "cog": "ban_race",
-   "permissions": [
-    "Manage Server"
-   ],
+   "permissions": [],
    "cooldown_seconds": null,
    "dm_allowed": false
   },
@@ -1069,9 +1067,7 @@
    "signature": "/race start [lives] [round_minutes] [mode] [min_account_days] [min_players] [sudden_death_at] [channel]",
    "root": "race",
    "cog": "ban_race",
-   "permissions": [
-    "Manage Server"
-   ],
+   "permissions": [],
    "cooldown_seconds": null,
    "dm_allowed": false
   },
@@ -1082,22 +1078,18 @@
    "signature": "/race status",
    "root": "race",
    "cog": "ban_race",
-   "permissions": [
-    "Manage Server"
-   ],
+   "permissions": [],
    "cooldown_seconds": null,
    "dm_allowed": false
   },
   {
    "path": "race stop",
-   "description": "Stop the race. Unbans everyone it banned.",
+   "description": "Stop the race (host or a mod). Unbans everyone it banned.",
    "params": [],
    "signature": "/race stop",
    "root": "race",
    "cog": "ban_race",
-   "permissions": [
-    "Manage Server"
-   ],
+   "permissions": [],
    "cooldown_seconds": null,
    "dm_allowed": false
   },
@@ -5357,25 +5349,19 @@
   "race start": {
    "cog": "ban_race",
    "visibility_permissions": [],
-   "runtime_permissions": [
-    "manage_guild"
-   ],
+   "runtime_permissions": [],
    "server_owner_only": false
   },
   "race stop": {
    "cog": "ban_race",
    "visibility_permissions": [],
-   "runtime_permissions": [
-    "manage_guild"
-   ],
+   "runtime_permissions": [],
    "server_owner_only": false
   },
   "race edit": {
    "cog": "ban_race",
    "visibility_permissions": [],
-   "runtime_permissions": [
-    "manage_guild"
-   ],
+   "runtime_permissions": [],
    "server_owner_only": false
   },
   "race status": {
