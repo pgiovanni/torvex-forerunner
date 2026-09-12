@@ -975,17 +975,25 @@
   },
   {
    "path": "race edit",
-   "description": "Change an open lobby's join threshold before the race starts.",
+   "description": "Change an open lobby's settings before the race starts.",
    "params": [
     {
      "name": "min_players",
      "type": "integer",
-     "required": true,
+     "required": false,
      "description": "Players needed before the race starts — it starts the moment the lobby holds this many",
      "min": 3
+    },
+    {
+     "name": "sudden_death_at",
+     "type": "integer",
+     "required": false,
+     "description": "Alive count that starts sudden death (0 = back to auto, sized to the field)",
+     "min": 0,
+     "max": 50
     }
    ],
-   "signature": "/race edit <min_players>",
+   "signature": "/race edit [min_players] [sudden_death_at]",
    "root": "race",
    "cog": "ban_race",
    "permissions": [
@@ -1040,6 +1048,14 @@
      "min": 3
     },
     {
+     "name": "sudden_death_at",
+     "type": "integer",
+     "required": false,
+     "description": "Alive count that starts sudden death (blank = sized to the field: ~¼, 2–5)",
+     "min": 2,
+     "max": 50
+    },
+    {
      "name": "channel",
      "type": "channel",
      "required": false,
@@ -1050,7 +1066,7 @@
      ]
     }
    ],
-   "signature": "/race start [lives] [round_minutes] [mode] [min_account_days] [min_players] [channel]",
+   "signature": "/race start [lives] [round_minutes] [mode] [min_account_days] [min_players] [sudden_death_at] [channel]",
    "root": "race",
    "cog": "ban_race",
    "permissions": [

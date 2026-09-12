@@ -244,6 +244,8 @@ def lobby_embed(race, rows, guild_name):
            f"• Only racers can talk here — **Join** unlocks the channel; ghosts watch in silence.\n"
            f"• Power-ups drop in this channel every round — the more of you still in, the more drops. First click takes it. "
            f"Sudden death adds **super drops**.\n"
+           f"• **Sudden death** (shields off, half-length rounds) once **{s.get('sudden_death_at', engine.DEFAULTS['sudden_death_at'])}** are left"
+           f"{' — sized to the head-count when it starts' if s.get('sudden_auto') else ''}.\n"
            f"• Last one standing wins. 🎁")
     e.add_field(name="How it works", value=how, inline=False)
     e.add_field(name="Lives", value=lives_line(s, len(rows)), inline=False)
@@ -279,7 +281,8 @@ def standings_embed(race, rows):
     if fallen:
         f = [f"💀 {p['name']} · round {p['died_round']}" for p in fallen[:30]]
         e.add_field(name=f"Fallen ({len(fallen)})", value="\n".join(f), inline=False)
-    e.set_footer(text="Shields are secret. Kills pay a shield; the bounty pays two shots. AFK kills pay nothing.")
+    e.set_footer(text="Shields are secret. Kills pay a shield (a Patch if you already hold one); "
+                      "the bounty pays two shots. AFK kills pay nothing.")
     return e
 
 
@@ -454,20 +457,31 @@ class BanRace(commands.Cog):
         if err:
             return err
         if kind == "shot" and p["shots"] <= 0:
-            if engine.retarget(race_id, rn, shooter_id, target_id):
-                return f"🔁 Re-aimed at **{t['name']}**. Still resolves <t:{int(race['round_ends_at'])}:R>."
+            mv = engine.retarget(race_id, rn, shooter_id, target_id)
+            if mv:
+                was = engine.player(race_id, mv["prev_target_id"]) if mv.get("prev_target_id") else None
+                which = f"shot {mv['seq']}" if mv.get("seq") else "your shot"
+                return (f"🔁 Re-aimed {which} at **{t['name']}**"
+                        f"{' (was ' + was['name'] + ')' if was else ''}. "
+                        f"Still resolves <t:{int(race['round_ends_at'])}:R>.")
             return "You're out of shots this round and have nothing to re-aim. Grab a drop."
         engine.spend(p, kind)
         engine.update_player(race_id, shooter_id, shots=p["shots"], overload=p["overload"],
                              transfuse=p["transfuse"])
-        engine.cast(race_id, rn, shooter_id, target_id, kind)
+        # purge rounds hand everyone three; anything past the allowance was paid
+        # for by a drop, a bounty or Arsenal — the story labels those "(extra)"
+        allowance = 3 if rn == race.get("purge_round") else 1
+        info = engine.cast(race_id, rn, shooter_id, target_id, kind, allowance=allowance)
         when = f"<t:{int(race['round_ends_at'])}:R>"
+        tag = ""
+        if info.get("seq") and (info["seq"] > 1 or info.get("extra")):
+            tag = f"**Shot {info['seq']}{' (extra)' if info.get('extra') else ''}** "
         if kind == "shot":
-            return (f"🔫 Locked on **{t['name']}**. Lands {when}. "
+            return (f"🔫 {tag}locked on **{t['name']}**. Lands {when}. "
                     f"Shots left this round: **{p['shots']}**." +
                     (" Fire again to use them." if p["shots"] > 0 else ""))
         if kind == "overload":
-            return f"💥 Overload armed at **{t['name']}** — you burn 1, they take 2. Lands {when}."
+            return f"💥 {tag}Overload armed at **{t['name']}** — you burn 1, they take 2. Lands {when}."
         return f"💉 Transfuse set for **{t['name']}** — they gain 1, you lose 1. Lands {when}."
 
     async def _do_use_self(self, race_id, uid, kind):
@@ -483,7 +497,8 @@ class BanRace(commands.Cog):
         if ok:
             engine.update_player(race_id, uid, lives=p["lives"], patch=p["patch"], medkit=p["medkit"],
                                  skip_round=p.get("skip_round"))
-            engine.log(race_id, rn, f"{engine.m(uid)} used a **{engine.POWERUPS[kind][1]}** — {text}")
+            engine.log(race_id, rn, f"{engine.m(uid)} used a **{engine.POWERUPS[kind][1]}** — {text}",
+                       kind="use", user_id=uid)
         return text
 
     # ── round loop ────────────────────────────────────────────────────────────
@@ -580,8 +595,9 @@ class BanRace(commands.Cog):
                                    storm=round_no >= s["storm_from_round"], msgs=msgs,
                                    max_lives=s["lives"], shot_cap=s["shot_cap"])
         engine.save_players(race_id, rows)
+        engine.mark_shots(res.get("results"))
         for ln in res["lines"]:
-            engine.log(race_id, round_no, ln)
+            engine.log(race_id, round_no, ln, kind="resolve")
 
         involved = []
         for sh in shot_rows:
@@ -728,6 +744,7 @@ class BanRace(commands.Cog):
                            mode="ghost = no bans (default); real = actual bans, auto-unban at the end",
                            min_account_days="Minimum account age to enter (default 7)",
                            min_players="Players needed before the race can start (default 3)",
+                           sudden_death_at="Alive count that starts sudden death (blank = sized to the field: ~¼, 2–5)",
                            channel="Where the race runs (default: #last-to-survive, created if missing)")
     @app_commands.choices(mode=MODE_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -737,6 +754,7 @@ class BanRace(commands.Cog):
                          mode: app_commands.Choice[str] = None,
                          min_account_days: app_commands.Range[int, 0, 365] = 7,
                          min_players: app_commands.Range[int, 3, None] = 3,     # no cap on players (Paul 9/12)
+                         sudden_death_at: app_commands.Range[int, 2, 50] = None,
                          channel: discord.TextChannel = None):
         guild = interaction.guild
         mode_v = mode.value if mode else engine.DEFAULTS["mode"]
@@ -792,6 +810,10 @@ class BanRace(commands.Cog):
                 "lives_auto": lives_auto,
                 "round_secs": round_minutes * 60, "mode": mode_v,
                 "min_account_days": min_account_days, "min_players": min_players,
+                # a fixed 5 put a 6-player race in sudden death from round 2 (9/12);
+                # blank = sized to the field, re-done for the real head-count at start
+                "sudden_death_at": sudden_death_at or engine.recommended_sudden_death(min_players),
+                "sudden_auto": sudden_death_at is None,
                 "racer_role_id": racer_role_id})
         except ValueError as e:
             return await interaction.followup.send(str(e), ephemeral=True)
@@ -824,31 +846,54 @@ class BanRace(commands.Cog):
     # Paul 9/12: "someone said 15 is too high" — the join threshold has to be
     # changeable on an OPEN lobby, not only at /race start. Same auto-start
     # rule as a join: if the lobby already holds that many, it goes now.
-    @race.command(name="edit", description="Change an open lobby's join threshold before the race starts.")
-    @app_commands.describe(min_players="Players needed before the race starts — it starts the moment the lobby holds this many")
+    @race.command(name="edit", description="Change an open lobby's settings before the race starts.")
+    @app_commands.describe(min_players="Players needed before the race starts — it starts the moment the lobby holds this many",
+                           sudden_death_at="Alive count that starts sudden death (0 = back to auto, sized to the field)")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def race_edit(self, interaction: discord.Interaction,
-                        min_players: app_commands.Range[int, 3, None]):
+                        min_players: app_commands.Range[int, 3, None] = None,
+                        sudden_death_at: app_commands.Range[int, 0, 50] = None):
         guild = interaction.guild
         race = engine.active_race(guild.id)
         if not race:
             return await interaction.response.send_message("No race running here.", ephemeral=True)
         if race["status"] != "lobby":
             return await interaction.response.send_message(
-                "The race is on — the join threshold only matters in the lobby.", ephemeral=True)
+                "The race is on — these only matter in the lobby.", ephemeral=True)
+        if min_players is None and sudden_death_at is None:
+            return await interaction.response.send_message("Give me something to change.", ephemeral=True)
         s = race["settings"]
-        old = s.get("min_players", engine.MIN_PLAYERS)
-        if min_players == old:
-            return await interaction.response.send_message(
-                f"It's already set to **{old}**.", ephemeral=True)
+        changes = []
+        old_need = s.get("min_players", engine.MIN_PLAYERS)
+        if min_players is not None and min_players != old_need:
+            s["min_players"] = min_players
+            if s.get("lives_auto"):
+                # auto lives track the lobby size until start; keep the lobby's number honest
+                s["lives"] = engine.recommended_lives(min_players)
+            if s.get("sudden_auto"):
+                s["sudden_death_at"] = engine.recommended_sudden_death(min_players)
+            changes.append(f"threshold {old_need} → **{min_players}**")
+        if sudden_death_at is not None:
+            old_sd = s.get("sudden_death_at", engine.DEFAULTS["sudden_death_at"])
+            if sudden_death_at == 0:
+                s["sudden_auto"] = True
+                s["sudden_death_at"] = engine.recommended_sudden_death(s.get("min_players", engine.MIN_PLAYERS))
+                changes.append(f"sudden death {old_sd} → **auto** ({s['sudden_death_at']} for the current size, "
+                               f"re-sized at start)")
+            elif sudden_death_at == 1:
+                return await interaction.response.send_message(
+                    "Sudden death at 1 alive is the end of the race — pick 2 or more, or 0 for auto.", ephemeral=True)
+            else:
+                s["sudden_auto"] = False
+                s["sudden_death_at"] = sudden_death_at
+                changes.append(f"sudden death {old_sd} → **{sudden_death_at}** alive")
+        if not changes:
+            return await interaction.response.send_message("That's what it's already set to.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
-        s["min_players"] = min_players
-        if s.get("lives_auto"):
-            # auto lives track the lobby size until start; keep the lobby's number honest
-            s["lives"] = engine.recommended_lives(min_players)
         engine.update_race(race["id"], settings=s)
         race = engine.get_race(race["id"])
         rows = engine.players(race["id"])
+        need = s.get("min_players", engine.MIN_PLAYERS)
         channel = await self._channel_for(guild, race)
         lobby_msg = None
         if channel and race.get("lobby_msg_id"):
@@ -856,19 +901,18 @@ class BanRace(commands.Cog):
                 lobby_msg = await channel.fetch_message(int(race["lobby_msg_id"]))
             except (discord.HTTPException, ValueError):
                 lobby_msg = None
-        if len(rows) >= min_players and channel and lobby_msg:
+        summary = "; ".join(changes)
+        if min_players is not None and len(rows) >= need and channel and lobby_msg:
             await self._begin(guild, channel, lobby_msg, race, rows)
             return await interaction.followup.send(
-                f"Threshold {old} → **{min_players}** — the lobby already had {len(rows)} in, so it's starting now.",
-                ephemeral=True)
+                f"{summary} — the lobby already had {len(rows)} in, so it's starting now.", ephemeral=True)
         if lobby_msg:
             try:
                 await lobby_msg.edit(embed=lobby_embed(race, rows, guild.name), view=lobby_view(race["id"]))
             except discord.HTTPException:
                 pass
         await interaction.followup.send(
-            f"Threshold {old} → **{min_players}**. {len(rows)} in so far — it starts at {min_players}.",
-            ephemeral=True)
+            f"{summary}. {len(rows)} in so far — it starts at {need}.", ephemeral=True)
 
     @race.command(name="status", description="Standings for the race in progress.")
     async def race_status(self, interaction: discord.Interaction):
@@ -926,6 +970,9 @@ class BanRace(commands.Cog):
                     f"out in round **{p['died_round']}**" + (" (banned)" if p["banned"] else ""))
             title = f"🔎 {p['name']} — race #{race['id']} ({race['status']})"
             desc = f"{fate} · **{p['kills']}** kills · started with {s['lives']} lives"
+            kit = engine.digest_line(engine.powerup_digest(race["id"], player.id))
+            if kit:
+                desc += "\n" + kit
             footer = "Casts are the player's own aim; everything else is what the round log says happened."
         else:
             story = engine.by_round(engine.race_log(race["id"]))
@@ -1164,6 +1211,9 @@ class BanRace(commands.Cog):
             for p in rows:
                 p["lives"] = s["lives"]
             engine.save_players(race["id"], rows)
+        if s.get("sudden_auto"):
+            s["sudden_death_at"] = engine.recommended_sudden_death(len(rows))
+        if s.get("lives_auto") or s.get("sudden_auto"):
             engine.update_race(race["id"], settings=s)
         engine.update_race(race["id"], status="running", started_at=time.time(), purge_round=purge)
         race = engine.get_race(race["id"])
@@ -1239,11 +1289,12 @@ class BanRace(commands.Cog):
             if d["kind"] == "nuke":
                 engine.cast(race["id"], race["round_no"], p["user_id"], p["user_id"], "nuke")
                 line = f"🧨 {p['name']} armed a **NUKE** — everyone else takes 1 when the round closes."
-                engine.log(race["id"], race["round_no"], f"🧨 {engine.m(p['user_id'])} armed a **NUKE**.")
+                engine.log(race["id"], race["round_no"], f"🧨 {engine.m(p['user_id'])} armed a **NUKE**.",
+                           kind="use", user_id=p["user_id"])
             else:
                 line = engine.grant_super(p, d["kind"], st["shot_cap"], st["lives"])
                 engine.update_player(race["id"], p["user_id"], shots=p["shots"], lives=p["lives"])
-                engine.log(race["id"], race["round_no"], line)
+                engine.log(race["id"], race["round_no"], line, kind="grab", user_id=p["user_id"])
             title, color = f"🌟 {emoji} {name} — taken", COLOR_SUPER
         else:
             emoji, name, _ = engine.POWERUPS[d["kind"]]
@@ -1251,7 +1302,7 @@ class BanRace(commands.Cog):
             engine.update_player(race["id"], p["user_id"], shots=p["shots"], shield=p["shield"],
                                  overload=p["overload"], transfuse=p["transfuse"],
                                  patch=p.get("patch", 0), medkit=p.get("medkit", 0))
-            engine.log(race["id"], race["round_no"], line)     # grabs show in /race breakdown
+            engine.log(race["id"], race["round_no"], line, kind="grab", user_id=p["user_id"])
             title, color = f"⚡ {emoji} {name} — taken", COLOR_DROP
         await interaction.response.send_message(f"{emoji} **{name}** is yours.", ephemeral=True)
         try:
