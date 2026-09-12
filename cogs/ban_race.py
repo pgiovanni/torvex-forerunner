@@ -228,7 +228,7 @@ def standings_embed(race, rows):
     if fallen:
         f = [f"💀 {p['name']} · round {p['died_round']}" for p in fallen[:30]]
         e.add_field(name=f"Fallen ({len(fallen)})", value="\n".join(f), inline=False)
-    e.set_footer(text="Shields are secret. Kills pay a shield; the bounty pays two shots.")
+    e.set_footer(text="Shields are secret. Kills pay a shield; the bounty pays two shots. AFK kills pay nothing.")
     return e
 
 

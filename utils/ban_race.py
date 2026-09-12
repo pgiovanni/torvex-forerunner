@@ -32,7 +32,9 @@ Round model (all resolution is SIMULTANEOUS at round close):
   * drops are GUARANTEED every round (round minutes × `drops_per_minute`,
     min 1) and sudden death adds a SUPER drop each round: nuke (everyone
     else takes 1 at close), full heal, arsenal (+3 shots) — instant on grab;
-  * killing blows pay a shield (or a shot if you already hold one).
+  * killing blows pay a shield (or a shot if you already hold one) — unless
+    the victim was AFK that round: no shield, no shot, no kill credit, no
+    bounty. Shooting someone who isn't playing is free, so it pays nothing.
 
 Power-ups (dropped in the channel, first click takes it):
   shield / shot / overload (take 1 to deal 2) / transfuse (give 1, lose 1) /
@@ -506,6 +508,14 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
     order = list(shot_rows)
     rng.shuffle(order)
 
+    # who actually played this round: cast a shot/overload/nuke, or sat it
+    # out on a Medkit. Everyone else is AFK — the penalty hits them at close,
+    # and killing them pays nothing (no free kills on people who aren't here).
+    voted = {s["shooter_id"] for s in shot_rows if s["kind"] in ("shot", "overload", "nuke")}
+
+    def is_afk(p):
+        return p["user_id"] not in voted and p.get("skip_round") != round_no
+
     rewards = []   # (shooter, victim) — paid AFTER every shot has landed
 
     def reward_kill(shooter, victim):
@@ -513,8 +523,11 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
         dead.append(victim_id)
         if shooter is victim:
             return
+        killers[victim_id] = shooter["user_id"]      # attribution only
+        if is_afk(victim):
+            lines.append(f"   ↳ {m(victim_id)} was AFK — no reward for {m(shooter['user_id'])}.")
+            return
         shooter["kills"] += 1
-        killers[victim_id] = shooter["user_id"]
         rewards.append((shooter, victim))
 
     def pay(shooter, victim):
@@ -608,9 +621,8 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
     # AFK: didn't vote this round = one life gone, shields don't apply
     afk_hit = set()
     if afk:
-        voted = {s["shooter_id"] for s in shot_rows if s["kind"] in ("shot", "overload", "nuke")}
         for p in alive(rows):
-            if p["user_id"] in voted or p.get("skip_round") == round_no:
+            if not is_afk(p):
                 continue
             afk_hit.add(p["user_id"])
             p["lives"] -= 1
