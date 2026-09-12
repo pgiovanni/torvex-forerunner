@@ -543,6 +543,16 @@ def join_error(created_at, now, min_days, is_bot=False, bannable=True, mode="rea
     return None
 
 
+def recommended_lives(n_players):
+    """Lives that keep a race of n players interesting (Paul 9/12: "scale
+    lives with the amount of people playing — a recommended value, not
+    forced"). Every survivor fires once a round, so the more players the more
+    incoming fire per round; 3 lives was right for 10 and thin for 15.
+      3 → 2 · 6 → 3 · 10 → 4 · 15 → 5 · 20+ → 6
+    A host who sets `lives:` explicitly always wins over this."""
+    return max(2, min(6, 2 + max(0, n_players) // 4))
+
+
 def pick_purge_round(rng, n_players):
     """A purge round somewhere in the early-middle of the race, never round 1."""
     hi = max(2, min(4, n_players // 4 + 2))
