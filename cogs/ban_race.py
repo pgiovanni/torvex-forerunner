@@ -780,16 +780,19 @@ class BanRace(commands.Cog):
     # Top-level and open to everyone (Paul 9/12: "last race stats or something,
     # anyone can see anyone's rounds") — /race itself stays the host's group.
     @app_commands.command(name="lastrace",
-                          description="Last to survive stats — the latest race round by round: every hit, miss, heal and drop.")
-    @app_commands.describe(player="Only this player's story (blank = the whole race)",
-                           round="Only this round (blank = every round)",
-                           race="An earlier race by its number (blank = the latest)")
+                          description="Last to survive stats — all-time leaderboard, or one race round by round.")
+    @app_commands.describe(player="One player: their all-time record, or their story in the race you pick",
+                           round="Only this round of a race (blank = every round)",
+                           race="A race by its number — blank = all-time stats")
     @app_commands.guild_only()
     @app_commands.checks.cooldown(1, 5, key=lambda i: (i.guild_id, i.user.id))
     async def lastrace(self, interaction: discord.Interaction, player: discord.Member = None,
                        round: app_commands.Range[int, 1, 500] = None,
                        race: app_commands.Range[int, 1, 10 ** 9] = None):
         history = engine.guild_races(interaction.guild.id, limit=8)
+        if race is None and round is None:
+            # Blank = ALL TIME (Paul 9/12). round: alone still means the latest race.
+            return await self._alltime(interaction, player, history)
         if race is not None:
             race = next((r for r in history if r["id"] == race), None) or engine.get_race(race)
             if not race or str(race["guild_id"]) != str(interaction.guild.id):
@@ -843,6 +846,48 @@ class BanRace(commands.Cog):
         # Public (Paul 9/12: "everyone should see it"). Mentions live inside the
         # embed, which never pings; AllowedMentions.none() makes that explicit.
         await interaction.response.send_message(embed=e, allowed_mentions=discord.AllowedMentions.none())
+
+    async def _alltime(self, interaction, player, history):
+        data = engine.alltime(interaction.guild.id)
+        races, players = data["races"], data["players"]
+        recent = "\n".join(
+            f"#{r['id']} · <t:{int(r['finished_at'] or r['created_at'])}:d> · {r['round_no']} rounds · "
+            f"🏆 {', '.join(r['winner_names']) or 'draw'}" for r in races[:8]) or "—"
+        none = discord.AllowedMentions.none()
+        if player is not None:
+            st = players.get(str(player.id))
+            if not st:
+                return await interaction.response.send_message(
+                    f"**{player.display_name}** hasn't finished a race here.", ephemeral=True)
+            rate = f"{100 * st['wins'] / st['races']:.0f}%" if st["races"] else "—"
+            e = discord.Embed(
+                title=f"🔎 {st['name']} — all time",
+                description=(f"**{st['races']}** races · **{st['wins']}** wins ({rate}) · **{st['kills']}** kills · "
+                             f"**{st['shots']}** shots fired · out **{st['outs']}** times · "
+                             f"**{st['rounds']}** rounds survived"),
+                color=COLOR)
+            lines = []
+            for h in st["history"][:15]:
+                result = "🏆 won" if h["won"] else (f"out r{h['out_round']}" if h["out_round"] else "survived")
+                lines.append(f"#{h['race_id']} · {result} · {h['kills']} kills · {h['rounds']} rounds")
+            e.add_field(name="Races", value="\n".join(lines) or "—", inline=False)
+            e.set_footer(text="race: <number> opens one race with this player's round-by-round story.")
+            return await interaction.response.send_message(embed=e, allowed_mentions=none)
+        e = discord.Embed(
+            title="🏆 Last to survive — all time",
+            description=(f"**{len(races)}** races finished · **{len(players)}** players. "
+                         f"Ranked by wins, then kills." if races else
+                         "No race has finished here yet."),
+            color=COLOR)
+        board = engine.leaderboard(players)
+        if board:
+            medal = {0: "🥇", 1: "🥈", 2: "🥉"}
+            e.add_field(name="Leaderboard", inline=False, value="\n".join(
+                f"{medal.get(i, f'{i + 1}.')} **{st['name']}** — {st['wins']} wins · {st['kills']} kills · "
+                f"{st['races']} races" for i, (uid, st) in enumerate(board))[:1024])
+        e.add_field(name="Recent races", value=recent[:1024], inline=False)
+        e.set_footer(text="race: <number> for one race · player: for someone's full record.")
+        await interaction.response.send_message(embed=e, allowed_mentions=none)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error):
         """Say why a command was refused instead of letting it time out."""
