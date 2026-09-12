@@ -22,6 +22,8 @@ Round model (all resolution is SIMULTANEOUS at round close):
   * shields eat one whole shot and are hidden until they pop; none work in
     sudden death (alive <= `sudden_death_at`, rounds also run at half length);
   * `backfire` fraction of shots hit the shooter instead;
+  * AFK costs a life: a survivor who cast nothing in a round loses one at
+    round close (shields don't apply, no kill credit) — you play or you bleed;
   * the STORM takes a life from the least active survivor each round from
     `storm_from_round` on, whenever 3+ are alive — hiding is not a strategy;
   * the top killer (2+ kills, unique max) carries a BOUNTY: finishing them is
@@ -396,7 +398,7 @@ def _die(p, round_no, lines, how):
 
 
 def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, msgs,
-                  max_lives, shot_cap):
+                  max_lives, shot_cap, afk=True):
     """Apply every shot cast this round, then the storm, then re-place the
     bounty. Mutates `rows` in place. Returns a dict:
       lines   — announcement lines in resolution order (mentions inline)
@@ -404,7 +406,8 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
       killers — {victim_id: killer_id} for kill credit (storm/self deaths absent)
       winners — [] while the race goes on; [uid] for a winner; several = draw
     `sudden` disables shields. `msgs` is {user_id: messages this round} for the
-    storm. Shooters who die mid-batch still fire (dead man's shot)."""
+    storm. `afk` charges a life to every survivor who cast no shot/overload.
+    Shooters who die mid-batch still fire (dead man's shot)."""
     P = {p["user_id"]: p for p in rows}
     lines, dead, killers = [], [], {}
     order = list(shot_rows)
@@ -493,9 +496,25 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
     for shooter, victim in rewards:
         pay(shooter, victim)
 
-    # the storm: least active survivor bleeds one life, shields don't help
+    # AFK: didn't vote this round = one life gone, shields don't apply
+    afk_hit = set()
+    if afk:
+        voted = {s["shooter_id"] for s in shot_rows if s["kind"] in ("shot", "overload")}
+        for p in alive(rows):
+            if p["user_id"] in voted:
+                continue
+            afk_hit.add(p["user_id"])
+            p["lives"] -= 1
+            if p["lives"] > 0:
+                lines.append(f"😴 {m(p['user_id'])} didn't vote — loses a life. **{p['lives']}** left.")
+            else:
+                _die(p, round_no, lines, f"😴 {m(p['user_id'])} didn't vote and had nothing left. **Eliminated.**")
+                dead.append(p["user_id"])
+
+    # the storm: least active survivor bleeds one life, shields don't help;
+    # it skips anyone the AFK penalty already hit this round
     if storm and len(alive(rows)) >= 3:
-        cands = alive(rows)
+        cands = [p for p in alive(rows) if p["user_id"] not in afk_hit] or alive(rows)
         low = min(msgs.get(p["user_id"], 0) for p in cands)
         pool = [p for p in cands if msgs.get(p["user_id"], 0) == low]
         v = rng.choice(pool)

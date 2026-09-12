@@ -176,6 +176,7 @@ def lobby_embed(race, rows, guild_name):
     how = (f"• Rounds last **{s['round_secs'] // 60} min**; shots are secret and all land at once.\n"
            f"• Zero lives = {'**actually banned**' if s['mode'] == 'real' else 'out'}. "
            f"{'Everyone is unbanned the moment it ends, and you get the invite by DM first.' if s['mode'] == 'real' else ''}\n"
+           f"• Don't vote in a round and you lose a life. AFK is not a strategy.\n"
            f"• Only racers can talk here — **Join** unlocks the channel; ghosts watch in silence.\n"
            f"• Power-ups drop in this channel. First click takes it.\n"
            f"• Last one standing wins. 🎁")

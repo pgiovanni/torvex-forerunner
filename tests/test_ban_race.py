@@ -53,8 +53,9 @@ class AlwaysBackfire(NoBackfire):
         return 0.0
 
 
-def resolve(rows, shots, round_no=1, rng=None, sudden=False, storm=False, msgs=None, **kw):
-    args = dict(backfire=0.10, sudden=sudden, storm=storm, msgs=msgs or {}, max_lives=3, shot_cap=3)
+def resolve(rows, shots, round_no=1, rng=None, sudden=False, storm=False, msgs=None, afk=False, **kw):
+    args = dict(backfire=0.10, sudden=sudden, storm=storm, msgs=msgs or {}, max_lives=3, shot_cap=3,
+                afk=afk)
     args.update(kw)
     return E.resolve_round(rows, shots, round_no, rng or NoBackfire(), **args)
 
@@ -221,6 +222,33 @@ class Rewards(unittest.TestCase):
         a, b, c = P(1, kills=1), P(2), P(3)
         resolve([a, b, c], [])
         self.assertEqual(a["bounty"], 0)
+
+
+class Afk(unittest.TestCase):
+    def test_not_voting_costs_a_life_shield_or_not(self):
+        a, b, c = P(1), P(2, shield=1), P(3)
+        r = resolve([a, b, c], [S(1, 3)], afk=True)
+        self.assertEqual(a["lives"], 3)          # voted
+        self.assertEqual(b["lives"], 2)          # afk, shield untouched
+        self.assertEqual(b["shield"], 1)
+        self.assertEqual(c["lives"], 1)          # shot AND afk
+        self.assertEqual(sum("didn't vote" in ln for ln in r["lines"]), 2)
+
+    def test_transfuse_alone_does_not_count_as_voting(self):
+        a, b = P(1, transfuse=1), P(2)
+        resolve([a, b], [S(1, 2, "transfuse")], afk=True)
+        self.assertEqual(a["lives"], 1)          # -1 transfuse, -1 afk
+
+    def test_afk_death_has_no_killer_and_storm_skips_the_afk(self):
+        a, b, c, d = P(1, lives=1), P(2), P(3), P(4)
+        r = resolve([a, b, c, d], [S(2, 3), S(3, 2), S(4, 3)], round_no=2, afk=True, storm=True,
+                    msgs={"1": 0, "2": 0, "3": 9, "4": 9})
+        self.assertFalse(a["alive"])
+        self.assertNotIn("1", r["killers"])
+        # storm skipped afk-hit a; quietest of the rest is b
+        self.assertEqual(b["lives"], 1)          # shot by c, then the storm
+        self.assertEqual(c["lives"], 1)          # shot by b and d
+        self.assertEqual(d["lives"], 3)
 
 
 class Storm(unittest.TestCase):
