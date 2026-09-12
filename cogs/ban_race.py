@@ -182,7 +182,7 @@ def lobby_embed(race, rows, guild_name):
     names = [p["name"] for p in rows]
     shown = ", ".join(names[:40]) + (f" … +{len(names) - 40}" if len(names) > 40 else "")
     e.add_field(name=f"Players ({len(rows)})", value=shown or "*nobody yet — hit Join*", inline=False)
-    e.set_footer(text=f"{guild_name} · host starts it at {s['min_players']}+ players")
+    e.set_footer(text=f"{guild_name} · starts automatically at {s['min_players']} players")
     return e
 
 
@@ -778,10 +778,18 @@ class BanRace(commands.Cog):
         if engine.player(race["id"], m.id):
             return await interaction.response.send_message("You're in already.", ephemeral=True)
         engine.join(race["id"], m.id, m.display_name, s["lives"])
+        rows = engine.players(race["id"])
+        need = s.get("min_players", engine.MIN_PLAYERS)
         await interaction.response.send_message(
-            f"You're in. {s['lives']} lives. Don't trust anyone. 🔫", ephemeral=True)
+            f"You're in. {s['lives']} lives. Don't trust anyone. 🔫"
+            + (f" ({len(rows)}/{need} — it starts the moment the lobby fills.)" if len(rows) < need else ""),
+            ephemeral=True)
         await self._set_racer(interaction.guild, race, m.id, True)
-        await self._refresh_lobby(interaction, race)
+        if len(rows) >= need:
+            # the lobby is full: no waiting on the host, it starts now
+            await self._begin(interaction.guild, interaction.channel, interaction.message, race, rows)
+        else:
+            await self._refresh_lobby(interaction, race)
 
     async def _btn_leave(self, interaction, race, _):
         if race["status"] != "lobby":
@@ -803,12 +811,24 @@ class BanRace(commands.Cog):
         if len(rows) < need:
             return await interaction.response.send_message(
                 f"Need at least {need} players ({len(rows)} in).", ephemeral=True)
+        await interaction.response.send_message("🏁 Go.", ephemeral=True)
+        await self._begin(interaction.guild, interaction.channel, interaction.message, race, rows)
+
+    async def _begin(self, guild, channel, lobby_msg, race, rows):
+        """Flip the lobby to running, ping everyone in, start the round loop.
+        Shared by the host's Start button and the auto-start on a full lobby;
+        the status check makes a double trigger harmless."""
+        if engine.get_race(race["id"])["status"] != "lobby":
+            return
         purge = engine.pick_purge_round(self._rng, len(rows))
         engine.update_race(race["id"], status="running", started_at=time.time(), purge_round=purge)
         race = engine.get_race(race["id"])
-        await interaction.response.send_message("🏁 Go.", ephemeral=True)
-        await self._refresh_lobby(interaction, race, closed=True)
-        await interaction.channel.send(
+        try:
+            await lobby_msg.edit(embed=lobby_embed(race, rows, guild.name),
+                                 view=lobby_view(race["id"], closed=True))
+        except discord.HTTPException:
+            pass
+        await channel.send(
             content=" ".join(f"<@{p['user_id']}>" for p in rows[:MAX_PINGS]),
             embed=discord.Embed(title="🏁 THE RACE IS ON", color=COLOR,
                                 description=f"**{len(rows)}** players. {PITCH.format(lives=race['settings']['lives'])}"),
