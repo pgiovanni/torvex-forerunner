@@ -23,7 +23,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 ## Index
 
-**Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/honeypot`, `/member-activity`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recent-leaves`, `/recon-status`, `/recon-unblock`, `/roster-missing`, `/security-ai`, `/security`, `/simpleverify`, `/structure-restore`, `/unquarantine`, `/verify`
+**Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/honeypot`, `/member-activity`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recent-leaves`, `/recon-status`, `/recon-unblock`, `/security-ai`, `/security`, `/simpleverify`, `/structure-restore`, `/unquarantine`, `/verify`
 
 **Moderation** — `/ban`, `/clear-warning`, `/clear-warnings`, `/conduct-forget`, `/evidence`, `/kick`, `/lock`, `/msglog`, `/note`, `/prune-messages`, `/quiet-kick`, `/timeout`, `/unban`, `/unlock`, `/untimeout`, `/warn`, `/warnings`
 
@@ -31,7 +31,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Members & invites** — `/activity`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/invite`, `/levelroles`, `/mentions`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/stats-status`, `/store`, `/tracked-invite`
 
-**Games & fun** — `/8ball`, `/challenge`, `/chess`, `/connect4_bot`, `/connect4`, `/gear`, `/gift`, `/link`, `/market`, `/peepo`, `/powerup`, `/race`, `/roast`, `/rpg`, `/tictactoe_bot`, `/tictactoe`, `/trade`, `/unlink`, `/vote`, `/wordle`
+**Games & fun** — `/8ball`, `/challenge`, `/chess`, `/connect4_bot`, `/connect4`, `/gear`, `/gift`, `/lastrace`, `/link`, `/market`, `/peepo`, `/powerup`, `/race`, `/roast`, `/rpg`, `/tictactoe_bot`, `/tictactoe`, `/trade`, `/unlink`, `/vote`, `/wordle`
 
 **AI** — `/ai-config`, `/ai-credit-grant`, `/ai-privacy`, `/ai-status`, `/ai-usage`, `/ask`
 
@@ -915,18 +915,6 @@ Recent departures — leaves, kicks, bans, with who did them (admin)
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `hours` | integer | No | how far back to look (default 24) |
-
-#### `/roster-missing`
-
-Members on record who AREN'T in the server now — your re-invite list (admin)
-
-```
-/roster-missing
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-*No parameters.*
 
 #### `/structure-restore`
 
@@ -2459,6 +2447,21 @@ Play Tic Tac Toe against the bot.
 ### Last to survive (ban race)
 
 <sub>`cogs/ban_race.py`</sub>
+
+#### `/lastrace`
+
+Last to survive stats — the latest race round by round: every hit, miss, heal and drop.
+
+```
+/lastrace [player] [round]
+```
+
+**Access:** Everyone &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `player` | user | No | Only this player's story (blank = the whole race) |
+| `round` | integer | No | Only this round (blank = every round) *(range 1–500)* |
 
 #### `/powerup`
 
