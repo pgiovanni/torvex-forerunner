@@ -2481,24 +2481,25 @@ Last to survive: your power-ups — or aim an Overload / Transfuse.
 
 #### `/race edit`
 
-Change an open lobby's join threshold before the race starts.
+Change an open lobby's settings before the race starts.
 
 ```
-/race edit <min_players>
+/race edit [min_players] [sudden_death_at]
 ```
 
 **Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `min_players` | integer | Yes | Players needed before the race starts — it starts the moment the lobby holds this many *(range 3–?)* |
+| `min_players` | integer | No | Players needed before the race starts — it starts the moment the lobby holds this many *(range 3–?)* |
+| `sudden_death_at` | integer | No | Alive count that starts sudden death (0 = back to auto, sized to the field) *(range 0–50)* |
 
 #### `/race start`
 
 Open a lobby. Posts in #last-to-survive (created if missing) or the channel you pick.
 
 ```
-/race start [lives] [round_minutes] [mode] [min_account_days] [min_players] [channel]
+/race start [lives] [round_minutes] [mode] [min_account_days] [min_players] [sudden_death_at] [channel]
 ```
 
 **Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
@@ -2510,6 +2511,7 @@ Open a lobby. Posts in #last-to-survive (created if missing) or the channel you 
 | `mode` | string | No | ghost = no bans (default); real = actual bans, auto-unban at the end *(one of: `ghost — no bans, eliminated players are just out (default)`, `real — actual bans, auto-unban when it ends`)* |
 | `min_account_days` | integer | No | Minimum account age to enter (default 7) *(range 0–365)* |
 | `min_players` | integer | No | Players needed before the race can start (default 3) *(range 3–?)* |
+| `sudden_death_at` | integer | No | Alive count that starts sudden death (blank = sized to the field: ~¼, 2–5) *(range 2–50)* |
 | `channel` | channel | No | Where the race runs (default: #last-to-survive, created if missing) *(channel types: text, announcement)* |
 
 #### `/race status`

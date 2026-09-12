@@ -65,7 +65,7 @@ DEFAULTS = dict(
     round_secs=180,
     mode="ghost",            # ghost = marked out only; real = actual bans (opt-in)
     backfire=0.10,
-    sudden_death_at=5,
+    sudden_death_at=5,       # overwritten at start from the head-count unless the host set it (9/12)
     min_account_days=7,
     min_players=3,           # lobby needs this many before Start works
     shot_cap=3,
@@ -83,7 +83,7 @@ MIN_PLAYERS = 3   # floor for the setting; below this the game has no decisions
 POWERUPS = {
     "shield":    ("🛡️", "Shield",
                   "✅ Eats the next shot fired at you, whole. "
-                  "❌ One at a time (a second becomes an extra shot); OFF in sudden death; "
+                  "❌ One at a time (a second becomes a Patch); OFF in sudden death; "
                   "doesn't stop the AFK penalty or the storm."),
     "shot":      ("🔫", "Extra shot",
                   "✅ One more shot in the bank — fire twice in a round. "
@@ -116,7 +116,11 @@ POWERUP_TIER = {
     "overload": "common", "transfuse": "common", "medkit": "common",
     "shield": "rare", "shot": "rare", "patch": "rare",
 }
-DROP_WEIGHTS = {kind: TIERS[tier][2] for kind, tier in POWERUP_TIER.items()}
+# Within a tier a kind can be rarer still. Extra shots also arrive from
+# bounties, purge rounds and Arsenal, so the drop itself is halved (Paul 9/12:
+# "extra shot appearing way too much").
+KIND_WEIGHT = {"shot": 0.5}
+DROP_WEIGHTS = {kind: TIERS[tier][2] * KIND_WEIGHT.get(kind, 1) for kind, tier in POWERUP_TIER.items()}
 
 
 def tier_of(kind):
@@ -208,8 +212,12 @@ def init(db=None):
                 round_no   INTEGER NOT NULL,
                 shooter_id TEXT NOT NULL,
                 target_id  TEXT NOT NULL,
-                kind       TEXT NOT NULL,             -- shot|overload|transfuse
-                ts         REAL NOT NULL
+                kind       TEXT NOT NULL,             -- shot|overload|transfuse|nuke
+                ts         REAL NOT NULL,
+                seq        INTEGER,                   -- shot 1, shot 2 … per shooter per round (banked shots only)
+                extra      INTEGER NOT NULL DEFAULT 0, -- 1 = beyond the round's allowance (a drop/reward paid for it)
+                result     TEXT,                      -- hit|kill|shielded|backfire|wasted|self … written at close
+                prev_target_id TEXT                   -- the ORIGINAL aim when the shot was re-aimed
             );
             CREATE INDEX IF NOT EXISTS idx_shots_round ON shots(race_id, round_no);
             CREATE TABLE IF NOT EXISTS log (
@@ -217,16 +225,27 @@ def init(db=None):
                 race_id  INTEGER NOT NULL,
                 round_no INTEGER NOT NULL,
                 ts       REAL NOT NULL,
-                text     TEXT NOT NULL
+                text     TEXT NOT NULL,
+                kind     TEXT,                        -- grab|use|resolve|open … (9/12; older rows NULL)
+                user_id  TEXT                         -- the player a grab/use belongs to
             );
         """)
         # columns added after the first deploy (9/11 evening): idempotent
-        have = {r[1] for r in c.execute("PRAGMA table_info(players)")}
-        for col, ddl in (("patch", "INTEGER NOT NULL DEFAULT 0"),
+        for table, cols in (
+            ("players", (("patch", "INTEGER NOT NULL DEFAULT 0"),
                          ("medkit", "INTEGER NOT NULL DEFAULT 0"),
-                         ("skip_round", "INTEGER")):
-            if col not in have:
-                c.execute(f"ALTER TABLE players ADD COLUMN {col} {ddl}")
+                         ("skip_round", "INTEGER"))),
+            ("shots", (("seq", "INTEGER"),
+                       ("extra", "INTEGER NOT NULL DEFAULT 0"),
+                       ("result", "TEXT"),
+                       ("prev_target_id", "TEXT"))),
+            ("log", (("kind", "TEXT"),
+                     ("user_id", "TEXT"))),
+        ):
+            have = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+            for col, ddl in cols:
+                if col not in have:
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
 
 def _race_row(r):
@@ -413,24 +432,54 @@ def update_player(race_id, user_id, db=None, **fields):
                   (*fields.values(), race_id, str(user_id)))
 
 
-def cast(race_id, round_no, shooter_id, target_id, kind="shot", now=None, db=None):
+BANKED = ("shot", "overload")   # the kinds that spend a banked shot — these get numbered
+
+
+def cast(race_id, round_no, shooter_id, target_id, kind="shot", now=None, db=None, allowance=1):
+    """Record a cast. Banked shots (shot/overload) are numbered per shooter per
+    round — shot 1, shot 2 … — and flagged `extra` past `allowance` (1 normally,
+    3 in a purge round), so the story can say WHICH shot did what and which
+    ones a drop or reward paid for. Returns {id, seq, extra}."""
     with _conn(db) as c:
-        c.execute("INSERT INTO shots (race_id, round_no, shooter_id, target_id, kind, ts)"
-                  " VALUES (?,?,?,?,?,?)",
-                  (race_id, round_no, str(shooter_id), str(target_id), kind, now or time.time()))
+        seq, extra = None, 0
+        if kind in BANKED:
+            n = c.execute("SELECT COUNT(*) FROM shots WHERE race_id=? AND round_no=? AND shooter_id=?"
+                          " AND kind IN ('shot','overload')",
+                          (race_id, round_no, str(shooter_id))).fetchone()[0]
+            seq = n + 1
+            extra = 1 if seq > max(1, allowance) else 0
+        cur = c.execute("INSERT INTO shots (race_id, round_no, shooter_id, target_id, kind, ts, seq, extra)"
+                        " VALUES (?,?,?,?,?,?,?,?)",
+                        (race_id, round_no, str(shooter_id), str(target_id), kind, now or time.time(),
+                         seq, extra))
+        return {"id": cur.lastrowid, "seq": seq, "extra": extra}
 
 
 def retarget(race_id, round_no, shooter_id, target_id, db=None):
-    """Re-aim the shooter's most recent plain shot this round. Returns True if
-    there was one to move."""
+    """Re-aim the shooter's most recent plain shot this round. Returns the
+    moved row's {seq, prev_target_id} — or None if there was nothing to move.
+    The ORIGINAL aim is kept in prev_target_id (first re-aim wins) so the
+    story can show the change of mind."""
     with _conn(db) as c:
-        r = c.execute("SELECT id FROM shots WHERE race_id=? AND round_no=? AND shooter_id=?"
-                      " AND kind='shot' ORDER BY id DESC LIMIT 1",
+        r = c.execute("SELECT id, seq, target_id, prev_target_id FROM shots WHERE race_id=? AND round_no=?"
+                      " AND shooter_id=? AND kind='shot' ORDER BY id DESC LIMIT 1",
                       (race_id, round_no, str(shooter_id))).fetchone()
         if not r:
-            return False
-        c.execute("UPDATE shots SET target_id=? WHERE id=?", (str(target_id), r["id"]))
-        return True
+            return None
+        prev = r["prev_target_id"] or r["target_id"]
+        c.execute("UPDATE shots SET target_id=?, prev_target_id=? WHERE id=?",
+                  (str(target_id), prev, r["id"]))
+        return {"seq": r["seq"], "prev_target_id": prev}
+
+
+def mark_shots(results, db=None):
+    """Write each shot's outcome back after the round resolves:
+    {shot_id: result}."""
+    if not results:
+        return
+    with _conn(db) as c:
+        c.executemany("UPDATE shots SET result=? WHERE id=?",
+                      [(res, sid) for sid, res in results.items()])
 
 
 def shots(race_id, round_no, db=None):
@@ -439,19 +488,78 @@ def shots(race_id, round_no, db=None):
             "SELECT * FROM shots WHERE race_id=? AND round_no=? ORDER BY id", (race_id, round_no))]
 
 
-def log(race_id, round_no, text, now=None, db=None):
+def log(race_id, round_no, text, now=None, db=None, kind=None, user_id=None):
+    """`kind` = grab|use|resolve|open (what sort of line); `user_id` = whose
+    grab/use it is. Both optional — resolution lines name several people."""
     with _conn(db) as c:
-        c.execute("INSERT INTO log (race_id, round_no, ts, text) VALUES (?,?,?,?)",
-                  (race_id, round_no, now or time.time(), text))
+        c.execute("INSERT INTO log (race_id, round_no, ts, text, kind, user_id) VALUES (?,?,?,?,?,?)",
+                  (race_id, round_no, now or time.time(), text, kind,
+                   str(user_id) if user_id is not None else None))
 
 
 def player_log(race_id, user_id, db=None):
     """Every logged line that mentions the player, in order: resolution
     lines (hits, shields, kills, AFK, storm), drops grabbed, items used."""
     with _conn(db) as c:
-        rows = c.execute("SELECT round_no, ts, text FROM log WHERE race_id=? AND text LIKE ?"
-                         " ORDER BY id", (race_id, f"%<@{user_id}>%")).fetchall()
+        rows = c.execute("SELECT round_no, ts, text, kind FROM log WHERE race_id=?"
+                         " AND (user_id=? OR text LIKE ?) ORDER BY id",
+                         (race_id, str(user_id), f"%<@{user_id}>%")).fetchall()
     return [dict(r) for r in rows]
+
+
+def powerup_digest(race_id, user_id, db=None):
+    """What one player grabbed and used across a race — the header line of
+    their story. Grabs come from tagged log rows (9/12+); uses from the shots
+    table (overload/transfuse/nuke casts, extra shots fired) plus tagged
+    self-use lines (patch/medkit); shields that popped from the resolve text.
+    Returns {"grabbed": {name: n}, "used": {name: n}}."""
+    uid = str(user_id)
+    grabbed, used = {}, {}
+
+    def bump(d, k, n=1):
+        d[k] = d.get(k, 0) + n
+
+    with _conn(db) as c:
+        for r in c.execute("SELECT text FROM log WHERE race_id=? AND kind='grab' AND user_id=?", (race_id, uid)):
+            name = _bold_name(r["text"])
+            if name:
+                bump(grabbed, name)
+        for r in c.execute("SELECT text FROM log WHERE race_id=? AND kind='use' AND user_id=?", (race_id, uid)):
+            name = _bold_name(r["text"])
+            if name:
+                bump(used, name)
+        for r in c.execute("SELECT kind, COUNT(*) n FROM shots WHERE race_id=? AND shooter_id=?"
+                           " AND kind IN ('overload','transfuse','nuke') GROUP BY kind", (race_id, uid)):
+            bump(used, {"overload": "Overload", "transfuse": "Transfuse", "nuke": "Nuke"}[r["kind"]], r["n"])
+        n = c.execute("SELECT COUNT(*) FROM shots WHERE race_id=? AND shooter_id=? AND extra=1",
+                      (race_id, uid)).fetchone()[0]
+        if n:
+            bump(used, "Extra shot", n)
+        n = c.execute("SELECT COUNT(*) FROM log WHERE race_id=? AND text LIKE ?",
+                      (race_id, f"%{m(uid)}'s **shield** ate%")).fetchone()[0]
+        if n:
+            bump(used, "Shield", n)
+    return {"grabbed": grabbed, "used": used}
+
+
+def _bold_name(text):
+    """The first **bold** span of a log line — grab/use lines bold the item."""
+    i = text.find("**")
+    if i < 0:
+        return None
+    j = text.find("**", i + 2)
+    return text[i + 2:j] if j > i else None
+
+
+def digest_line(d):
+    """'🎒 grabbed 3 (Shield ×2, Patch) · used 2 (Shield, Extra shot)' or ''."""
+    def part(label, counts):
+        if not counts:
+            return None
+        items = ", ".join(f"{k} ×{n}" if n > 1 else k for k, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+        return f"{label} {sum(counts.values())} ({items})"
+    bits = [b for b in (part("grabbed", d["grabbed"]), part("used", d["used"])) if b]
+    return ("🎒 " + " · ".join(bits)) if bits else ""
 
 
 def race_log(race_id, db=None):
@@ -490,7 +598,8 @@ def fit_rounds(story, max_fields=24, max_chars=5200, field_chars=1000):
 def player_shots(race_id, user_id, db=None):
     """Shots the player cast or was aimed at, in cast order."""
     with _conn(db) as c:
-        rows = c.execute("SELECT round_no, shooter_id, target_id, kind, ts FROM shots"
+        rows = c.execute("SELECT round_no, shooter_id, target_id, kind, ts, seq, extra, result,"
+                         " prev_target_id FROM shots"
                          " WHERE race_id=? AND (shooter_id=? OR target_id=?) ORDER BY id",
                          (race_id, str(user_id), str(user_id))).fetchall()
     return [dict(r) for r in rows]
@@ -498,6 +607,9 @@ def player_shots(race_id, user_id, db=None):
 
 CAST_VERB = {"shot": "🎯 fired at", "overload": "💥 overloaded at", "transfuse": "💉 transfused",
              "nuke": "🧨 armed a NUKE"}
+RESULT_TAG = {"hit": " → hit", "kill": " → **KILL**", "shielded": " → eaten by a shield",
+              "backfire": " → backfired", "wasted": " → wasted (already gone)", "self": " → hit themselves",
+              "transfused": " → done", "late": " → too late", "nuke": " → went off"}
 
 
 def timeline(user_id, shot_rows, log_rows):
@@ -510,11 +622,25 @@ def timeline(user_id, shot_rows, log_rows):
     secret at the time and the resolution line already says who hit them."""
     uid = str(user_id)
     by_round = {}
-    for sh in shot_rows:
-        if sh["shooter_id"] != uid:
-            continue
+    mine = [sh for sh in shot_rows if sh["shooter_id"] == uid]
+    # shots get a number only in rounds where the player fired more than one —
+    # "shot 1 / shot 2 (extra)" is the whole point (Paul 9/12), a lone shot reads better bare
+    banked_per_round = {}
+    for sh in mine:
+        if sh["kind"] in BANKED and sh.get("seq"):
+            banked_per_round[sh["round_no"]] = banked_per_round.get(sh["round_no"], 0) + 1
+    for sh in mine:
         verb = CAST_VERB.get(sh["kind"], f"cast {sh['kind']} at")
         line = verb if sh["kind"] == "nuke" else f"{verb} {m(sh['target_id'])}"
+        if sh["kind"] in BANKED and sh.get("seq") and banked_per_round.get(sh["round_no"], 0) > 1:
+            tag = f"Shot {sh['seq']}" + (" (extra)" if sh.get("extra") else "")
+            line = f"{line[:1]} **{tag}** — {line[2:]}" if line[:1] else f"**{tag}** — {line}"
+        elif sh["kind"] in BANKED and sh.get("extra"):
+            line += " *(extra shot)*"
+        if sh.get("prev_target_id") and sh["prev_target_id"] != sh["target_id"]:
+            line += f" (re-aimed from {m(sh['prev_target_id'])})"
+        if sh.get("result"):
+            line += RESULT_TAG.get(sh["result"], "")
         by_round.setdefault(sh["round_no"], []).append(line)
     for lg in log_rows:
         by_round.setdefault(lg["round_no"], []).append(lg["text"])
@@ -563,6 +689,15 @@ def recommended_lives(n_players):
 
 
 MAX_RECOMMENDED_LIVES = 10
+
+
+def recommended_sudden_death(n_players):
+    """Alive count at which sudden death starts (shields off, half-length
+    rounds). A fixed 5 meant a 6-player race was in sudden death from its
+    second round (Paul 9/12: "sudden-deathing every single round, that's not
+    normal"). About a quarter of the starters, never below 2, never above 5:
+      6 → 2 · 8 → 2 · 12 → 3 · 15 → 4 · 20+ → 5"""
+    return max(2, min(5, -(-max(0, n_players) // 4)))
 
 
 def pick_purge_round(rng, n_players):
@@ -635,12 +770,13 @@ def grant_super(p, kind, shot_cap, max_lives):
 
 
 def grant(p, kind, shot_cap):
-    """Hand a power-up to a player. A second shield turns into a shot so the
-    'one held at a time' rule never wastes a grab."""
+    """Hand a power-up to a player. A second shield turns into a Patch so the
+    'one held at a time' rule never wastes a grab (was an extra shot until
+    9/12 — shots were coming from everywhere)."""
     if kind == "shield":
         if p["shield"]:
-            p["shots"] = min(shot_cap + 1, p["shots"] + 1)
-            return f"🛡️ {m(p['user_id'])} already holds a shield — it became an extra shot."
+            p["patch"] = p.get("patch", 0) + 1
+            return f"🛡️ {m(p['user_id'])} already holds a shield — it became a **Patch**."
         p["shield"] = 1
         return f"🛡️ {m(p['user_id'])} grabbed a **shield**."
     if kind == "shot":
@@ -742,13 +878,35 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
       dead    — user_ids eliminated this round, in order
       killers — {victim_id: killer_id} for kill credit (storm/self deaths absent)
       winners — [] while the race goes on; [uid] for a winner; several = draw
+      results — {shot_id: outcome} for rows that carry an id (hit|kill|
+                shielded|backfire|wasted|self|transfused|late|nuke)
     `sudden` disables shields. `msgs` is {user_id: messages this round} for the
     storm. `afk` charges a life to every survivor who cast no shot/overload.
     Shooters who die mid-batch still fire (dead man's shot)."""
     P = {p["user_id"]: p for p in rows}
-    lines, dead, killers = [], [], {}
+    lines, dead, killers, results = [], [], {}, {}
     order = list(shot_rows)
     rng.shuffle(order)
+
+    # "A's shot" vs "A's shot 2 (extra)": number a shooter's banked shots only
+    # when they fired more than one this round (Paul 9/12: "shot 1 here and
+    # shot 2 here")
+    fired = {}
+    for s in shot_rows:
+        if s["kind"] in BANKED and s.get("seq"):
+            fired[s["shooter_id"]] = fired.get(s["shooter_id"], 0) + 1
+
+    def shot_name(s):
+        sid = s["shooter_id"]
+        if s["kind"] in BANKED and s.get("seq") and fired.get(sid, 0) > 1:
+            return f"{m(sid)}'s shot {s['seq']}" + (" (extra)" if s.get("extra") else "")
+        if s["kind"] in BANKED and s.get("extra"):
+            return f"{m(sid)}'s extra shot"
+        return f"{m(sid)}'s shot"
+
+    def record(s, res):
+        if s.get("id") is not None:
+            results[s["id"]] = res
 
     # who actually played this round: cast a shot/overload/nuke, or sat it
     # out on a Medkit. Everyone else is AFK — the penalty hits them at close,
@@ -774,8 +932,8 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
 
     def pay(shooter, victim):
         if shooter["shield"]:
-            shooter["shots"] = min(shot_cap + 1, shooter["shots"] + 1)
-            lines.append(f"   ↳ {m(shooter['user_id'])} gets an extra shot for the kill.")
+            shooter["patch"] = shooter.get("patch", 0) + 1
+            lines.append(f"   ↳ {m(shooter['user_id'])} gets a Patch for the kill (already shielded).")
         else:
             shooter["shield"] = 1
             lines.append(f"   ↳ {m(shooter['user_id'])} gets a shield for the kill.")
@@ -784,23 +942,25 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
             lines.append(f"   ↳ 🎯 **Bounty claimed** — {m(shooter['user_id'])} banks two more shots.")
 
     def hit(shooter, victim, dmg, via):
-        """One damage application. `via` names the source for the line."""
+        """One damage application. `via` names the source for the line.
+        Returns the outcome word for the shot record."""
         vid = victim["user_id"]
         if not victim["alive"]:
-            return
+            return "wasted"
         if victim["shield"] and not sudden:
             victim["shield"] = 0
             lines.append(f"🛡️ {m(vid)}'s **shield** ate {via}.")
-            return
+            return "shielded"
         victim["lives"] = max(0, victim["lives"] - dmg)
         if victim["lives"] > 0:
             who = "themselves" if victim is shooter else m(vid)
             lines.append(f"🩸 {via_cap(via)} hit {who} — **{victim['lives']}** "
                          f"{'life' if victim['lives'] == 1 else 'lives'} left.")
-        else:
-            by = "their own shot" if victim is shooter else via
-            _die(victim, round_no, lines, f"⛔ {m(vid)} was **BANNED** by {by}.")
-            reward_kill(shooter, victim)
+            return "self" if victim is shooter else "hit"
+        by = "their own shot" if victim is shooter else via
+        _die(victim, round_no, lines, f"⛔ {m(vid)} was **BANNED** by {by}.")
+        reward_kill(shooter, victim)
+        return "self" if victim is shooter else "kill"
 
     def via_cap(t):
         return t[0].upper() + t[1:] if t else t
@@ -817,15 +977,19 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
             for v in rows:
                 if v is not shooter and v["alive"]:
                     hit(shooter, v, 1, f"{m(sid)}'s nuke")
+            record(s, "nuke")
             continue
 
         if kind == "transfuse":
             if not target["alive"]:
                 lines.append(f"💉 {m(sid)} tried to transfuse {m(tid)} — too late, they're gone.")
+                record(s, "late")
                 continue
             if shooter["lives"] <= 0:
                 lines.append(f"💉 {m(sid)} had nothing left to give {m(tid)}.")
+                record(s, "late")
                 continue
+            record(s, "transfused")
             shooter["lives"] -= 1
             target["lives"] = max(target["lives"], min(max_lives, target["lives"] + 1))
             lines.append(f"💉 {m(sid)} **transfused** {m(tid)} — {m(tid)} up to {target['lives']}, "
@@ -845,15 +1009,21 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
                 dead.append(sid)
 
         victim = target
+        name = shot_name(s)
+        backfired = False
         if rng.random() < backfire:
             victim = shooter
-            lines.append(f"🔥 **Backfire!** {m(sid)}'s shot at {m(tid)} hit themselves.")
+            backfired = True
+            lines.append(f"🔥 **Backfire!** {name} at {m(tid)} hit themselves.")
         if not victim["alive"]:
             if victim is shooter:
+                record(s, "backfire")
                 continue
-            lines.append(f"💨 {m(sid)} shot at {m(tid)} — already gone. Wasted.")
+            lines.append(f"💨 {via_cap(name)} at {m(tid)} — already gone. Wasted.")
+            record(s, "wasted")
             continue
-        hit(shooter, victim, dmg, f"{m(sid)}'s shot")
+        out = hit(shooter, victim, dmg, name)
+        record(s, "backfire" if backfired else out)
 
     # kill rewards land only now: a shield earned this round must not eat a
     # shot that was fired this round (resolution is simultaneous)
@@ -914,7 +1084,7 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
         if d not in seen:
             seen.add(d)
             uniq.append(d)
-    return {"lines": lines, "dead": uniq, "killers": killers, "winners": winners}
+    return {"lines": lines, "dead": uniq, "killers": killers, "winners": winners, "results": results}
 
 
 def standings(rows):
