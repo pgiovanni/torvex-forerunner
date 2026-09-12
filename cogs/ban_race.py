@@ -59,7 +59,7 @@ USE_CHOICES = [
 ]
 
 PITCH = ("You've got **{lives} lives**. There are **power-ups**. Pick who you're going for "
-         "and shoot. See you after the round ends. 😂")
+         "and shoot. See you after the round ends.")
 
 
 # ── custom ids ────────────────────────────────────────────────────────────────
