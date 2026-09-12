@@ -292,6 +292,61 @@ def guild_races(guild_id, limit=10, db=None):
     return [_race_row(r) for r in rows]
 
 
+def alltime(guild_id, db=None):
+    """Career numbers across every FINISHED race in the guild (aborted ones
+    never crowned anyone, so they don't count). Returns
+      races   — finished races, newest first, each with `winner_names`
+      players — {user_id: {name, races, wins, kills, outs, rounds, shots}}
+                rounds = rounds survived (died_round, or the race length if
+                they were standing at the end); name = latest seen.
+    Only structured columns are used — nothing is parsed out of log text."""
+    init(db)
+    with _conn(db) as c:
+        races = [_race_row(r) for r in c.execute(
+            "SELECT * FROM races WHERE guild_id=? AND status='finished' ORDER BY id DESC",
+            (str(guild_id),)).fetchall()]
+        if not races:
+            return {"races": [], "players": {}}
+        ids = [r["id"] for r in races]
+        q = ",".join("?" * len(ids))
+        prow = c.execute(f"SELECT * FROM players WHERE race_id IN ({q}) ORDER BY race_id DESC",
+                         ids).fetchall()
+        shots = {(str(r["race_id"]), r["shooter_id"]): r["n"] for r in c.execute(
+            f"SELECT race_id, shooter_id, COUNT(*) n FROM shots WHERE race_id IN ({q})"
+            " AND kind IN ('shot','overload','nuke') GROUP BY race_id, shooter_id", ids).fetchall()}
+    by_id = {r["id"]: r for r in races}
+    names = {}
+    players = {}
+    for p in prow:
+        p = dict(p)
+        race = by_id[p["race_id"]]
+        uid = p["user_id"]
+        names.setdefault(uid, p["name"])
+        st = players.setdefault(uid, {"name": p["name"], "races": 0, "wins": 0, "kills": 0,
+                                      "outs": 0, "rounds": 0, "shots": 0, "history": []})
+        won = uid in race["winner_ids"]
+        survived = p["died_round"] if p["died_round"] else race["round_no"]
+        st["races"] += 1
+        st["wins"] += 1 if won else 0
+        st["kills"] += p["kills"] or 0
+        st["outs"] += 0 if p["alive"] else 1
+        st["rounds"] += survived or 0
+        st["shots"] += shots.get((str(p["race_id"]), uid), 0)
+        st["history"].append({"race_id": p["race_id"], "won": won, "kills": p["kills"] or 0,
+                              "out_round": p["died_round"], "rounds": race["round_no"],
+                              "finished_at": race["finished_at"]})
+    for r in races:
+        r["winner_names"] = [names.get(w, w) for w in r["winner_ids"]]
+    return {"races": races, "players": players}
+
+
+def leaderboard(players, limit=15):
+    """Players ordered by wins, then kills, then races — the all-time table."""
+    rows = sorted(players.items(), key=lambda kv: (-kv[1]["wins"], -kv[1]["kills"], -kv[1]["races"],
+                                                   kv[1]["name"].lower()))
+    return [(uid, st) for uid, st in rows[:limit]]
+
+
 def running_races(db=None):
     init(db)
     with _conn(db) as c:

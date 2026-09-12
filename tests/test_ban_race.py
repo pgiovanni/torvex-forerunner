@@ -561,6 +561,35 @@ class Store(unittest.TestCase):
         self.assertEqual([r for r, _ in chart], [1, 2])
         self.assertEqual((len(chart[0][1]), len(chart[1][1])), (2, 2))
 
+    def test_alltime_counts_finished_races_only_and_ranks_by_wins_then_kills(self):
+        g = 4242
+        def race(winner, rows, status="finished", rounds=3):
+            r = E.create_race(g, 3, 9, settings={"lives": 3, "mode": "ghost"})
+            for uid, name, kills, died in rows:
+                E.join(r["id"], uid, name, 3)
+                E.update_player(r["id"], uid, kills=kills, alive=0 if died else 1, died_round=died,
+                                lives=0 if died else 1)
+            E.update_race(r["id"], status=status, round_no=rounds, finished_at=1000.0,
+                          winner_ids=[str(winner)] if winner else [])
+            E.cast(r["id"], 1, rows[0][0], rows[-1][0])
+            return r["id"]
+        r1 = race(1, [(1, "ann", 2, None), (2, "bob", 1, 2), (3, "cy", 0, 1)])
+        r2 = race(2, [(1, "ann", 0, 1), (2, "bobby", 3, None)])
+        race(None, [(1, "ann", 9, None)], status="aborted")             # ignored
+        E.create_race(g, 3, 9)                                          # lobby, ignored
+        d = E.alltime(g)
+        self.assertEqual([r["id"] for r in d["races"]], [r2, r1])
+        self.assertEqual(d["races"][0]["winner_names"], ["bobby"])      # latest name wins
+        ann, bob, cy = d["players"]["1"], d["players"]["2"], d["players"]["3"]
+        self.assertEqual((ann["races"], ann["wins"], ann["kills"], ann["outs"]), (2, 1, 2, 1))
+        self.assertEqual(ann["rounds"], 3 + 1)                          # survived r1 (3), out r1 in r2
+        self.assertEqual(ann["shots"], 2)                               # one cast per race
+        self.assertEqual((bob["wins"], bob["kills"], bob["name"]), (1, 4, "bobby"))
+        self.assertEqual(cy["shots"], 0)
+        board = E.leaderboard(d["players"])
+        self.assertEqual([uid for uid, _ in board], ["2", "1", "3"])   # 1 win each: bob 4 kills > ann 2
+        self.assertEqual(E.alltime(4343), {"races": [], "players": {}})
+
     def test_fit_rounds_keeps_the_newest_that_fit(self):
         story = [(r, ["x" * 500]) for r in range(1, 31)]
         shown, dropped = E.fit_rounds(story, max_fields=24, max_chars=5200)
