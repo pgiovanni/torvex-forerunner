@@ -125,23 +125,53 @@ def drop_view(race_id, nonce):
 class _TargetSelect(discord.ui.View):
     """Ephemeral picker: who to aim at. One select, up to 25 living players."""
 
-    def __init__(self, cog, race_id, kind, me, rows):
+    def __init__(self, cog, race_id, kind, me, rows, label=None, seq=None):
         super().__init__(timeout=120)
-        self.cog, self.race_id, self.kind = cog, race_id, kind
+        self.cog, self.race_id, self.kind, self.seq = cog, race_id, kind, seq
         opts = [discord.SelectOption(label=p["name"][:100], value=p["user_id"],
                                      description=f"{p['lives']} lives · {p['kills']} kills")
                 for p in engine.alive(rows) if p["user_id"] != str(me)][:25]
-        label = {"shot": "Who are you going for?", "overload": "Overload — who takes 2?",
-                 "transfuse": "Transfuse — who gets your life?"}[kind]
+        label = label or {"shot": "Who are you going for?", "overload": "Overload — who takes 2?",
+                          "transfuse": "Transfuse — who gets your life?"}[kind]
         sel = discord.ui.Select(placeholder=label, options=opts, min_values=1, max_values=1)
         sel.callback = self._pick
         self.add_item(sel)
 
     async def _pick(self, interaction):
         target = interaction.data["values"][0]
-        text = await self.cog._do_cast(interaction.guild, self.race_id, interaction.user.id,
-                                       int(target), self.kind)
+        if self.seq is not None:
+            text = await self.cog._do_retarget(self.race_id, interaction.user.id, int(target), self.seq)
+        else:
+            text = await self.cog._do_cast(interaction.guild, self.race_id, interaction.user.id,
+                                           int(target), self.kind)
         await interaction.response.edit_message(content=text, embed=None, view=None)
+
+
+class _ShotView(_TargetSelect):
+    """The Vote pop-up: the target picker for the next shot (when one is
+    banked) plus a "Change shot N" button per shot already fired this round
+    (Paul 9/12: "need a way to edit them tho (change shot)")."""
+
+    def __init__(self, cog, race_id, me, rows, fired, label=None, with_select=True):
+        super().__init__(cog, race_id, "shot", me, rows, label=label)
+        self.rows, self.me = rows, me
+        if not with_select:
+            self.clear_items()
+        for sh in fired[:5]:
+            name = next((p["name"] for p in rows if p["user_id"] == sh["target_id"]), "?")
+            emoji = "💥" if sh["kind"] == "overload" else "🎯"
+            b = discord.ui.Button(label=f"Change shot {sh['seq']} (→ {name})"[:80], emoji=emoji,
+                                  style=discord.ButtonStyle.secondary)
+            b.callback = self._mk(sh["seq"], sh["kind"], name)
+            self.add_item(b)
+
+    def _mk(self, seq, kind, name):
+        async def cb(interaction):
+            v = _TargetSelect(self.cog, self.race_id, kind, self.me, self.rows,
+                              label=f"Shot {seq} is on {name} — who instead?", seq=seq)
+            await interaction.response.edit_message(
+                content=f"🔁 **Change shot {seq}** — currently locked on **{name}**.", embed=None, view=v)
+        return cb
 
 
 class _PowerupView(discord.ui.View):
@@ -473,16 +503,41 @@ class BanRace(commands.Cog):
         allowance = 3 if rn == race.get("purge_round") else 1
         info = engine.cast(race_id, rn, shooter_id, target_id, kind, allowance=allowance)
         when = f"<t:{int(race['round_ends_at'])}:R>"
-        tag = ""
-        if info.get("seq") and (info["seq"] > 1 or info.get("extra")):
-            tag = f"**Shot {info['seq']}{' (extra)' if info.get('extra') else ''}** "
+        seq = info.get("seq") or 1
+        tag = f"**Shot {seq}{' (extra)' if info.get('extra') else ''}** "
         if kind == "shot":
-            return (f"🔫 {tag}locked on **{t['name']}**. Lands {when}. "
-                    f"Shots left this round: **{p['shots']}**." +
-                    (" Fire again to use them." if p["shots"] > 0 else ""))
+            return (f"🔫 {tag}locked on **{t['name']}**. Lands {when}. " +
+                    (f"**{p['shots']}** left — fire again for **Shot {seq + 1}**."
+                     if p["shots"] > 0 else "That's all your shots this round."))
         if kind == "overload":
             return f"💥 {tag}Overload armed at **{t['name']}** — you burn 1, they take 2. Lands {when}."
         return f"💉 Transfuse set for **{t['name']}** — they gain 1, you lose 1. Lands {when}."
+
+    async def _do_retarget(self, race_id, shooter_id, target_id, seq):
+        """Move shot `seq` (fired this round) onto a new target. Same checks as
+        a fresh cast minus the bank: the race must be running and the target
+        alive and not yourself."""
+        race = engine.get_race(race_id)
+        if not race or race["status"] != "running":
+            return "There's no round to shoot in right now."
+        p = engine.player(race_id, shooter_id)
+        t = engine.player(race_id, target_id)
+        if p is None or not p["alive"]:
+            return "You're out of the race."
+        if t is None or not t["alive"]:
+            return "That player isn't in the race (or is already gone)."
+        if t["user_id"] == p["user_id"]:
+            return "Shooting yourself is what backfire is for."
+        mv = engine.retarget(race_id, race["round_no"], shooter_id, target_id, seq=seq)
+        if not mv:
+            return f"You haven't fired a shot {seq} this round."
+        if mv["was"] == str(target_id):
+            return f"Shot {seq} was already on **{t['name']}**."
+        was = engine.player(race_id, mv["was"])
+        what = "Overload" if mv["kind"] == "overload" else "Shot"
+        return (f"🔁 **{what} {seq}** moved to **{t['name']}**"
+                f"{' (was ' + was['name'] + ')' if was else ''}. "
+                f"Lands <t:{int(race['round_ends_at'])}:R>.")
 
     async def _do_use_self(self, race_id, uid, kind):
         """Patch / Medkit from /powerup or the inventory button."""
@@ -1252,9 +1307,28 @@ class BanRace(commands.Cog):
         if not others:
             return await interaction.response.send_message("Nobody left to shoot.", ephemeral=True)
         note = "" if len(others) <= 25 else "\n(Showing 25 — use `/vote` for anyone else.)"
+        # label the shot up front (Paul 9/12: "shot one and shot two need to be
+        # labeled in the ephemeral pop up"): fired-so-far + 1, out of fired + banked
+        fired = engine.fired_shots(race["id"], race["round_no"], p["user_id"])
+        names = {q["user_id"]: q["name"] for q in rows}
+        done = "\n".join(f"{'💥' if sh['kind'] == 'overload' else '🎯'} **Shot {sh['seq']}** → "
+                         f"{names.get(sh['target_id'], '?')}" for sh in fired)
+        if p["shots"] > 0:
+            n, total = len(fired) + 1, len(fired) + p["shots"]
+            head = (f"🔫 **Shot {n} of {total}** — pick a target." +
+                    (f"\n{done}\nUse a **Change shot** button to move one you've already fired." if fired else "") + note)
+            label = f"Shot {n} of {total} — who are you going for?"
+        elif fired:
+            head = (f"All **{len(fired)}** of your shots are placed this round.\n{done}\n"
+                    f"Use a **Change shot** button to move one.{note}")
+            label = None
+        else:
+            return await interaction.response.send_message(
+                f"No shots banked this round. Grab a drop.{note}", ephemeral=True)
         await interaction.response.send_message(
-            f"Shots banked: **{p['shots']}**. Pick a target.{note}",
-            view=_TargetSelect(self, race["id"], "shot", interaction.user.id, rows), ephemeral=True)
+            head, view=_ShotView(self, race["id"], interaction.user.id, rows, fired, label=label,
+                                 with_select=p["shots"] > 0),
+            ephemeral=True)
 
     async def _btn_powerup(self, interaction, race, _):
         if race["status"] != "running":

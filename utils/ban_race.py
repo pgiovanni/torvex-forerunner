@@ -455,21 +455,39 @@ def cast(race_id, round_no, shooter_id, target_id, kind="shot", now=None, db=Non
         return {"id": cur.lastrowid, "seq": seq, "extra": extra}
 
 
-def retarget(race_id, round_no, shooter_id, target_id, db=None):
-    """Re-aim the shooter's most recent plain shot this round. Returns the
-    moved row's {seq, prev_target_id} — or None if there was nothing to move.
-    The ORIGINAL aim is kept in prev_target_id (first re-aim wins) so the
-    story can show the change of mind."""
+def retarget(race_id, round_no, shooter_id, target_id, db=None, seq=None):
+    """Re-aim one of the shooter's shots this round: shot `seq` when given
+    (shot or overload — both are aimed), else the most recent plain shot.
+    Returns the moved row's {seq, kind, was, prev_target_id} — `was` = the
+    target it had a moment ago — or None if there was nothing to move. The
+    ORIGINAL aim is kept in prev_target_id (first re-aim wins) so the story
+    can show the change of mind."""
     with _conn(db) as c:
-        r = c.execute("SELECT id, seq, target_id, prev_target_id FROM shots WHERE race_id=? AND round_no=?"
-                      " AND shooter_id=? AND kind='shot' ORDER BY id DESC LIMIT 1",
-                      (race_id, round_no, str(shooter_id))).fetchone()
+        if seq is not None:
+            r = c.execute("SELECT id, seq, kind, target_id, prev_target_id FROM shots WHERE race_id=?"
+                          " AND round_no=? AND shooter_id=? AND seq=? AND kind IN ('shot','overload')"
+                          " ORDER BY id DESC LIMIT 1",
+                          (race_id, round_no, str(shooter_id), seq)).fetchone()
+        else:
+            r = c.execute("SELECT id, seq, kind, target_id, prev_target_id FROM shots WHERE race_id=?"
+                          " AND round_no=? AND shooter_id=? AND kind='shot' ORDER BY id DESC LIMIT 1",
+                          (race_id, round_no, str(shooter_id))).fetchone()
         if not r:
             return None
         prev = r["prev_target_id"] or r["target_id"]
         c.execute("UPDATE shots SET target_id=?, prev_target_id=? WHERE id=?",
                   (str(target_id), prev, r["id"]))
-        return {"seq": r["seq"], "prev_target_id": prev}
+        return {"seq": r["seq"], "kind": r["kind"], "was": r["target_id"], "prev_target_id": prev}
+
+
+def fired_shots(race_id, round_no, shooter_id, db=None):
+    """The shooter's banked casts this round (shot/overload), in order — what
+    the Vote pop-up offers to change."""
+    with _conn(db) as c:
+        rows = c.execute("SELECT seq, kind, target_id, prev_target_id FROM shots WHERE race_id=?"
+                         " AND round_no=? AND shooter_id=? AND kind IN ('shot','overload') ORDER BY id",
+                         (race_id, round_no, str(shooter_id))).fetchall()
+    return [dict(r) for r in rows]
 
 
 def mark_shots(results, db=None):

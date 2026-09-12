@@ -704,12 +704,22 @@ class Tracking(unittest.TestCase):
         E.update_race(rid, status="running", round_no=1)
         E.cast(rid, 1, 1, 2)
         mv = E.retarget(rid, 1, 1, 3)
-        self.assertEqual(mv, {"seq": 1, "prev_target_id": "2"})
+        self.assertEqual(mv, {"seq": 1, "kind": "shot", "was": "2", "prev_target_id": "2"})
         mv2 = E.retarget(rid, 1, 1, 2)                   # back again: original aim still 2
-        self.assertEqual(mv2["prev_target_id"], "2")
+        self.assertEqual((mv2["was"], mv2["prev_target_id"]), ("3", "2"))
         self.assertIsNone(E.retarget(rid, 1, 2, 1))     # nothing cast
         sh = E.shots(rid, 1)[0]
         self.assertEqual((sh["target_id"], sh["prev_target_id"]), ("2", "2"))
+        # change a SPECIFIC shot by number (the "Change shot N" buttons), overloads too
+        E.cast(rid, 1, 1, 3, "overload")                 # shot 2 = the overload
+        E.cast(rid, 1, 1, 3)                             # shot 3
+        self.assertEqual([f["seq"] for f in E.fired_shots(rid, 1, 1)], [1, 2, 3])
+        mv3 = E.retarget(rid, 1, 1, 2, seq=2)
+        self.assertEqual((mv3["seq"], mv3["kind"], mv3["was"]), (2, "overload", "3"))
+        self.assertIsNone(E.retarget(rid, 1, 1, 2, seq=9))
+        by_seq = {f["seq"]: f for f in E.fired_shots(rid, 1, 1)}
+        self.assertEqual((by_seq[2]["target_id"], by_seq[2]["prev_target_id"]), ("2", "3"))
+        self.assertEqual(by_seq[3]["target_id"], "3")   # untouched
         E.update_race(rid, status="aborted")
 
     def test_timeline_numbers_double_shots_and_shows_outcomes(self):
