@@ -293,6 +293,37 @@ class Drops(unittest.TestCase):
         E.grant_super(p, "arsenal", 3, 3)
         self.assertEqual(p["shots"], 3)
 
+    def test_golden_apple_goes_above_max_and_nothing_pulls_you_back_down(self):
+        p = P(1, lives=2)
+        E.grant_super(p, "goldapple", 3, 3)
+        self.assertEqual(p["lives"], 4)                 # above the cap of 3
+        E.grant_super(p, "goldapple", 3, 3)
+        self.assertEqual(p["lives"], 5)                 # capped at max + 2
+        E.grant_super(p, "goldapple", 3, 3)
+        self.assertEqual(p["lives"], 5)
+        E.grant_super(p, "fullheal", 3, 3)
+        self.assertEqual(p["lives"], 5)                 # full heal never lowers
+        # patch / medkit refuse at or above max; transfuse never lowers the target
+        self.assertFalse(E.use_self(p, "patch", 1, 3, False)[0])
+        a = P(2, transfuse=1)
+        resolve([a, p], [S(2, 1, "transfuse")])
+        self.assertEqual(p["lives"], 5)
+        self.assertEqual(a["lives"], 2)                 # still paid
+        # a shot still takes 1 — it's a buffer, not armor
+        resolve([a, p], [S(2, 1)], round_no=2)
+        self.assertEqual(p["lives"], 4)
+
+    def test_golden_apple_is_the_rarest_super(self):
+        self.assertIn("goldapple", E.SUPER)
+        self.assertEqual(min(E.SUPER_WEIGHTS, key=E.SUPER_WEIGHTS.get), "goldapple")
+        self.assertEqual(set(E.SUPER_WEIGHTS), set(E.SUPER))
+        rng = random.Random(11)
+        n = sum(E.roll_drop(rng, E.SUPER_WEIGHTS) == "goldapple" for _ in range(5000))
+        self.assertTrue(350 < n < 650, n)                # ≈ 1 in 10
+        # only ever offered in sudden death (supers are), never in a regular drop
+        sched = E.drop_schedule(random.Random(1), 180, 10, 0.5, sudden=False)
+        self.assertFalse(any(k == "goldapple" for _, k, _ in sched))
+
     def test_nuke_hits_everyone_else_and_credits_kills(self):
         a, b, c, d = P(1), P(2, lives=1), P(3, shield=1), P(4)
         # b casts a (wasted) self-shot so it counts as voting and the nuke kill pays

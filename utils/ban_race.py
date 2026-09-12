@@ -34,7 +34,9 @@ Round model (all resolution is SIMULTANEOUS at round close):
     `drop_window`), spread evenly over the middle of the timer — twenty
     players get a busy channel, three get one drop; sudden death adds a
     SUPER drop each round: nuke (everyone else takes 1 at close), full
-    heal, arsenal (+3 shots) — instant on grab;
+    heal, arsenal (+3 shots) — instant on grab — and, one super in ten, the
+    GOLDEN APPLE: +2 lives that go ABOVE max (capped at max+2), the only
+    way past the cap (Paul 9/12, Minecraft reference);
   * killing blows pay a shield (or a shot if you already hold one) — unless
     the victim was AFK that round: no shield, no shot, no kill credit, no
     bounty. Shooting someone who isn't playing is free, so it pays nothing.
@@ -137,8 +139,15 @@ SUPER = {
     "arsenal":  ("🔫", "Arsenal",
                  "✅ +3 shots, right now. "
                  "❌ Still one target per shot, and unfired shots die with you."),
+    "goldapple": ("🍎", "Golden apple",
+                  "✅ +2 lives that go ABOVE max — the only thing in the race that does. "
+                  "❌ Legendary: one super in ten, sudden death only; a shot still takes 1 (it's a buffer, "
+                  "not armor), heals can't stack past max+2."),
 }
-SUPER_WEIGHTS = {"nuke": 2, "fullheal": 2, "arsenal": 2}
+GOLDAPPLE_OVER = 2          # how far above max lives a golden apple can take you
+# Golden apple is LEGENDARY — one super drop in ten (Paul: "SUPER rare, only at
+# the sudden death finale"; supers only ever fall in sudden death).
+SUPER_WEIGHTS = {"nuke": 3, "fullheal": 3, "arsenal": 3, "goldapple": 1}
 
 ACTIVE = ("lobby", "running")
 
@@ -528,8 +537,11 @@ def grant_super(p, kind, shot_cap, max_lives):
     """Instant super effects. `nuke` is not handled here — it's a cast, the
     caller records the shot row. Returns the feed line."""
     if kind == "fullheal":
-        p["lives"] = max_lives
-        return f"💖 {m(p['user_id'])} grabbed **Full heal** — back to {max_lives} lives."
+        p["lives"] = max(p["lives"], max_lives)      # never lowers a golden-appled player
+        return f"💖 {m(p['user_id'])} grabbed **Full heal** — back to {p['lives']} lives."
+    if kind == "goldapple":
+        p["lives"] = min(max_lives + GOLDAPPLE_OVER, p["lives"] + 2)
+        return f"🍎 {m(p['user_id'])} bit the **GOLDEN APPLE** — **{p['lives']}** lives, above the cap."
     if kind == "arsenal":
         p["shots"] = min(shot_cap + 3, p["shots"] + 3)
         return f"🔫 {m(p['user_id'])} grabbed **Arsenal** — three more shots."
@@ -729,7 +741,7 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
                 lines.append(f"💉 {m(sid)} had nothing left to give {m(tid)}.")
                 continue
             shooter["lives"] -= 1
-            target["lives"] = min(max_lives, target["lives"] + 1)
+            target["lives"] = max(target["lives"], min(max_lives, target["lives"] + 1))
             lines.append(f"💉 {m(sid)} **transfused** {m(tid)} — {m(tid)} up to {target['lives']}, "
                          f"{m(sid)} down to {shooter['lives']}.")
             if shooter["lives"] == 0 and shooter["alive"]:
