@@ -626,7 +626,7 @@
      "required": true,
      "description": "within this many seconds",
      "min": 1,
-     "max": 600
+     "max": 86400
     }
    ],
    "signature": "/antinuke role-grants <count> <window>",
@@ -656,7 +656,7 @@
      "required": true,
      "description": "within this many seconds",
      "min": 1,
-     "max": 600
+     "max": 86400
     }
    ],
    "signature": "/antinuke role-removes <count> <window>",
@@ -703,7 +703,7 @@
      "required": true,
      "description": "within this many seconds",
      "min": 1,
-     "max": 600
+     "max": 86400
     }
    ],
    "signature": "/antinuke set-limit <vector> <count> <window>",
@@ -908,6 +908,146 @@
    ],
    "cooldown_seconds": null,
    "dm_allowed": true
+  },
+  {
+   "path": "powerup",
+   "description": "Last to survive: your power-ups — or aim an Overload / Transfuse.",
+   "params": [
+    {
+     "name": "use",
+     "type": "string",
+     "required": false,
+     "description": "Which power-up to use (leave empty to see what you hold)",
+     "choices": [
+      "Overload — take 1 damage to deal 2 (needs a player)",
+      "Transfuse — give someone 1 life, lose 1 (needs a player)",
+      "Patch — heal yourself 1",
+      "Medkit — heal yourself 2, skip this round's vote"
+     ]
+    },
+    {
+     "name": "player",
+     "type": "user",
+     "required": false,
+     "description": "Who it's aimed at"
+    }
+   ],
+   "signature": "/powerup [use] [player]",
+   "root": "powerup",
+   "cog": "ban_race",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": false
+  },
+  {
+   "path": "race start",
+   "description": "Open a lobby. Posts in #last-to-survive (created if missing) or the channel you pick.",
+   "params": [
+    {
+     "name": "lives",
+     "type": "integer",
+     "required": false,
+     "description": "Lives per player (default 3)",
+     "min": 1,
+     "max": 5
+    },
+    {
+     "name": "round_minutes",
+     "type": "integer",
+     "required": false,
+     "description": "Minutes per round (default 3)",
+     "min": 1,
+     "max": 30
+    },
+    {
+     "name": "mode",
+     "type": "string",
+     "required": false,
+     "description": "ghost = no bans (default); real = actual bans, auto-unban at the end",
+     "choices": [
+      "ghost — no bans, eliminated players are just out (default)",
+      "real — actual bans, auto-unban when it ends"
+     ]
+    },
+    {
+     "name": "min_account_days",
+     "type": "integer",
+     "required": false,
+     "description": "Minimum account age to enter (default 7)",
+     "min": 0,
+     "max": 365
+    },
+    {
+     "name": "min_players",
+     "type": "integer",
+     "required": false,
+     "description": "Players needed before the race can start (default 3)",
+     "min": 3,
+     "max": 500
+    },
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": false,
+     "description": "Where the race runs (default: #last-to-survive, created if missing)",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/race start [lives] [round_minutes] [mode] [min_account_days] [min_players] [channel]",
+   "root": "race",
+   "cog": "ban_race",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "race status",
+   "description": "Standings for the race in progress.",
+   "params": [],
+   "signature": "/race status",
+   "root": "race",
+   "cog": "ban_race",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "race stop",
+   "description": "Stop the race. Unbans everyone it banned.",
+   "params": [],
+   "signature": "/race stop",
+   "root": "race",
+   "cog": "ban_race",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "vote",
+   "description": "Last to survive: fire this round's shot at a player.",
+   "params": [
+    {
+     "name": "player",
+     "type": "user",
+     "required": true,
+     "description": "Who you're going for"
+    }
+   ],
+   "signature": "/vote <player>",
+   "root": "vote",
+   "cog": "ban_race",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": false
   },
   {
    "path": "chess",
@@ -1343,19 +1483,6 @@
    "dm_allowed": true
   },
   {
-   "path": "backup_emojis",
-   "description": "Download all server emojis and save them to the emojis/ folder on the bot host.",
-   "params": [],
-   "signature": "/backup_emojis",
-   "root": "backup_emojis",
-   "cog": "emojis",
-   "permissions": [
-    "Manage Expressions"
-   ],
-   "cooldown_seconds": null,
-   "dm_allowed": true
-  },
-  {
    "path": "steal-emoji",
    "description": "Copy custom emojis into this server — paste them (or one emoji ID) and I'll grab them.",
    "params": [
@@ -1578,17 +1705,6 @@
    "signature": "/gift coins <user> <amount>",
    "root": "gift",
    "cog": "gifts",
-   "permissions": [],
-   "cooldown_seconds": 0,
-   "dm_allowed": true
-  },
-  {
-   "path": "add-bot",
-   "description": "Add Torvex Forerunner to your server.",
-   "params": [],
-   "signature": "/add-bot",
-   "root": "add-bot",
-   "cog": "help",
    "permissions": [],
    "cooldown_seconds": 0,
    "dm_allowed": true
@@ -4422,19 +4538,6 @@
    "dm_allowed": false
   },
   {
-   "path": "structure-status",
-   "description": "Show the channel/role backup + what's been deleted since (admin)",
-   "params": [],
-   "signature": "/structure-status",
-   "root": "structure-status",
-   "cog": "server_backup",
-   "permissions": [
-    "Administrator"
-   ],
-   "cooldown_seconds": null,
-   "dm_allowed": false
-  },
-  {
    "path": "server-info",
    "description": "Server overview — members (humans vs bots), channels, roles, features.",
    "params": [],
@@ -5185,6 +5288,40 @@
    "runtime_permissions": [
     "administrator"
    ],
+   "server_owner_only": false
+  },
+  "race start": {
+   "cog": "ban_race",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "race stop": {
+   "cog": "ban_race",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "race status": {
+   "cog": "ban_race",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "vote": {
+   "cog": "ban_race",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "powerup": {
+   "cog": "ban_race",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
    "server_owner_only": false
   },
   "chess": {

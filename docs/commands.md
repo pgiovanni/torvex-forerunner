@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **228 commands** (100 top-level, the rest subcommands) across 40 cogs
+- **230 commands** (100 top-level, the rest subcommands) across 42 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -23,21 +23,21 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 ## Index
 
-**Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/honeypot`, `/member-activity`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recent-leaves`, `/recon-status`, `/recon-unblock`, `/roster-missing`, `/roster-snapshot`, `/security-ai`, `/security`, `/simpleverify`, `/structure-restore`, `/structure-status`, `/unquarantine`, `/verify`
+**Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/honeypot`, `/member-activity`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recent-leaves`, `/recon-status`, `/recon-unblock`, `/roster-missing`, `/security-ai`, `/security`, `/simpleverify`, `/structure-restore`, `/unquarantine`, `/verify`
 
 **Moderation** — `/ban`, `/clear-warning`, `/clear-warnings`, `/conduct-forget`, `/evidence`, `/kick`, `/lock`, `/msglog`, `/note`, `/prune-messages`, `/quiet-kick`, `/timeout`, `/unban`, `/unlock`, `/untimeout`, `/warn`, `/warnings`
 
-**Server setup** — `/backup_emojis`, `/picount`, `/rolemenu`, `/server-info`, `/setup`, `/steal-emoji`, `/suggest`, `/welcome`
+**Server setup** — `/picount`, `/rolemenu`, `/server-info`, `/setup`, `/steal-emoji`, `/suggest`, `/welcome`
 
 **Members & invites** — `/activity`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/invite`, `/levelroles`, `/mentions`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/stats-status`, `/store`, `/tracked-invite`
 
-**Games & fun** — `/8ball`, `/challenge`, `/chess`, `/connect4_bot`, `/connect4`, `/gear`, `/gift`, `/link`, `/market`, `/peepo`, `/roast`, `/rpg`, `/tictactoe_bot`, `/tictactoe`, `/trade`, `/unlink`, `/wordle`
+**Games & fun** — `/8ball`, `/challenge`, `/chess`, `/connect4_bot`, `/connect4`, `/gear`, `/gift`, `/link`, `/market`, `/peepo`, `/powerup`, `/race`, `/roast`, `/rpg`, `/tictactoe_bot`, `/tictactoe`, `/trade`, `/unlink`, `/vote`, `/wordle`
 
 **AI** — `/ai-config`, `/ai-credit-grant`, `/ai-privacy`, `/ai-status`, `/ai-usage`, `/ask`
 
-**Help** — `/add-bot`, `/dashboard`, `/help`
+**Help** — `/dashboard`, `/help`
 
-**Other** — `/automation`
+**Other** — `/automation`, `/deadchat`
 
 ---
 
@@ -222,7 +222,7 @@ Limit how many role-GRANTS an actor may do before it's a nuke
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `count` | integer | Yes | role grants allowed *(range 1–100)* |
-| `window` | integer | Yes | within this many seconds *(range 1–600)* |
+| `window` | integer | Yes | within this many seconds *(range 1–86400)* |
 
 #### `/antinuke role-removes`
 
@@ -237,7 +237,7 @@ Limit how many role-REMOVES an actor may do before it's a nuke
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `count` | integer | Yes | role removals allowed *(range 1–100)* |
-| `window` | integer | Yes | within this many seconds *(range 1–600)* |
+| `window` | integer | Yes | within this many seconds *(range 1–86400)* |
 
 #### `/antinuke set-limit`
 
@@ -253,7 +253,7 @@ Set the rate limit for any destructive vector
 |---|---|:--:|---|
 | `vector` | string | Yes | which action *(one of: `channel deletes`, `channel creates`, `role deletes`, `role creates`, `bans`, `kicks`, `webhook creates`, `role grants`, `role removes`)* |
 | `count` | integer | Yes | allowed in the window *(range 1–100)* |
-| `window` | integer | Yes | within this many seconds *(range 1–600)* |
+| `window` | integer | Yes | within this many seconds *(range 1–86400)* |
 
 #### `/antinuke status`
 
@@ -928,18 +928,6 @@ Members on record who AREN'T in the server now — your re-invite list (admin)
 
 *No parameters.*
 
-#### `/roster-snapshot`
-
-Record the member roster right now (admin)
-
-```
-/roster-snapshot
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-*No parameters.*
-
 #### `/structure-restore`
 
 Recreate roles/channels deleted since the last backup (admin)
@@ -953,18 +941,6 @@ Recreate roles/channels deleted since the last backup (admin)
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `confirm` | boolean | No | True = actually recreate; leave blank for a dry-run preview |
-
-#### `/structure-status`
-
-Show the channel/role backup + what's been deleted since (admin)
-
-```
-/structure-status
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-*No parameters.*
 
 ### Security AI (reviewed verdicts)
 
@@ -1851,18 +1827,6 @@ Post a ready-made role panel — creates any roles you don't have yet
 
 <sub>`cogs/emojis.py`</sub>
 
-#### `/backup_emojis`
-
-Download all server emojis and save them to the emojis/ folder on the bot host.
-
-```
-/backup_emojis
-```
-
-**Access:** Requires **Manage Expressions**
-
-*No parameters.*
-
 #### `/steal-emoji`
 
 Copy custom emojis into this server — paste them (or one emoji ID) and I'll grab them.
@@ -2491,6 +2455,82 @@ Play Tic Tac Toe against the bot.
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `difficulty` | string | Yes | How hard should the bot play? *(one of: `Easy`, `Medium`, `Hard`)* |
+
+### Last to survive (ban race)
+
+<sub>`cogs/ban_race.py`</sub>
+
+#### `/powerup`
+
+Last to survive: your power-ups — or aim an Overload / Transfuse.
+
+```
+/powerup [use] [player]
+```
+
+**Access:** Everyone &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `use` | string | No | Which power-up to use (leave empty to see what you hold) *(one of: `Overload — take 1 damage to deal 2 (needs a player)`, `Transfuse — give someone 1 life, lose 1 (needs a player)`, `Patch — heal yourself 1`, `Medkit — heal yourself 2, skip this round's vote`)* |
+| `player` | user | No | Who it's aimed at |
+
+#### `/race start`
+
+Open a lobby. Posts in #last-to-survive (created if missing) or the channel you pick.
+
+```
+/race start [lives] [round_minutes] [mode] [min_account_days] [min_players] [channel]
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `lives` | integer | No | Lives per player (default 3) *(range 1–5)* |
+| `round_minutes` | integer | No | Minutes per round (default 3) *(range 1–30)* |
+| `mode` | string | No | ghost = no bans (default); real = actual bans, auto-unban at the end *(one of: `ghost — no bans, eliminated players are just out (default)`, `real — actual bans, auto-unban when it ends`)* |
+| `min_account_days` | integer | No | Minimum account age to enter (default 7) *(range 0–365)* |
+| `min_players` | integer | No | Players needed before the race can start (default 3) *(range 3–500)* |
+| `channel` | channel | No | Where the race runs (default: #last-to-survive, created if missing) *(channel types: text, announcement)* |
+
+#### `/race status`
+
+Standings for the race in progress.
+
+```
+/race status
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+*No parameters.*
+
+#### `/race stop`
+
+Stop the race. Unbans everyone it banned.
+
+```
+/race stop
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+*No parameters.*
+
+#### `/vote`
+
+Last to survive: fire this round's shot at a player.
+
+```
+/vote <player>
+```
+
+**Access:** Everyone &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `player` | user | Yes | Who you're going for |
 
 ### RPG
 
@@ -3326,18 +3366,6 @@ Ask the AI — it knows the server 🤖
 
 <sub>`cogs/help.py`</sub>
 
-#### `/add-bot`
-
-Add Torvex Forerunner to your server.
-
-```
-/add-bot
-```
-
-**Access:** Everyone
-
-*No parameters.*
-
 #### `/dashboard`
 
 Open the web dashboard to configure the bot.
@@ -3397,4 +3425,22 @@ Show this server's automation rules.
 **Access:** Requires **Administrator**
 
 *No parameters.*
+
+### deadchat
+
+<sub>`cogs/deadchat.py`</sub>
+
+#### `/deadchat`
+
+Ping the Dead Chat role to wake the server up — add a question if you like
+
+```
+/deadchat [message]
+```
+
+**Access:** Everyone &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `message` | string | No | What do you want to talk about? (optional) *(length 1–200)* |
 
