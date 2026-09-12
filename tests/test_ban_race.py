@@ -8,7 +8,8 @@ that sentence hides, because every one of them decides who gets banned:
   * a shield eats one whole shot and is gone; none work in sudden death;
   * backfire hits the shooter; Overload burns the shooter to deal 2;
     Transfuse moves a life across;
-  * a kill pays a shield (or a shot when one is held), the bounty pays two;
+  * a kill pays a shield (or a shot when one is held), the bounty pays two —
+    but killing someone who was AFK that round pays nothing at all;
   * the storm bleeds the quietest survivor and ignores shields;
   * the winner is the last one alive; nobody alive = draw among the last dead;
   * the store keeps one race per guild and never crosses guilds.
@@ -72,7 +73,7 @@ class Damage(unittest.TestCase):
 
     def test_focus_fire_kills_in_one_round_and_credits_the_finisher(self):
         a, b, c = P(1), P(2), P(3, lives=2)
-        r = resolve([a, b, c], [S(1, 3), S(2, 3)])
+        r = resolve([a, b, c], [S(1, 3), S(2, 3), S(3, 1)])   # c votes, so the kill pays
         self.assertFalse(c["alive"])
         self.assertEqual(c["died_round"], 1)
         self.assertEqual(r["dead"], ["3"])
@@ -250,7 +251,8 @@ class Drops(unittest.TestCase):
 
     def test_nuke_hits_everyone_else_and_credits_kills(self):
         a, b, c, d = P(1), P(2, lives=1), P(3, shield=1), P(4)
-        r = resolve([a, b, c, d], [S(1, 1, "nuke")], round_no=6)
+        # b casts a (wasted) self-shot so it counts as voting and the nuke kill pays
+        r = resolve([a, b, c, d], [S(1, 1, "nuke"), S(2, 2)], round_no=6)
         self.assertEqual(a["lives"], 3)
         self.assertFalse(b["alive"])
         self.assertEqual(r["killers"]["2"], "1")
@@ -267,10 +269,10 @@ class Drops(unittest.TestCase):
 class Rewards(unittest.TestCase):
     def test_kill_pays_a_shield_or_a_shot_when_held(self):
         a, b, c = P(1), P(2, lives=1), P(3, lives=1)
-        resolve([a, b, c], [S(1, 2)])
+        resolve([a, b, c], [S(1, 2), S(2, 1)])       # b votes, so the kill pays
         self.assertEqual(a["shield"], 1)
         shots = a["shots"]
-        resolve([a, c], [S(1, 3)], round_no=2)
+        resolve([a, c], [S(1, 3), S(3, 3)], round_no=2)   # c votes (self-shot: can't pop a's shield)
         self.assertEqual(a["shield"], 1)
         self.assertEqual(a["shots"], shots + 1)
 
@@ -285,7 +287,7 @@ class Rewards(unittest.TestCase):
         self.assertEqual((a["bounty"], b["bounty"]), (0, 0))
         # finishing the bounty holder banks two extra shots
         a["bounty"], a["lives"], c["shots"] = 1, 1, 0
-        resolve([a, b, c, d], [S(3, 1)], round_no=3)
+        resolve([a, b, c, d], [S(3, 1), S(1, 2)], round_no=3)
         self.assertFalse(a["alive"])
         self.assertEqual(c["shots"], 2)
 
@@ -304,6 +306,33 @@ class Afk(unittest.TestCase):
         self.assertEqual(b["shield"], 1)
         self.assertEqual(c["lives"], 1)          # shot AND afk
         self.assertEqual(sum("didn't vote" in ln for ln in r["lines"]), 2)
+
+    def test_killing_an_afk_player_pays_nothing(self):
+        # c never votes: a's kill on c earns no shield, no shot, no kill
+        # credit — and no bounty, even though c carried one.
+        a, b, c = P(1), P(2), P(3, lives=1, bounty=1)
+        shots = a["shots"]
+        r = resolve([a, b, c], [S(1, 3), S(2, 1)], afk=True)
+        self.assertFalse(c["alive"])
+        self.assertEqual(r["killers"]["3"], "1")     # still named as the shooter
+        self.assertEqual((a["shield"], a["shots"], a["kills"]), (0, shots, 0))
+        self.assertTrue(any("AFK" in ln and "no reward" in ln for ln in r["lines"]))
+        self.assertFalse(any("Bounty claimed" in ln for ln in r["lines"]))
+        # same kill on a player who DID vote pays as normal
+        a, b, c = P(1), P(2), P(3, lives=1)
+        resolve([a, b, c], [S(1, 3), S(3, 2)], afk=True)
+        self.assertEqual((a["shield"], a["kills"]), (1, 1))
+
+    def test_medkit_round_is_not_afk_so_the_kill_still_pays(self):
+        a, c = P(1), P(3, lives=1, skip_round=1)
+        resolve([a, c], [S(1, 3)], afk=True)
+        self.assertEqual((a["shield"], a["kills"]), (1, 1))
+
+    def test_afk_no_reward_applies_even_with_the_penalty_off(self):
+        a, b, c = P(1), P(2), P(3, lives=1)
+        resolve([a, b, c], [S(1, 3)], afk=False)
+        self.assertEqual((a["shield"], a["kills"]), (0, 0))
+        self.assertEqual(b["lives"], 3)              # penalty off: b untouched
 
     def test_transfuse_alone_does_not_count_as_voting(self):
         a, b = P(1, transfuse=1), P(2)
