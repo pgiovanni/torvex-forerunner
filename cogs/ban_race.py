@@ -45,6 +45,7 @@ COLOR_WIN = 0x2ECC71
 MENTIONS = discord.AllowedMentions(users=True, roles=False, everyone=False)
 NO_MENTIONS = discord.AllowedMentions.none()
 INVITE_DAYS = 7
+RACER_ROLE = "Racer"     # only this role can talk in the race channel; Join grants it
 MAX_PINGS = 60
 
 MODE_CHOICES = [
@@ -174,6 +175,7 @@ def lobby_embed(race, rows, guild_name):
     how = (f"• Rounds last **{s['round_secs'] // 60} min**; shots are secret and all land at once.\n"
            f"• Zero lives = {'**actually banned**' if s['mode'] == 'real' else 'out'}. "
            f"{'Everyone is unbanned the moment it ends, and you get the invite by DM first.' if s['mode'] == 'real' else ''}\n"
+           f"• Only racers can talk here — **Join** unlocks the channel; ghosts watch in silence.\n"
            f"• Power-ups drop in this channel. First click takes it.\n"
            f"• Last one standing wins. 🎁")
     e.add_field(name="How it works", value=how, inline=False)
@@ -221,6 +223,10 @@ def elimination_dm(race, round_no, killer_id, guild_name):
     e = discord.Embed(title="⛔ You're out", color=COLOR,
                       description=f"Eliminated in **round {round_no}** of Last to survive in **{guild_name}**"
                                   + (f", by <@{killer_id}>." if killer_id else "."))
+    if s["mode"] != "real":
+        e.add_field(name="What happens now",
+                    value="You're a ghost: you can watch the race channel but not talk in it. "
+                          "You'll still get each round's results here.", inline=False)
     if s["mode"] == "real":
         e.add_field(name="What happens now",
                     value="You're being banned — that's the game. The bot **unbans everyone the moment the race "
@@ -272,6 +278,49 @@ class BanRace(commands.Cog):
 
     async def _channel_for(self, guild, race):
         return guild.get_channel(int(race["channel_id"]))
+
+    # ── the Racer role: the channel's send permission ─────────────────────────
+    # "No one can message the channel unless they click Join" (Paul, 9/11).
+    # @everyone loses Send in the race channel, the Racer role gets it; Join
+    # grants the role, Leave / elimination / race end take it away — so ghosts
+    # can watch but not talk, and the channel is silent between races.
+
+    async def _ensure_racer_role(self, guild):
+        role = discord.utils.get(guild.roles, name=RACER_ROLE)
+        if role is None:
+            role = await guild.create_role(name=RACER_ROLE, mentionable=False,
+                                           colour=discord.Colour(COLOR),
+                                           reason="Last to survive — racers can talk in the race channel")
+        return role
+
+    async def _lock_channel(self, channel, role):
+        await channel.set_permissions(channel.guild.default_role, send_messages=False,
+                                      send_messages_in_threads=False,
+                                      reason="Last to survive — only racers talk here")
+        await channel.set_permissions(role, send_messages=True, send_messages_in_threads=True,
+                                      reason="Last to survive — racers talk here")
+
+    def _racer_role(self, guild, race):
+        rid = race["settings"].get("racer_role_id")
+        return guild.get_role(int(rid)) if rid else None
+
+    async def _set_racer(self, guild, race, uid, on):
+        role = self._racer_role(guild, race)
+        member = guild.get_member(int(uid))
+        if role is None or member is None:
+            return
+        try:
+            if on:
+                await member.add_roles(role, reason="Last to survive — joined the race")
+            elif role in member.roles:
+                await member.remove_roles(role, reason="Last to survive — out of the race")
+        except (discord.Forbidden, discord.HTTPException) as e:
+            log.warning("race %s: racer role %s for %s failed: %s", race["id"], on, uid, e)
+
+    async def _strip_all_racers(self, guild, race):
+        for p in engine.players(race["id"]):
+            await self._set_racer(guild, race, p["user_id"], False)
+            await asyncio.sleep(0.3)
 
     async def _post_lines(self, channel, title, lines, color, content=None, extra_embed=None):
         """Send lines as one or more embeds, never over Discord's limits."""
@@ -436,6 +485,7 @@ class BanRace(commands.Cog):
     async def _eliminate(self, guild, channel, race, uid, round_no, killer_id):
         member = guild.get_member(int(uid))
         s = race["settings"]
+        await self._set_racer(guild, race, uid, False)
         if member:
             await self._dm(uid, embed=elimination_dm(race, round_no, killer_id, guild.name))
         if s["mode"] != "real":
@@ -474,6 +524,7 @@ class BanRace(commands.Cog):
         race = engine.get_race(race_id)
         rows = engine.players(race_id)
         restored = await self._unban_all(guild, race)
+        await self._strip_all_racers(guild, race)
         live, fallen = engine.standings(rows)
         killers = sorted(rows, key=lambda p: -p["kills"])[:3]
         if len(winners) == 1:
@@ -506,6 +557,7 @@ class BanRace(commands.Cog):
         if t and not t.done():
             t.cancel()
         restored = await self._unban_all(guild, race)
+        await self._strip_all_racers(guild, race)
         try:
             await channel.send(f"🛑 Race stopped by {by.mention}."
                                + (f" Unbanned **{restored}**." if restored else ""),
@@ -577,6 +629,16 @@ class BanRace(commands.Cog):
             except discord.HTTPException as e:
                 return await interaction.followup.send(f"Couldn't create the channel: {e}", ephemeral=True)
 
+        warn = []
+        racer_role_id = None
+        try:
+            role = await self._ensure_racer_role(guild)
+            racer_role_id = role.id
+            await self._lock_channel(channel, role)
+        except (discord.Forbidden, discord.HTTPException) as e:
+            warn.append(f"⚠️ Couldn't set up the Racer role / channel lock ({e.__class__.__name__}) — "
+                        f"I need Manage Roles and Manage Channels; anyone can talk there until then.")
+
         invite_url = None
         try:
             inv = await channel.create_invite(max_age=INVITE_DAYS * 86400, max_uses=0, unique=True,
@@ -588,14 +650,17 @@ class BanRace(commands.Cog):
         try:
             race = engine.create_race(guild.id, channel.id, interaction.user.id, settings={
                 "lives": lives, "round_secs": round_minutes * 60, "mode": mode_v,
-                "min_account_days": min_account_days, "min_players": min_players})
+                "min_account_days": min_account_days, "min_players": min_players,
+                "racer_role_id": racer_role_id})
         except ValueError as e:
             return await interaction.followup.send(str(e), ephemeral=True)
         engine.update_race(race["id"], invite_url=invite_url)
         race = engine.get_race(race["id"])
         msg = await channel.send(embed=lobby_embed(race, [], guild.name), view=lobby_view(race["id"]))
         engine.update_race(race["id"], lobby_msg_id=str(msg.id))
-        note = "" if invite_url else "\n⚠️ Couldn't mint a return invite (need Create Invite in that channel) — post one yourself before it starts."
+        if not invite_url:
+            warn.append("⚠️ Couldn't mint a return invite (need Create Invite in that channel) — post one yourself before it starts.")
+        note = ("\n" + "\n".join(warn)) if warn else ""
         await interaction.followup.send(f"Lobby's open in {channel.mention}. Hit **Start the race** on it when "
                                         f"enough people have joined.{note}", ephemeral=True)
 
@@ -715,6 +780,7 @@ class BanRace(commands.Cog):
         engine.join(race["id"], m.id, m.display_name, s["lives"])
         await interaction.response.send_message(
             f"You're in. {s['lives']} lives. Don't trust anyone. 🔫", ephemeral=True)
+        await self._set_racer(interaction.guild, race, m.id, True)
         await self._refresh_lobby(interaction, race)
 
     async def _btn_leave(self, interaction, race, _):
@@ -722,6 +788,7 @@ class BanRace(commands.Cog):
             return await interaction.response.send_message("Too late to leave — the race is on.", ephemeral=True)
         if engine.leave(race["id"], interaction.user.id):
             await interaction.response.send_message("Out of the lobby.", ephemeral=True)
+            await self._set_racer(interaction.guild, race, interaction.user.id, False)
             await self._refresh_lobby(interaction, race)
         else:
             await interaction.response.send_message("You weren't in.", ephemeral=True)
@@ -756,6 +823,7 @@ class BanRace(commands.Cog):
         engine.update_race(race["id"], status="aborted", finished_at=time.time())
         await interaction.response.send_message("Cancelled.", ephemeral=True)
         await self._refresh_lobby(interaction, engine.get_race(race["id"]), closed=True)
+        await self._strip_all_racers(interaction.guild, race)
 
     async def _btn_vote(self, interaction, race, _):
         if race["status"] != "running":
