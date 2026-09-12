@@ -707,11 +707,11 @@ class BanRace(commands.Cog):
     @app_commands.choices(mode=MODE_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def race_start(self, interaction: discord.Interaction,
-                         lives: app_commands.Range[int, 1, 8] = None,
+                         lives: app_commands.Range[int, 1, 50] = None,
                          round_minutes: app_commands.Range[int, 1, 30] = 3,
                          mode: app_commands.Choice[str] = None,
                          min_account_days: app_commands.Range[int, 0, 365] = 7,
-                         min_players: app_commands.Range[int, 3, 500] = 3,
+                         min_players: app_commands.Range[int, 3, None] = 3,     # no cap on players (Paul 9/12)
                          channel: discord.TextChannel = None):
         guild = interaction.guild
         mode_v = mode.value if mode else engine.DEFAULTS["mode"]

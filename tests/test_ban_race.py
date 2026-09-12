@@ -464,8 +464,8 @@ class Rounds(unittest.TestCase):
 
     def test_recommended_lives_scale_with_players(self):
         # Paul 9/12: "scale lives with the amount of people playing — recommended, not forced"
-        self.assertEqual([E.recommended_lives(n) for n in (0, 3, 5, 6, 10, 15, 20, 100)],
-                         [2, 2, 3, 3, 4, 5, 6, 6])
+        self.assertEqual([E.recommended_lives(n) for n in (0, 3, 5, 6, 10, 15, 20, 32, 100)],
+                         [2, 2, 3, 3, 4, 5, 7, 10, 10])
         # explicit lives survive create_race untouched; auto is a flag the cog acts on at start
         r = E.create_race(9191, 3, 9, settings={"lives": 5, "lives_auto": False, "min_players": 15})
         self.assertEqual((r["settings"]["lives"], r["settings"]["lives_auto"]), (5, False))
