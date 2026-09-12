@@ -797,9 +797,15 @@ class BanRace(commands.Cog):
                     "No race with that number here. Recent ones: "
                     + (", ".join(f"#{r['id']}" for r in history) or "none"), ephemeral=True)
         else:
-            race = engine.active_race(interaction.guild.id) or engine.latest_race(interaction.guild.id)
+            # A lobby has no rounds — "last race" means the last one that actually
+            # ran (or the one running now), never the lobby being filled.
+            race = (next((r for r in history if r["status"] != "lobby"), None)
+                    or engine.latest_race(interaction.guild.id))
         if not race:
             return await interaction.response.send_message("No race has been run here.", ephemeral=True)
+        if race["status"] == "lobby":
+            return await interaction.response.send_message(
+                f"Race #{race['id']} is still in the lobby — nothing has happened yet.", ephemeral=True)
         s = race["settings"]
         earlier = ", ".join(f"#{r['id']}" for r in history if r["id"] != race["id"])
         if player is not None:
