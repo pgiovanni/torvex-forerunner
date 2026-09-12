@@ -185,6 +185,12 @@ def _lives_bar(n):
     return "❤️" * max(0, n) if n else "💀"
 
 
+def powerup_guide():
+    """Every power-up with its benefit and its cost — the same text the drop
+    shows, so nobody grabs something they don't understand."""
+    return "\n".join(f"{emoji} **{name}** — {blurb}" for emoji, name, blurb in engine.POWERUPS.values())
+
+
 def lobby_embed(race, rows, guild_name):
     s = race["settings"]
     e = discord.Embed(title="🔫 LAST TO SURVIVE", color=COLOR,
@@ -198,6 +204,7 @@ def lobby_embed(race, rows, guild_name):
            f"Sudden death adds **super drops**.\n"
            f"• Last one standing wins. 🎁")
     e.add_field(name="How it works", value=how, inline=False)
+    e.add_field(name="Power-ups (drop in the channel — first click takes it)", value=powerup_guide(), inline=False)
     names = [p["name"] for p in rows]
     shown = ", ".join(names[:40]) + (f" … +{len(names) - 40}" if len(names) > 40 else "")
     e.add_field(name=f"Players ({len(rows)})", value=shown or "*nobody yet — hit Join*", inline=False)
@@ -432,28 +439,44 @@ class BanRace(commands.Cog):
                     engine.update_race(race_id, status="aborted", finished_at=time.time())
                     return
                 rows = engine.players(race_id)
-                round_no = race["round_no"] + 1
-                sudden = engine.is_sudden_death(rows, s["sudden_death_at"])
-                extra = engine.open_round(rows, round_no, race["purge_round"], s["shot_cap"])
-                engine.save_players(race_id, rows)
-                secs = max(30, s["round_secs"] // 2 if sudden else s["round_secs"])
-                ends = time.time() + secs
-                for k in [k for k in self._msgs if k[0] == race_id]:
-                    del self._msgs[k]
-                engine.update_race(race_id, round_no=round_no, round_ends_at=ends)
-                msg = await channel.send(embed=round_embed(race, rows, round_no, ends, sudden, extra),
-                                         view=round_view(race_id))
-                engine.update_race(race_id, round_msg_id=str(msg.id))
+                if race["round_no"] > 0 and race["round_ends_at"]:
+                    # A round is still open — we were restarted mid-round. Pick
+                    # it up where it was: same round number, same close time,
+                    # the shots already cast still count. (Before 9/12 a restart
+                    # opened round N+1 on top and silently dropped round N's
+                    # votes.) The rest of this round's drops are lost; fine.
+                    round_no, ends = race["round_no"], race["round_ends_at"]
+                    msg, queue = None, []
+                    if race.get("round_msg_id"):
+                        try:
+                            msg = await channel.fetch_message(int(race["round_msg_id"]))
+                        except (discord.HTTPException, ValueError):
+                            msg = None
+                    log.info("race %s resumed inside round %s (closes in %.0fs)",
+                             race_id, round_no, max(0, ends - time.time()))
+                else:
+                    round_no = race["round_no"] + 1
+                    sudden = engine.is_sudden_death(rows, s["sudden_death_at"])
+                    extra = engine.open_round(rows, round_no, race["purge_round"], s["shot_cap"])
+                    engine.save_players(race_id, rows)
+                    secs = max(30, s["round_secs"] // 2 if sudden else s["round_secs"])
+                    ends = time.time() + secs
+                    for k in [k for k in self._msgs if k[0] == race_id]:
+                        del self._msgs[k]
+                    engine.update_race(race_id, round_no=round_no, round_ends_at=ends)
+                    msg = await channel.send(embed=round_embed(race, rows, round_no, ends, sudden, extra),
+                                             view=round_view(race_id))
+                    engine.update_race(race_id, round_msg_id=str(msg.id))
 
-                # every round drops, scaled to the players still alive (Paul 9/12:
-                # "powerups should scale with the amount of active users");
-                # sudden death adds a super. Races started before 9/12 carry no
-                # drops_per_player in their settings — the default applies.
-                opened = time.time()
-                queue = [(opened + at, kind, is_super) for at, kind, is_super in
-                         engine.drop_schedule(self._rng, secs, len(engine.alive(rows)),
-                                              s.get("drops_per_player", engine.DEFAULTS["drops_per_player"]),
-                                              sudden, s.get("drop_window", engine.DEFAULTS["drop_window"]))]
+                    # every round drops, scaled to the players still alive (Paul 9/12:
+                    # "powerups should scale with the amount of active users");
+                    # sudden death adds a super. Races started before 9/12 carry no
+                    # drops_per_player in their settings — the default applies.
+                    opened = time.time()
+                    queue = [(opened + at, kind, is_super) for at, kind, is_super in
+                             engine.drop_schedule(self._rng, secs, len(engine.alive(rows)),
+                                                  s.get("drops_per_player", engine.DEFAULTS["drops_per_player"]),
+                                                  sudden, s.get("drop_window", engine.DEFAULTS["drop_window"]))]
                 while True:
                     race = engine.get_race(race_id)
                     if race["status"] != "running":
@@ -465,11 +488,13 @@ class BanRace(commands.Cog):
                         _, kind, is_super = queue.pop(0)
                         asyncio.create_task(self._spawn_drop(race_id, channel, s, kind, is_super))
                     await asyncio.sleep(min(2.0, max(0.2, race["round_ends_at"] - now)))
-                try:
-                    await msg.edit(view=round_view(race_id, closed=True))
-                except discord.HTTPException:
-                    pass
+                if msg is not None:
+                    try:
+                        await msg.edit(view=round_view(race_id, closed=True))
+                    except discord.HTTPException:
+                        pass
                 await self._close_round(race_id, round_no, guild, channel)
+                engine.update_race(race_id, round_ends_at=None)    # closed: nothing to resume
                 race = engine.get_race(race_id)
                 if race["status"] != "running":
                     return
@@ -778,9 +803,12 @@ class BanRace(commands.Cog):
         e.add_field(name="Kills", value=str(p["kills"]), inline=True)
         e.set_footer(text="Shields and extra shots work on their own. Overload and Transfuse need a target. "
                           "Patch and Medkit heal you.")
+        e.add_field(name="What they do", value=powerup_guide(), inline=False)
         view = _PowerupView(self, race["id"], p, rows)
-        await interaction.response.send_message(embed=e, view=view if view.children else None,
-                                                ephemeral=True)
+        # discord.py treats view=None as "a view" and calls .is_finished() on it —
+        # pass the kwarg only when there are buttons to show (crashed live 9/12).
+        kw = {"view": view} if view.children else {}
+        await interaction.response.send_message(embed=e, ephemeral=True, **kw)
 
     # ── buttons ───────────────────────────────────────────────────────────────
 
