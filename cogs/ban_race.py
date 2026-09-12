@@ -47,6 +47,7 @@ NO_MENTIONS = discord.AllowedMentions.none()
 INVITE_DAYS = 7
 RACER_ROLE = "Racer"     # only this role can talk in the race channel; Join grants it
 MAX_PINGS = 60
+START_DELAY = 30        # seconds between the start ping and round 1 opening
 
 MODE_CHOICES = [
     app_commands.Choice(name="ghost — no bans, eliminated players are just out (default)", value="ghost"),
@@ -386,6 +387,8 @@ class BanRace(commands.Cog):
 
     async def _run(self, race_id):
         try:
+            if (engine.get_race(race_id) or {}).get("round_no", 1) == 0:
+                await asyncio.sleep(START_DELAY)     # the countdown promised by the start ping
             while True:
                 race = engine.get_race(race_id)
                 if not race or race["status"] != "running":
@@ -828,10 +831,12 @@ class BanRace(commands.Cog):
                                  view=lobby_view(race["id"], closed=True))
         except discord.HTTPException:
             pass
+        opens = int(time.time() + START_DELAY)
         await channel.send(
             content=" ".join(f"<@{p['user_id']}>" for p in rows[:MAX_PINGS]),
             embed=discord.Embed(title="🏁 THE RACE IS ON", color=COLOR,
-                                description=f"**{len(rows)}** players. {PITCH.format(lives=race['settings']['lives'])}"),
+                                description=f"**{len(rows)}** players. {PITCH.format(lives=race['settings']['lives'])}\n\n"
+                                            f"⏳ **Round 1 opens <t:{opens}:R>.**"),
             allowed_mentions=MENTIONS)
         self._start_task(race)
 
