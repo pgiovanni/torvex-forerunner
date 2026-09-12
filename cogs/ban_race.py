@@ -54,8 +54,10 @@ MODE_CHOICES = [
     app_commands.Choice(name="real — actual bans, auto-unban when it ends", value="real"),
 ]
 USE_CHOICES = [
-    app_commands.Choice(name="Overload — take 1 damage to deal 2", value="overload"),
-    app_commands.Choice(name="Transfuse — give someone 1 life, lose 1", value="transfuse"),
+    app_commands.Choice(name="Overload — take 1 damage to deal 2 (needs a player)", value="overload"),
+    app_commands.Choice(name="Transfuse — give someone 1 life, lose 1 (needs a player)", value="transfuse"),
+    app_commands.Choice(name="Patch — heal yourself 1", value="patch"),
+    app_commands.Choice(name="Medkit — heal yourself 2, skip this round's vote", value="medkit"),
 ]
 
 PITCH = ("You've got **{lives} lives**. There are **power-ups**. Pick who you're going for "
@@ -155,6 +157,19 @@ class _PowerupView(discord.ui.View):
                                   style=discord.ButtonStyle.primary)
             b.callback = self._mk("transfuse")
             self.add_item(b)
+        for kind in engine.SELF_USE:
+            if p.get(kind, 0) > 0:
+                emoji, name, _ = engine.POWERUPS[kind]
+                b = discord.ui.Button(label=f"Use {name} ×{p[kind]}", emoji=emoji,
+                                      style=discord.ButtonStyle.success)
+                b.callback = self._mk_self(kind)
+                self.add_item(b)
+
+    def _mk_self(self, kind):
+        async def cb(interaction):
+            text = await self.cog._do_use_self(self.race_id, interaction.user.id, kind)
+            await interaction.response.edit_message(content=text, embed=None, view=None)
+        return cb
 
     def _mk(self, kind):
         async def cb(interaction):
@@ -363,10 +378,10 @@ class BanRace(commands.Cog):
             return "There's no round to shoot in right now."
         p = engine.player(race_id, shooter_id)
         t = engine.player(race_id, target_id)
-        err = engine.cast_error(p, t, kind)
+        rn = race["round_no"]
+        err = engine.cast_error(p, t, kind, round_no=rn)
         if err:
             return err
-        rn = race["round_no"]
         if kind == "shot" and p["shots"] <= 0:
             if engine.retarget(race_id, rn, shooter_id, target_id):
                 return f"🔁 Re-aimed at **{t['name']}**. Still resolves <t:{int(race['round_ends_at'])}:R>."
@@ -383,6 +398,21 @@ class BanRace(commands.Cog):
         if kind == "overload":
             return f"💥 Overload armed at **{t['name']}** — you burn 1, they take 2. Lands {when}."
         return f"💉 Transfuse set for **{t['name']}** — they gain 1, you lose 1. Lands {when}."
+
+    async def _do_use_self(self, race_id, uid, kind):
+        """Patch / Medkit from /powerup or the inventory button."""
+        race = engine.get_race(race_id)
+        if not race or race["status"] != "running":
+            return "There's no round open right now."
+        p = engine.player(race_id, uid)
+        rn = race["round_no"]
+        voted = any(s["shooter_id"] == str(uid) and s["kind"] in ("shot", "overload")
+                    for s in engine.shots(race_id, rn))
+        ok, text = engine.use_self(p, kind, rn, race["settings"]["lives"], voted)
+        if ok:
+            engine.update_player(race_id, uid, lives=p["lives"], patch=p["patch"], medkit=p["medkit"],
+                                 skip_round=p.get("skip_round"))
+        return text
 
     # ── round loop ────────────────────────────────────────────────────────────
 
@@ -712,6 +742,9 @@ class BanRace(commands.Cog):
         race = engine.active_race(interaction.guild.id)
         if not race or race["status"] != "running":
             return await interaction.response.send_message("No race running right now.", ephemeral=True)
+        if use and use.value in engine.SELF_USE:
+            text = await self._do_use_self(race["id"], interaction.user.id, use.value)
+            return await interaction.response.send_message(text, ephemeral=True)
         if use and player:
             text = await self._do_cast(interaction.guild, race["id"], interaction.user.id, player.id, use.value)
             return await interaction.response.send_message(text, ephemeral=True)
@@ -732,8 +765,10 @@ class BanRace(commands.Cog):
         e.add_field(name="Shield", value="🛡️ held" if p["shield"] else "none", inline=True)
         e.add_field(name="Overload", value=f"💥 ×{p['overload']}", inline=True)
         e.add_field(name="Transfuse", value=f"💉 ×{p['transfuse']}", inline=True)
+        e.add_field(name="Patch / Medkit", value=f"🩹 ×{p.get('patch', 0)} · 🏥 ×{p.get('medkit', 0)}", inline=True)
         e.add_field(name="Kills", value=str(p["kills"]), inline=True)
-        e.set_footer(text="Shields and extra shots work on their own. Overload and Transfuse need a target.")
+        e.set_footer(text="Shields and extra shots work on their own. Overload and Transfuse need a target. "
+                          "Patch and Medkit heal you.")
         view = _PowerupView(self, race["id"], p, rows)
         await interaction.response.send_message(embed=e, view=view if view.children else None,
                                                 ephemeral=True)
@@ -895,7 +930,8 @@ class BanRace(commands.Cog):
         d["claimed"] = str(interaction.user.id)
         line = engine.grant(p, d["kind"], race["settings"]["shot_cap"])
         engine.update_player(race["id"], p["user_id"], shots=p["shots"], shield=p["shield"],
-                             overload=p["overload"], transfuse=p["transfuse"])
+                             overload=p["overload"], transfuse=p["transfuse"],
+                             patch=p.get("patch", 0), medkit=p.get("medkit", 0))
         emoji, name, _ = engine.POWERUPS[d["kind"]]
         await interaction.response.send_message(f"{emoji} **{name}** is yours.", ephemeral=True)
         try:

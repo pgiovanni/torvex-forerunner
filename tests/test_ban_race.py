@@ -30,7 +30,8 @@ from utils import ban_race as E  # noqa: E402
 
 def P(uid, lives=3, **kw):
     d = dict(user_id=str(uid), name=f"p{uid}", lives=lives, shots=1, shield=0, overload=0,
-             transfuse=0, kills=0, bounty=0, alive=1, died_round=None, banned=0)
+             transfuse=0, kills=0, bounty=0, alive=1, died_round=None, banned=0,
+             patch=0, medkit=0, skip_round=None)
     d.update(kw)
     return d
 
@@ -193,6 +194,40 @@ class PowerUps(unittest.TestCase):
             self.assertIn(E.roll_drop(rng), E.POWERUPS)
 
 
+class Heals(unittest.TestCase):
+    def test_patch_heals_one_capped(self):
+        p = P(1, lives=1, patch=3)
+        ok, _ = E.use_self(p, "patch", 1, 3, voted_this_round=True)
+        self.assertTrue(ok)
+        self.assertEqual((p["lives"], p["patch"]), (2, 2))
+        E.use_self(p, "patch", 1, 3, False)
+        ok, text = E.use_self(p, "patch", 1, 3, False)
+        self.assertFalse(ok)                         # full lives: refused, item kept
+        self.assertIn("full", text)
+        self.assertEqual((p["lives"], p["patch"]), (3, 1))
+
+    def test_medkit_heals_two_and_forfeits_the_vote(self):
+        p = P(1, lives=1, medkit=1)
+        ok, text = E.use_self(p, "medkit", 4, 3, voted_this_round=True)
+        self.assertFalse(ok)                         # already voted: no discount
+        self.assertIn("already voted", text)
+        ok, _ = E.use_self(p, "medkit", 4, 3, voted_this_round=False)
+        self.assertTrue(ok)
+        self.assertEqual((p["lives"], p["medkit"], p["skip_round"]), (3, 0, 4))
+        # can't shoot this round, may shoot next
+        self.assertIn("Medkit", E.cast_error(p, P(2), "shot", round_no=4))
+        self.assertIsNone(E.cast_error(p, P(2), "shot", round_no=5))
+        # and the AFK penalty leaves them alone this round
+        q = P(2)
+        resolve([p, q], [S(2, 1)], round_no=4, afk=True)
+        self.assertEqual(p["lives"], 2)              # only q's shot landed
+
+    def test_heal_drops_grant_items(self):
+        p = P(1)
+        E.grant(p, "patch", 3); E.grant(p, "medkit", 3)
+        self.assertEqual((p["patch"], p["medkit"]), (1, 1))
+
+
 class Rewards(unittest.TestCase):
     def test_kill_pays_a_shield_or_a_shot_when_held(self):
         a, b, c = P(1), P(2, lives=1), P(3, lives=1)
@@ -342,6 +377,7 @@ class Store(unittest.TestCase):
         rows[1]["lives"], rows[1]["alive"], rows[1]["died_round"], rows[1]["banned"] = 0, 0, 1, 1
         E.save_players(rid, rows)
         self.assertEqual(E.player(rid, 2)["banned"], 1)
+        self.assertEqual(E.player(rid, 2)["medkit"], 0)      # migrated columns present
         self.assertEqual(E.leave(rid, 1), 1)
         self.assertIsNone(E.player(rid, 1))
         E.update_race(rid, status="aborted")
