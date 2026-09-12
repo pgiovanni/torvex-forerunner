@@ -41,6 +41,7 @@ PREFIX = "lts"
 COLOR = 0xE74C3C
 COLOR_ROUND = 0xF1C40F
 COLOR_DROP = 0x9B59B6
+COLOR_SUPER = 0xFFD700
 COLOR_WIN = 0x2ECC71
 MENTIONS = discord.AllowedMentions(users=True, roles=False, everyone=False)
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -193,7 +194,8 @@ def lobby_embed(race, rows, guild_name):
            f"{'Everyone is unbanned the moment it ends, and you get the invite by DM first.' if s['mode'] == 'real' else ''}\n"
            f"• Don't vote in a round and you lose a life. AFK is not a strategy.\n"
            f"• Only racers can talk here — **Join** unlocks the channel; ghosts watch in silence.\n"
-           f"• Power-ups drop in this channel. First click takes it.\n"
+           f"• Power-ups drop in this channel every round. First click takes it. "
+           f"Sudden death adds **super drops**.\n"
            f"• Last one standing wins. 🎁")
     e.add_field(name="How it works", value=how, inline=False)
     names = [p["name"] for p in rows]
@@ -230,7 +232,10 @@ def standings_embed(race, rows):
     return e
 
 
-def drop_embed(kind):
+def drop_embed(kind, is_super=False):
+    if is_super:
+        emoji, name, blurb = engine.SUPER[kind]
+        return discord.Embed(title=f"🌟 SUPER DROP — {emoji} {name}", description=blurb, color=COLOR_SUPER)
     emoji, name, blurb = engine.POWERUPS[kind]
     return discord.Embed(title=f"⚡ POWER-UP DROP — {emoji} {name}", description=blurb, color=COLOR_DROP)
 
@@ -440,9 +445,10 @@ class BanRace(commands.Cog):
                                          view=round_view(race_id))
                 engine.update_race(race_id, round_msg_id=str(msg.id))
 
-                drop_at = None
-                if self._rng.random() < s["drop_chance"]:
-                    drop_at = time.time() + self._rng.uniform(0.15, 0.7) * secs
+                # every round drops, scaled to its length; sudden death adds a super
+                opened = time.time()
+                queue = [(opened + at, kind, is_super) for at, kind, is_super in
+                         engine.drop_schedule(self._rng, secs, s.get("drops_per_minute", 1.0), sudden)]
                 while True:
                     race = engine.get_race(race_id)
                     if race["status"] != "running":
@@ -450,9 +456,9 @@ class BanRace(commands.Cog):
                     now = time.time()
                     if now >= (race["round_ends_at"] or 0):
                         break
-                    if drop_at and now >= drop_at:
-                        drop_at = None
-                        asyncio.create_task(self._spawn_drop(race_id, channel, s))
+                    while queue and now >= queue[0][0]:
+                        _, kind, is_super = queue.pop(0)
+                        asyncio.create_task(self._spawn_drop(race_id, channel, s, kind, is_super))
                     await asyncio.sleep(min(2.0, max(0.2, race["round_ends_at"] - now)))
                 try:
                     await msg.edit(view=round_view(race_id, closed=True))
@@ -597,12 +603,12 @@ class BanRace(commands.Cog):
         except discord.HTTPException:
             pass
 
-    async def _spawn_drop(self, race_id, channel, s):
-        kind = engine.roll_drop(self._rng)
+    async def _spawn_drop(self, race_id, channel, s, kind=None, is_super=False):
+        kind = kind or engine.roll_drop(self._rng)
         nonce = secrets.token_hex(4)
-        self._drops[nonce] = {"kind": kind, "race_id": race_id, "claimed": None}
+        self._drops[nonce] = {"kind": kind, "race_id": race_id, "claimed": None, "super": is_super}
         try:
-            msg = await channel.send(embed=drop_embed(kind), view=drop_view(race_id, nonce))
+            msg = await channel.send(embed=drop_embed(kind, is_super), view=drop_view(race_id, nonce))
         except discord.HTTPException:
             self._drops.pop(nonce, None)
             return
@@ -926,16 +932,28 @@ class BanRace(commands.Cog):
         if d["claimed"]:
             return await interaction.response.send_message("Too slow.", ephemeral=True)
         d["claimed"] = str(interaction.user.id)
-        line = engine.grant(p, d["kind"], race["settings"]["shot_cap"])
-        engine.update_player(race["id"], p["user_id"], shots=p["shots"], shield=p["shield"],
-                             overload=p["overload"], transfuse=p["transfuse"],
-                             patch=p.get("patch", 0), medkit=p.get("medkit", 0))
-        emoji, name, _ = engine.POWERUPS[d["kind"]]
+        st = race["settings"]
+        if d.get("super"):
+            emoji, name, _ = engine.SUPER[d["kind"]]
+            if d["kind"] == "nuke":
+                engine.cast(race["id"], race["round_no"], p["user_id"], p["user_id"], "nuke")
+                line = f"🧨 {p['name']} armed a **NUKE** — everyone else takes 1 when the round closes."
+            else:
+                line = engine.grant_super(p, d["kind"], st["shot_cap"], st["lives"])
+                engine.update_player(race["id"], p["user_id"], shots=p["shots"], lives=p["lives"])
+            title, color = f"🌟 {emoji} {name} — taken", COLOR_SUPER
+        else:
+            emoji, name, _ = engine.POWERUPS[d["kind"]]
+            line = engine.grant(p, d["kind"], st["shot_cap"])
+            engine.update_player(race["id"], p["user_id"], shots=p["shots"], shield=p["shield"],
+                                 overload=p["overload"], transfuse=p["transfuse"],
+                                 patch=p.get("patch", 0), medkit=p.get("medkit", 0))
+            title, color = f"⚡ {emoji} {name} — taken", COLOR_DROP
         await interaction.response.send_message(f"{emoji} **{name}** is yours.", ephemeral=True)
         try:
             await interaction.message.edit(
-                embed=discord.Embed(title=f"⚡ {emoji} {name} — taken", description=line, color=COLOR_DROP),
-                view=None)
+                embed=discord.Embed(title=title, description=line, color=color),
+                view=None, allowed_mentions=NO_MENTIONS)
         except discord.HTTPException:
             pass
 
