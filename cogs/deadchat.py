@@ -1,4 +1,4 @@
-"""/deadchat — let members wake a quiet server up by pinging the Dead Chat role.
+"""/deadchatping — let members wake a quiet server up by pinging the Dead Chat role.
 
 Paul, 2026-09-12: "give people the ability to ping dead chat ping role. it
 should be configurable in the dashboard what role is dead chat ping.
@@ -107,7 +107,9 @@ class DeadChat(commands.Cog):
         self.bot = bot
         self._last = {}     # guild_id -> ts of the last ping (in-memory; a restart resets it)
 
-    @app_commands.command(name="deadchat",
+    # Named to match what the server was told (Paul announced "/deadchatping"
+    # to @Announcement Ping on 9/12 and the AI corrected him in public).
+    @app_commands.command(name="deadchatping",
                           description="Ping the Dead Chat role to wake the server up — add a question if you like")
     @app_commands.describe(message="What do you want to talk about? (optional)")
     @app_commands.guild_only()
