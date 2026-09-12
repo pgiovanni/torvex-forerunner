@@ -43,6 +43,7 @@ COLOR_ROUND = 0xF1C40F
 COLOR_DROP = 0x9B59B6
 COLOR_SUPER = 0xFFD700
 COLOR_RARE = 0xF1C40F      # rare drops: no-strings power-ups (Paul 9/12 tiers)
+COLOR_LEGENDARY = 0xE67E22 # the golden apple
 COLOR_WIN = 0x2ECC71
 MENTIONS = discord.AllowedMentions(users=True, roles=False, everyone=False)
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -182,8 +183,13 @@ class _PowerupView(discord.ui.View):
 
 # ── embeds ────────────────────────────────────────────────────────────────────
 
-def _lives_bar(n):
-    return "❤️" * max(0, n) if n else "💀"
+def _lives_bar(n, max_lives=None):
+    """Hearts; anything above max (golden apple) shows gold."""
+    if not n:
+        return "💀"
+    if max_lives and n > max_lives:
+        return "❤️" * max_lives + "💛" * (n - max_lives)
+    return "❤️" * max(0, n)
 
 
 def powerup_guide():
@@ -240,7 +246,7 @@ def standings_embed(race, rows):
     lines = []
     for p in live:
         tag = " 🎯" if p["bounty"] else ""
-        lines.append(f"{_lives_bar(p['lives'])} **{p['name']}**{tag} · {p['kills']} kills")
+        lines.append(f"{_lives_bar(p['lives'], race['settings']['lives'])} **{p['name']}**{tag} · {p['kills']} kills")
     e.add_field(name=f"Alive ({len(live)})", value="\n".join(lines[:30]) or "—", inline=False)
     if fallen:
         f = [f"💀 {p['name']} · round {p['died_round']}" for p in fallen[:30]]
@@ -252,6 +258,8 @@ def standings_embed(race, rows):
 def drop_embed(kind, is_super=False):
     if is_super:
         emoji, name, blurb = engine.SUPER[kind]
+        if kind == "goldapple":
+            return discord.Embed(title=f"🍎 LEGENDARY DROP — {name}", description=blurb, color=COLOR_LEGENDARY)
         return discord.Embed(title=f"🌟 SUPER DROP — {emoji} {name}", description=blurb, color=COLOR_SUPER)
     emoji, name, blurb = engine.POWERUPS[kind]
     t_emoji, t_label = engine.tier_of(kind)
@@ -876,7 +884,7 @@ class BanRace(commands.Cog):
             return await interaction.response.send_message("You're out — power-ups are for the living.", ephemeral=True)
         rows = engine.players(race["id"])
         e = discord.Embed(title="🎒 Your kit", color=COLOR_DROP)
-        e.add_field(name="Lives", value=_lives_bar(p["lives"]), inline=True)
+        e.add_field(name="Lives", value=_lives_bar(p["lives"], race["settings"]["lives"]), inline=True)
         e.add_field(name="Shots banked", value=str(p["shots"]), inline=True)
         e.add_field(name="Shield", value="🛡️ held" if p["shield"] else "none", inline=True)
         e.add_field(name="Overload", value=f"💥 ×{p['overload']}", inline=True)
