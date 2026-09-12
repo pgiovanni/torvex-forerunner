@@ -974,6 +974,27 @@
    "dm_allowed": false
   },
   {
+   "path": "race edit",
+   "description": "Change an open lobby's join threshold before the race starts.",
+   "params": [
+    {
+     "name": "min_players",
+     "type": "integer",
+     "required": true,
+     "description": "Players needed before the race starts — it starts the moment the lobby holds this many",
+     "min": 3
+    }
+   ],
+   "signature": "/race edit <min_players>",
+   "root": "race",
+   "cog": "ban_race",
+   "permissions": [
+    "Manage Server"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "race start",
    "description": "Open a lobby. Posts in #last-to-survive (created if missing) or the channel you pick.",
    "params": [
@@ -5326,6 +5347,14 @@
    "server_owner_only": false
   },
   "race stop": {
+   "cog": "ban_race",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
+   "server_owner_only": false
+  },
+  "race edit": {
    "cog": "ban_race",
    "visibility_permissions": [],
    "runtime_permissions": [
