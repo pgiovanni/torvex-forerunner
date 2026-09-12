@@ -99,9 +99,28 @@ POWERUPS = {
                   "✅ Heal 2, instantly. "
                   "❌ You sit this round's vote out (can't use it after you've fired); wasted at full health."),
 }
-# Paul 9/12: the trade-off shot (Overload: +damage, −a life) should turn up
-# MORE often than the plain extra shot.
-DROP_WEIGHTS = {"shield": 3, "shot": 2, "overload": 3, "transfuse": 2, "patch": 2, "medkit": 1}
+# Drop tiers (Paul 9/12): "the ones that have a pitfall should be more common;
+# the ones that don't have pitfalls are rares." A pitfall is a COST you pay
+# (a life, your vote) — not a mere limit like "one shield at a time".
+#   common — bites back: Overload (burns a life), Transfuse (costs a life),
+#            Medkit (costs the vote)
+#   rare   — no strings: Shield, Extra shot, Patch
+# Weights live on the tier, so re-tiering a power-up is a one-word edit.
+TIERS = {
+    "common": ("⚪", "Common", 3),
+    "rare":   ("🟡", "Rare",   1),
+}
+POWERUP_TIER = {
+    "overload": "common", "transfuse": "common", "medkit": "common",
+    "shield": "rare", "shot": "rare", "patch": "rare",
+}
+DROP_WEIGHTS = {kind: TIERS[tier][2] for kind, tier in POWERUP_TIER.items()}
+
+
+def tier_of(kind):
+    """(emoji, label) of a power-up's drop tier."""
+    e, label, _ = TIERS[POWERUP_TIER[kind]]
+    return e, label
 USABLE = ("overload", "transfuse")   # the two a player has to aim
 SELF_USE = ("patch", "medkit")       # used on yourself, instantly
 ITEM_COLS = ("overload", "transfuse", "patch", "medkit")

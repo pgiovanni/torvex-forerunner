@@ -266,10 +266,25 @@ class Drops(unittest.TestCase):
                 self.assertLess(blurb.index("✅"), blurb.index("❌"), kind)
                 self.assertTrue(emoji and name)
 
-    def test_overload_drops_more_often_than_the_plain_extra_shot(self):
-        # Paul 9/12: the +damage/−life shot should show up more than the free one
-        self.assertGreater(E.DROP_WEIGHTS["overload"], E.DROP_WEIGHTS["shot"])
+    def test_pitfall_powerups_are_common_and_no_strings_ones_are_rare(self):
+        # Paul 9/12: "the ones that have a pitfall should be more common; the
+        # ones that don't have pitfalls are rares." Every power-up has a tier,
+        # every common outweighs every rare, Overload > Extra shot in particular.
+        self.assertEqual(set(E.POWERUP_TIER), set(E.POWERUPS))
         self.assertEqual(set(E.DROP_WEIGHTS), set(E.POWERUPS))
+        common = [k for k, t in E.POWERUP_TIER.items() if t == "common"]
+        rare = [k for k, t in E.POWERUP_TIER.items() if t == "rare"]
+        self.assertEqual(sorted(common), ["medkit", "overload", "transfuse"])
+        self.assertEqual(sorted(rare), ["patch", "shield", "shot"])
+        self.assertGreater(min(E.DROP_WEIGHTS[k] for k in common), max(E.DROP_WEIGHTS[k] for k in rare))
+        self.assertGreater(E.DROP_WEIGHTS["overload"], E.DROP_WEIGHTS["shot"])
+        self.assertEqual(E.tier_of("overload"), ("⚪", "Common"))
+        self.assertEqual(E.tier_of("shot")[1], "Rare")
+        # the roll respects the weights: over many rolls commons dominate
+        import collections
+        rng = random.Random(7)
+        n = collections.Counter(E.roll_drop(rng) for _ in range(6000))
+        self.assertGreater(sum(n[k] for k in common), 0.65 * 6000)
 
     def test_super_effects(self):
         p = P(1, lives=1, shots=0)
