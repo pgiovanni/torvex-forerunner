@@ -29,6 +29,9 @@ Round model (all resolution is SIMULTANEOUS at round close):
   * the top killer (2+ kills, unique max) carries a BOUNTY: finishing them is
     worth two extra shots;
   * one PURGE round per race (picked at start) gives everyone three shots;
+  * drops are GUARANTEED every round (round minutes × `drops_per_minute`,
+    min 1) and sudden death adds a SUPER drop each round: nuke (everyone
+    else takes 1 at close), full heal, arsenal (+3 shots) — instant on grab;
   * killing blows pay a shield (or a shot if you already hold one).
 
 Power-ups (dropped in the channel, first click takes it):
@@ -60,7 +63,7 @@ DEFAULTS = dict(
     min_players=3,           # lobby needs this many before Start works
     shot_cap=3,
     storm_from_round=2,
-    drop_chance=0.6,         # chance a round spawns a power-up drop
+    drops_per_minute=1.0,    # guaranteed drops per round = round minutes × this (min 1)
     drop_window=10,          # seconds a drop stays grabbable
 )
 
@@ -79,6 +82,15 @@ DROP_WEIGHTS = {"shield": 3, "shot": 3, "overload": 2, "transfuse": 2, "patch": 
 USABLE = ("overload", "transfuse")   # the two a player has to aim
 SELF_USE = ("patch", "medkit")       # used on yourself, instantly
 ITEM_COLS = ("overload", "transfuse", "patch", "medkit")
+
+# SUPER drops: sudden death only, one per round on top of the regular ones,
+# and they fire the moment they're grabbed — no inventory, no aiming.
+SUPER = {
+    "nuke":     ("🧨", "NUKE",      "Every other survivor takes 1 when the round closes."),
+    "fullheal": ("💖", "Full heal", "Straight back to max lives."),
+    "arsenal":  ("🔫", "Arsenal",   "+3 shots, right now."),
+}
+SUPER_WEIGHTS = {"nuke": 2, "fullheal": 2, "arsenal": 2}
 
 ACTIVE = ("lobby", "running")
 
@@ -351,6 +363,33 @@ def roll_drop(rng, weights=None):
     return rng.choices(kinds, weights=[w[k] for k in kinds], k=1)[0]
 
 
+def drop_schedule(rng, round_secs, per_minute, sudden):
+    """When this round's drops appear: a list of (seconds_into_round, kind,
+    is_super). Regular drops are guaranteed — at least one, scaled to the
+    round length — spread over the middle of the timer so none lands on the
+    open or the close. Sudden death adds one SUPER drop."""
+    n = max(1, int(round(round_secs / 60.0 * per_minute)))
+    out = []
+    for _ in range(n):
+        out.append((rng.uniform(0.10, 0.85) * round_secs, roll_drop(rng), False))
+    if sudden:
+        out.append((rng.uniform(0.20, 0.70) * round_secs, roll_drop(rng, SUPER_WEIGHTS), True))
+    out.sort(key=lambda t: t[0])
+    return out
+
+
+def grant_super(p, kind, shot_cap, max_lives):
+    """Instant super effects. `nuke` is not handled here — it's a cast, the
+    caller records the shot row. Returns the feed line."""
+    if kind == "fullheal":
+        p["lives"] = max_lives
+        return f"💖 {m(p['user_id'])} grabbed **Full heal** — back to {max_lives} lives."
+    if kind == "arsenal":
+        p["shots"] = min(shot_cap + 3, p["shots"] + 3)
+        return f"🔫 {m(p['user_id'])} grabbed **Arsenal** — three more shots."
+    raise ValueError(kind)
+
+
 def grant(p, kind, shot_cap):
     """Hand a power-up to a player. A second shield turns into a shot so the
     'one held at a time' rule never wastes a grab."""
@@ -489,12 +528,41 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
             shooter["shots"] = min(shot_cap + 2, shooter["shots"] + 2)
             lines.append(f"   ↳ 🎯 **Bounty claimed** — {m(shooter['user_id'])} banks two more shots.")
 
+    def hit(shooter, victim, dmg, via):
+        """One damage application. `via` names the source for the line."""
+        vid = victim["user_id"]
+        if not victim["alive"]:
+            return
+        if victim["shield"] and not sudden:
+            victim["shield"] = 0
+            lines.append(f"🛡️ {m(vid)}'s **shield** ate {via}.")
+            return
+        victim["lives"] = max(0, victim["lives"] - dmg)
+        if victim["lives"] > 0:
+            who = "themselves" if victim is shooter else m(vid)
+            lines.append(f"🩸 {via_cap(via)} hit {who} — **{victim['lives']}** "
+                         f"{'life' if victim['lives'] == 1 else 'lives'} left.")
+        else:
+            by = "their own shot" if victim is shooter else via
+            _die(victim, round_no, lines, f"⛔ {m(vid)} was **BANNED** by {by}.")
+            reward_kill(shooter, victim)
+
+    def via_cap(t):
+        return t[0].upper() + t[1:] if t else t
+
     for s in order:
         shooter, target = P.get(s["shooter_id"]), P.get(s["target_id"])
         if shooter is None or target is None:
             continue
         kind = s["kind"]
         sid, tid = shooter["user_id"], target["user_id"]
+
+        if kind == "nuke":
+            lines.append(f"🧨 {m(sid)}'s **NUKE** goes off.")
+            for v in rows:
+                if v is not shooter and v["alive"]:
+                    hit(shooter, v, 1, f"{m(sid)}'s nuke")
+            continue
 
         if kind == "transfuse":
             if not target["alive"]:
@@ -530,20 +598,7 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
                 continue
             lines.append(f"💨 {m(sid)} shot at {m(tid)} — already gone. Wasted.")
             continue
-        vid = victim["user_id"]
-        if victim["shield"] and not sudden:
-            victim["shield"] = 0
-            lines.append(f"🛡️ {m(vid)}'s **shield** ate {m(sid)}'s shot.")
-            continue
-        victim["lives"] = max(0, victim["lives"] - dmg)
-        if victim["lives"] > 0:
-            who = "themselves" if victim is shooter else m(vid)
-            lines.append(f"🩸 {m(sid)} shot {who} — **{victim['lives']}** "
-                         f"{'life' if victim['lives'] == 1 else 'lives'} left.")
-        else:
-            by = "their own shot" if victim is shooter else m(sid)
-            _die(victim, round_no, lines, f"⛔ {m(vid)} was **BANNED** by {by}.")
-            reward_kill(shooter, victim)
+        hit(shooter, victim, dmg, f"{m(sid)}'s shot")
 
     # kill rewards land only now: a shield earned this round must not eat a
     # shot that was fired this round (resolution is simultaneous)
@@ -553,7 +608,7 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
     # AFK: didn't vote this round = one life gone, shields don't apply
     afk_hit = set()
     if afk:
-        voted = {s["shooter_id"] for s in shot_rows if s["kind"] in ("shot", "overload")}
+        voted = {s["shooter_id"] for s in shot_rows if s["kind"] in ("shot", "overload", "nuke")}
         for p in alive(rows):
             if p["user_id"] in voted or p.get("skip_round") == round_no:
                 continue

@@ -228,6 +228,42 @@ class Heals(unittest.TestCase):
         self.assertEqual((p["patch"], p["medkit"]), (1, 1))
 
 
+class Drops(unittest.TestCase):
+    def test_every_round_drops_scaled_to_length_plus_super_in_sudden_death(self):
+        rng = random.Random(3)
+        sched = E.drop_schedule(rng, 180, 1.0, sudden=False)
+        self.assertEqual(len(sched), 3)
+        self.assertTrue(all(18 <= at <= 153 and not sup for at, _, sup in sched))
+        self.assertEqual([at for at, _, _ in sched], sorted(at for at, _, _ in sched))
+        self.assertEqual(len(E.drop_schedule(rng, 30, 1.0, sudden=False)), 1)     # never zero
+        sd = E.drop_schedule(rng, 90, 1.0, sudden=True)
+        supers = [k for _, k, sup in sd if sup]
+        self.assertEqual(len(supers), 1)
+        self.assertIn(supers[0], E.SUPER)
+
+    def test_super_effects(self):
+        p = P(1, lives=1, shots=0)
+        E.grant_super(p, "fullheal", 3, 3)
+        self.assertEqual(p["lives"], 3)
+        E.grant_super(p, "arsenal", 3, 3)
+        self.assertEqual(p["shots"], 3)
+
+    def test_nuke_hits_everyone_else_and_credits_kills(self):
+        a, b, c, d = P(1), P(2, lives=1), P(3, shield=1), P(4)
+        r = resolve([a, b, c, d], [S(1, 1, "nuke")], round_no=6)
+        self.assertEqual(a["lives"], 3)
+        self.assertFalse(b["alive"])
+        self.assertEqual(r["killers"]["2"], "1")
+        self.assertEqual((c["lives"], c["shield"]), (3, 0))    # shield ate it (not sudden death)
+        self.assertEqual(d["lives"], 2)
+        self.assertEqual(a["kills"], 1)
+
+    def test_nuke_counts_as_voting(self):
+        a, b = P(1), P(2)
+        resolve([a, b], [S(1, 1, "nuke"), S(2, 1)], afk=True)
+        self.assertEqual(a["lives"], 2)      # b's shot only, no AFK hit
+
+
 class Rewards(unittest.TestCase):
     def test_kill_pays_a_shield_or_a_shot_when_held(self):
         a, b, c = P(1), P(2, lives=1), P(3, lives=1)
