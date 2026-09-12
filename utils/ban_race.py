@@ -283,6 +283,15 @@ def latest_race(guild_id, db=None):
             (str(guild_id),)).fetchone())
 
 
+def guild_races(guild_id, limit=10, db=None):
+    """The guild's races, newest first — for looking back."""
+    init(db)
+    with _conn(db) as c:
+        rows = c.execute("SELECT * FROM races WHERE guild_id=? ORDER BY id DESC LIMIT ?",
+                         (str(guild_id), limit)).fetchall()
+    return [_race_row(r) for r in rows]
+
+
 def running_races(db=None):
     init(db)
     with _conn(db) as c:
