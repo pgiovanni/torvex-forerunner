@@ -240,10 +240,6 @@ def elimination_dm(race, round_no, killer_id, guild_name):
     e = discord.Embed(title="⛔ You're out", color=COLOR,
                       description=f"Eliminated in **round {round_no}** of Last to survive in **{guild_name}**"
                                   + (f", by <@{killer_id}>." if killer_id else "."))
-    if s["mode"] != "real":
-        e.add_field(name="What happens now",
-                    value="You're a ghost: you can watch the race channel but not talk in it. "
-                          "You'll still get each round's results here.", inline=False)
     if s["mode"] == "real":
         e.add_field(name="What happens now",
                     value="You're being banned — that's the game. The bot **unbans everyone the moment the race "
@@ -505,8 +501,10 @@ class BanRace(commands.Cog):
         for uid in res["dead"]:
             await self._eliminate(guild, channel, race, uid, round_no, res["killers"].get(uid))
 
-        # the dead still watch: DM earlier casualties the round's results
-        for p in rows:
+        # the dead still watch: DM earlier casualties the round's results.
+        # Real mode only — banned players can't see the channel; ghosts can,
+        # so DMs there are just noise (Paul, 9/11: "turn off dms in ghost mode").
+        for p in rows if s["mode"] == "real" else []:
             if not p["alive"] and p["user_id"] not in res["dead"]:
                 e = discord.Embed(title=f"👻 Round {round_no} — from the grave", color=COLOR,
                                   description="\n".join(lines)[:4000])
@@ -520,10 +518,10 @@ class BanRace(commands.Cog):
         member = guild.get_member(int(uid))
         s = race["settings"]
         await self._set_racer(guild, race, uid, False)
+        if s["mode"] != "real":
+            return          # ghosts see everything in the channel; no DMs
         if member:
             await self._dm(uid, embed=elimination_dm(race, round_no, killer_id, guild.name))
-        if s["mode"] != "real":
-            return
         quiet_mark(uid)
         try:
             await guild.ban(discord.Object(id=int(uid)),
@@ -578,7 +576,7 @@ class BanRace(commands.Cog):
                         inline=False)
         e.set_footer(text="Host: pay the winner. 🎁")
         await channel.send(content=" ".join(f"<@{w}>" for w in winners), embed=e, allowed_mentions=MENTIONS)
-        for p in rows:
+        for p in rows if race["settings"]["mode"] == "real" else []:
             if not p["alive"]:
                 await self._dm(p["user_id"], content=f"Race over in **{guild.name}** — you're unbanned. "
                                                      f"{race['invite_url'] or ''}".strip())
