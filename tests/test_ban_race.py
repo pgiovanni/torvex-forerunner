@@ -476,6 +476,51 @@ class Store(unittest.TestCase):
         self.assertIsNone(E.player(rid, 1))
         E.update_race(rid, status="aborted")
 
+    def test_latest_race_and_player_breakdown(self):
+        r = E.create_race(777, 3, 9, settings={"lives": 3, "mode": "ghost"})
+        rid = r["id"]
+        E.join(rid, 1, "one", 3)
+        E.join(rid, 2, "two", 3)
+        E.update_race(rid, status="running", round_no=1)
+        E.cast(rid, 1, 1, 2)                          # one fires at two
+        E.cast(rid, 1, 2, 1, "overload")              # two overloads one
+        E.log(rid, 1, f"🩸 {E.m(1)}'s shot hit {E.m(2)} — **2** lives left.")
+        E.log(rid, 1, f"🛡️ {E.m(1)} grabbed a **shield**.")
+        E.log(rid, 2, f"{E.m(2)} used a **Patch** — 🩹 Patched up — **3** lives.")
+        E.log(rid, 2, f"😴 {E.m(1)} didn't vote — loses a life. **2** left.")
+        E.update_race(rid, status="finished")
+        self.assertIsNone(E.active_race(777))
+        self.assertEqual(E.latest_race(777)["id"], rid)
+        # player one: cast first, then what happened, per round; two's cast at one is NOT shown
+        story = E.timeline(1, E.player_shots(rid, 1), E.player_log(rid, 1))
+        self.assertEqual([r for r, _ in story], [1, 2])
+        r1 = story[0][1]
+        self.assertEqual(r1[0], f"🎯 fired at {E.m(2)}")
+        self.assertTrue(any("shot hit" in ln for ln in r1))
+        self.assertTrue(any("grabbed a **shield**" in ln for ln in r1))
+        self.assertFalse(any("overloaded" in ln for ln in r1))
+        self.assertTrue(any("didn't vote" in ln for ln in story[1][1]))
+        # player two: their overload cast shows, plus the patch use
+        story2 = E.timeline(2, E.player_shots(rid, 2), E.player_log(rid, 2))
+        self.assertEqual(story2[0][1][0], f"💥 overloaded at {E.m(1)}")
+        self.assertTrue(any("used a **Patch**" in ln for ln in story2[1][1]))
+        # nobody else: empty
+        self.assertEqual(E.timeline(9, E.player_shots(rid, 9), E.player_log(rid, 9)), [])
+        # the open chart: everything, grouped by round, in order
+        chart = E.by_round(E.race_log(rid))
+        self.assertEqual([r for r, _ in chart], [1, 2])
+        self.assertEqual((len(chart[0][1]), len(chart[1][1])), (2, 2))
+
+    def test_fit_rounds_keeps_the_newest_that_fit(self):
+        story = [(r, ["x" * 500]) for r in range(1, 31)]
+        shown, dropped = E.fit_rounds(story, max_fields=24, max_chars=5200)
+        self.assertEqual(dropped, 20)                       # 10 × 500 fit under 5200
+        self.assertEqual([r for r, _ in shown], list(range(21, 31)))
+        shown, dropped = E.fit_rounds([(1, ["y" * 3000])])
+        self.assertEqual(dropped, 0)
+        self.assertTrue(shown[0][1].endswith(" …") and len(shown[0][1]) <= 1000)
+        self.assertEqual(E.fit_rounds([]), ([], 0))
+
     def test_min_players_stored_and_floored(self):
         r = E.create_race(500, 5, 9, settings={"min_players": 12})
         self.assertEqual(r["settings"]["min_players"], 12)
