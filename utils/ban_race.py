@@ -32,7 +32,9 @@ Round model (all resolution is SIMULTANEOUS at round close):
   * killing blows pay a shield (or a shot if you already hold one).
 
 Power-ups (dropped in the channel, first click takes it):
-  shield / shot / overload (take 1 to deal 2) / transfuse (give 1, lose 1).
+  shield / shot / overload (take 1 to deal 2) / transfuse (give 1, lose 1) /
+  patch (heal 1) / medkit (heal 2, forfeit this round's vote — can't be used
+  after voting, and the AFK penalty doesn't apply that round).
 
 Everything is scoped by guild through the race row, and a guild can only have
 one race in lobby or running at a time.
@@ -70,9 +72,13 @@ POWERUPS = {
     "shot":      ("🔫", "Extra shot", "One more shot in the bank."),
     "overload":  ("💥", "Overload",   "Take 1 damage to deal 2. Costs a shot."),
     "transfuse": ("💉", "Transfuse",  "Give someone 1 life, lose 1 yourself."),
+    "patch":     ("🩹", "Patch",      "Heal 1 life. No strings."),
+    "medkit":    ("🏥", "Medkit",     "Heal 2 lives, but you sit this round's vote out."),
 }
-DROP_WEIGHTS = {"shield": 3, "shot": 3, "overload": 2, "transfuse": 2}
+DROP_WEIGHTS = {"shield": 3, "shot": 3, "overload": 2, "transfuse": 2, "patch": 2, "medkit": 1}
 USABLE = ("overload", "transfuse")   # the two a player has to aim
+SELF_USE = ("patch", "medkit")       # used on yourself, instantly
+ITEM_COLS = ("overload", "transfuse", "patch", "medkit")
 
 ACTIVE = ("lobby", "running")
 
@@ -122,6 +128,9 @@ def init(db=None):
                 died_round  INTEGER,
                 banned      INTEGER NOT NULL DEFAULT 0,
                 joined_at   REAL NOT NULL,
+                patch       INTEGER NOT NULL DEFAULT 0,
+                medkit      INTEGER NOT NULL DEFAULT 0,
+                skip_round  INTEGER,                 -- round whose vote a medkit forfeited
                 PRIMARY KEY (race_id, user_id)
             );
             CREATE TABLE IF NOT EXISTS shots (
@@ -142,6 +151,13 @@ def init(db=None):
                 text     TEXT NOT NULL
             );
         """)
+        # columns added after the first deploy (9/11 evening): idempotent
+        have = {r[1] for r in c.execute("PRAGMA table_info(players)")}
+        for col, ddl in (("patch", "INTEGER NOT NULL DEFAULT 0"),
+                         ("medkit", "INTEGER NOT NULL DEFAULT 0"),
+                         ("skip_round", "INTEGER")):
+            if col not in have:
+                c.execute(f"ALTER TABLE players ADD COLUMN {col} {ddl}")
 
 
 def _race_row(r):
@@ -235,9 +251,11 @@ def save_players(race_id, rows, db=None):
         for p in rows:
             c.execute(
                 "UPDATE players SET lives=?, shots=?, shield=?, overload=?, transfuse=?, kills=?,"
-                " bounty=?, alive=?, died_round=?, banned=? WHERE race_id=? AND user_id=?",
+                " bounty=?, alive=?, died_round=?, banned=?, patch=?, medkit=?, skip_round=?"
+                " WHERE race_id=? AND user_id=?",
                 (p["lives"], p["shots"], p["shield"], p["overload"], p["transfuse"], p["kills"],
-                 p["bounty"], p["alive"], p["died_round"], p["banned"], race_id, str(p["user_id"])))
+                 p["bounty"], p["alive"], p["died_round"], p["banned"], p.get("patch", 0),
+                 p.get("medkit", 0), p.get("skip_round"), race_id, str(p["user_id"])))
 
 
 def update_player(race_id, user_id, db=None, **fields):
@@ -351,13 +369,49 @@ def grant(p, kind, shot_cap):
     if kind == "transfuse":
         p["transfuse"] += 1
         return f"💉 {m(p['user_id'])} grabbed **Transfuse** — give 1, lose 1."
+    if kind == "patch":
+        p["patch"] = p.get("patch", 0) + 1
+        return f"🩹 {m(p['user_id'])} grabbed a **Patch** — heal 1."
+    if kind == "medkit":
+        p["medkit"] = p.get("medkit", 0) + 1
+        return f"🏥 {m(p['user_id'])} grabbed a **Medkit** — heal 2, skip a vote."
     raise ValueError(kind)
 
 
-def cast_error(p, target, kind="shot"):
+def use_self(p, kind, round_no, max_lives, voted_this_round):
+    """Patch / Medkit: instant, on yourself. Returns (ok, text). Mutates p."""
+    if p is None or not p["alive"]:
+        return False, "You're out of the race."
+    if kind == "patch":
+        if p.get("patch", 0) <= 0:
+            return False, "You don't hold a Patch."
+        if p["lives"] >= max_lives:
+            return False, "You're at full lives — save it."
+        p["patch"] -= 1
+        p["lives"] = min(max_lives, p["lives"] + 1)
+        return True, f"🩹 Patched up — **{p['lives']}** lives."
+    if kind == "medkit":
+        if p.get("medkit", 0) <= 0:
+            return False, "You don't hold a Medkit."
+        if p.get("skip_round") == round_no:
+            return False, "You already sat this round out."
+        if voted_this_round:
+            return False, "You've already voted this round — a Medkit costs the vote, so it's next round or never."
+        if p["lives"] >= max_lives:
+            return False, "You're at full lives — save it."
+        p["medkit"] -= 1
+        p["lives"] = min(max_lives, p["lives"] + 2)
+        p["skip_round"] = round_no
+        return True, f"🏥 Medkit used — **{p['lives']}** lives. No shooting for you this round."
+    return False, "That isn't something you use on yourself."
+
+
+def cast_error(p, target, kind="shot", round_no=None):
     """Why this cast is illegal — or None. `target` may be None for a bad id."""
     if p is None or not p["alive"]:
         return "You're out of the race."
+    if kind in ("shot", "overload") and round_no is not None and p.get("skip_round") == round_no:
+        return "You used a Medkit this round — no shooting until the next one."
     if target is None or not target["alive"]:
         return "That player isn't in the race (or is already gone)."
     if target["user_id"] == p["user_id"] and kind != "transfuse":
@@ -501,7 +555,7 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
     if afk:
         voted = {s["shooter_id"] for s in shot_rows if s["kind"] in ("shot", "overload")}
         for p in alive(rows):
-            if p["user_id"] in voted:
+            if p["user_id"] in voted or p.get("skip_round") == round_no:
                 continue
             afk_hit.add(p["user_id"])
             p["lives"] -= 1
