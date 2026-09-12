@@ -548,9 +548,15 @@ def recommended_lives(n_players):
     lives with the amount of people playing — a recommended value, not
     forced"). Every survivor fires once a round, so the more players the more
     incoming fire per round; 3 lives was right for 10 and thin for 15.
-      3 → 2 · 6 → 3 · 10 → 4 · 15 → 5 · 20+ → 6
-    A host who sets `lives:` explicitly always wins over this."""
-    return max(2, min(6, 2 + max(0, n_players) // 4))
+      3 → 2 · 6 → 3 · 10 → 4 · 15 → 5 · 20 → 7 · 32+ → 10
+    Soft cap 10 (Paul 9/12: "it can go above 6, idk if that's too much" —
+    ten lives is ~10+ rounds, half an hour at 3 min; raise MAX_RECOMMENDED
+    if a huge lobby wants longer). A host who sets `lives:` explicitly
+    always wins over this. There is NO cap on players."""
+    return max(2, min(MAX_RECOMMENDED_LIVES, 2 + max(0, n_players) // 4))
+
+
+MAX_RECOMMENDED_LIVES = 10
 
 
 def pick_purge_round(rng, n_players):
