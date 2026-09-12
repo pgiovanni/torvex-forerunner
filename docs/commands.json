@@ -1301,6 +1301,26 @@
    "dm_allowed": false
   },
   {
+   "path": "deadchat",
+   "description": "Ping the Dead Chat role to wake the server up — add a question if you like",
+   "params": [
+    {
+     "name": "message",
+     "type": "string",
+     "required": false,
+     "description": "What do you want to talk about? (optional)",
+     "min_length": 1,
+     "max_length": 200
+    }
+   ],
+   "signature": "/deadchat [message]",
+   "root": "deadchat",
+   "cog": "deadchat",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "balance",
    "description": "Check your Peepo Bucks and level.",
    "params": [
@@ -4505,19 +4525,6 @@
    "dm_allowed": false
   },
   {
-   "path": "roster-snapshot",
-   "description": "Record the member roster right now (admin)",
-   "params": [],
-   "signature": "/roster-snapshot",
-   "root": "roster-snapshot",
-   "cog": "server_backup",
-   "permissions": [
-    "Administrator"
-   ],
-   "cooldown_seconds": null,
-   "dm_allowed": false
-  },
-  {
    "path": "structure-restore",
    "description": "Recreate roles/channels deleted since the last backup (admin)",
    "params": [
@@ -5394,6 +5401,12 @@
    "runtime_permissions": [
     "administrator"
    ],
+   "server_owner_only": false
+  },
+  "deadchat": {
+   "cog": "deadchat",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
    "server_owner_only": false
   },
   "balance": {
