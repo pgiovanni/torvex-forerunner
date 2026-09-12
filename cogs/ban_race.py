@@ -801,7 +801,9 @@ class BanRace(commands.Cog):
         if dropped:
             footer = f"Earliest {dropped} round(s) don't fit — use round: to see one. " + footer
         e.set_footer(text=footer)
-        await interaction.response.send_message(embed=e, ephemeral=True)
+        # Public (Paul 9/12: "everyone should see it"). Mentions live inside the
+        # embed, which never pings; AllowedMentions.none() makes that explicit.
+        await interaction.response.send_message(embed=e, allowed_mentions=discord.AllowedMentions.none())
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error):
         """Say why a command was refused instead of letting it time out."""
