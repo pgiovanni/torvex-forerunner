@@ -29,9 +29,12 @@ Round model (all resolution is SIMULTANEOUS at round close):
   * the top killer (2+ kills, unique max) carries a BOUNTY: finishing them is
     worth two extra shots;
   * one PURGE round per race (picked at start) gives everyone three shots;
-  * drops are GUARANTEED every round (round minutes × `drops_per_minute`,
-    min 1) and sudden death adds a SUPER drop each round: nuke (everyone
-    else takes 1 at close), full heal, arsenal (+3 shots) — instant on grab;
+  * drops are GUARANTEED every round and SCALE WITH THE PLAYERS STILL IN:
+    alive × `drops_per_player` (min 1, capped so drops never overlap a
+    `drop_window`), spread evenly over the middle of the timer — twenty
+    players get a busy channel, three get one drop; sudden death adds a
+    SUPER drop each round: nuke (everyone else takes 1 at close), full
+    heal, arsenal (+3 shots) — instant on grab;
   * killing blows pay a shield (or a shot if you already hold one) — unless
     the victim was AFK that round: no shield, no shot, no kill credit, no
     bounty. Shooting someone who isn't playing is free, so it pays nothing.
@@ -65,7 +68,7 @@ DEFAULTS = dict(
     min_players=3,           # lobby needs this many before Start works
     shot_cap=3,
     storm_from_round=2,
-    drops_per_minute=1.0,    # guaranteed drops per round = round minutes × this (min 1)
+    drops_per_player=0.5,    # drops per round = alive players × this (min 1; Paul 9/12: "scale with active users")
     drop_window=10,          # seconds a drop stays grabbable
 )
 
@@ -365,15 +368,28 @@ def roll_drop(rng, weights=None):
     return rng.choices(kinds, weights=[w[k] for k in kinds], k=1)[0]
 
 
-def drop_schedule(rng, round_secs, per_minute, sudden):
+def drop_count(alive, per_player, round_secs, drop_window):
+    """How many regular drops a round gets: alive players × per_player,
+    never fewer than one, never so many that two are grabbable at once
+    (the 10–85 % window divided by the grab window)."""
+    n = int(round(max(0, alive) * per_player))
+    cap = max(1, int(0.75 * round_secs // max(1, drop_window)))
+    return max(1, min(cap, n))
+
+
+def drop_schedule(rng, round_secs, alive, per_player, sudden, drop_window=10):
     """When this round's drops appear: a list of (seconds_into_round, kind,
-    is_super). Regular drops are guaranteed — at least one, scaled to the
-    round length — spread over the middle of the timer so none lands on the
-    open or the close. Sudden death adds one SUPER drop."""
-    n = max(1, int(round(round_secs / 60.0 * per_minute)))
+    is_super). Regular drops are guaranteed and scale with the players still
+    alive (see drop_count). They're spread over the middle of the timer in
+    equal slots with jitter inside each — steady traffic instead of a random
+    clump — so none lands on the open or the close. Sudden death adds one
+    SUPER drop."""
+    n = drop_count(alive, per_player, round_secs, drop_window)
+    lo, hi = 0.10 * round_secs, 0.85 * round_secs
+    slot = (hi - lo) / n
     out = []
-    for _ in range(n):
-        out.append((rng.uniform(0.10, 0.85) * round_secs, roll_drop(rng), False))
+    for i in range(n):
+        out.append((lo + slot * (i + rng.random()), roll_drop(rng), False))
     if sudden:
         out.append((rng.uniform(0.20, 0.70) * round_secs, roll_drop(rng, SUPER_WEIGHTS), True))
     out.sort(key=lambda t: t[0])

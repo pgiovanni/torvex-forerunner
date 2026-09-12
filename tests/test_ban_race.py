@@ -230,14 +230,30 @@ class Heals(unittest.TestCase):
 
 
 class Drops(unittest.TestCase):
-    def test_every_round_drops_scaled_to_length_plus_super_in_sudden_death(self):
+    def test_drops_scale_with_alive_players_never_zero_never_overlapping(self):
+        # 0.5 per player: 10 alive -> 5, 3 alive -> 2 (round), 2 alive -> 1, 1 alive -> still 1
+        self.assertEqual(E.drop_count(10, 0.5, 180, 10), 5)
+        self.assertEqual(E.drop_count(3, 0.5, 180, 10), 2)
+        self.assertEqual(E.drop_count(2, 0.5, 180, 10), 1)
+        self.assertEqual(E.drop_count(1, 0.5, 180, 10), 1)
+        self.assertEqual(E.drop_count(0, 0.5, 180, 10), 1)
+        # capped so two drops are never grabbable at once: 30 s round, 10 s window -> 2 max
+        self.assertEqual(E.drop_count(100, 0.5, 30, 10), 2)
+        self.assertEqual(E.drop_count(100, 0.5, 180, 10), 13)
+
+    def test_every_round_drops_spread_over_the_middle_plus_super_in_sudden_death(self):
         rng = random.Random(3)
-        sched = E.drop_schedule(rng, 180, 1.0, sudden=False)
-        self.assertEqual(len(sched), 3)
+        sched = E.drop_schedule(rng, 180, 10, 0.5, sudden=False)
+        self.assertEqual(len(sched), 5)
         self.assertTrue(all(18 <= at <= 153 and not sup for at, _, sup in sched))
-        self.assertEqual([at for at, _, _ in sched], sorted(at for at, _, _ in sched))
-        self.assertEqual(len(E.drop_schedule(rng, 30, 1.0, sudden=False)), 1)     # never zero
-        sd = E.drop_schedule(rng, 90, 1.0, sudden=True)
+        ats = [at for at, _, _ in sched]
+        self.assertEqual(ats, sorted(ats))
+        # equal slots with jitter: consecutive drops are at least a slot apart minus jitter,
+        # i.e. no two land inside the same slot
+        slot = (153 - 18) / 5
+        self.assertEqual(sorted(int((at - 18) // slot) for at in ats), [0, 1, 2, 3, 4])
+        self.assertEqual(len(E.drop_schedule(rng, 30, 2, 0.5, sudden=False)), 1)     # never zero
+        sd = E.drop_schedule(rng, 90, 4, 0.5, sudden=True)
         supers = [k for _, k, sup in sd if sup]
         self.assertEqual(len(supers), 1)
         self.assertIn(supers[0], E.SUPER)

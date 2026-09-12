@@ -194,7 +194,7 @@ def lobby_embed(race, rows, guild_name):
            f"{'Everyone is unbanned the moment it ends, and you get the invite by DM first.' if s['mode'] == 'real' else ''}\n"
            f"• Don't vote in a round and you lose a life. AFK is not a strategy.\n"
            f"• Only racers can talk here — **Join** unlocks the channel; ghosts watch in silence.\n"
-           f"• Power-ups drop in this channel every round. First click takes it. "
+           f"• Power-ups drop in this channel every round — the more of you still in, the more drops. First click takes it. "
            f"Sudden death adds **super drops**.\n"
            f"• Last one standing wins. 🎁")
     e.add_field(name="How it works", value=how, inline=False)
@@ -445,10 +445,15 @@ class BanRace(commands.Cog):
                                          view=round_view(race_id))
                 engine.update_race(race_id, round_msg_id=str(msg.id))
 
-                # every round drops, scaled to its length; sudden death adds a super
+                # every round drops, scaled to the players still alive (Paul 9/12:
+                # "powerups should scale with the amount of active users");
+                # sudden death adds a super. Races started before 9/12 carry no
+                # drops_per_player in their settings — the default applies.
                 opened = time.time()
                 queue = [(opened + at, kind, is_super) for at, kind, is_super in
-                         engine.drop_schedule(self._rng, secs, s.get("drops_per_minute", 1.0), sudden)]
+                         engine.drop_schedule(self._rng, secs, len(engine.alive(rows)),
+                                              s.get("drops_per_player", engine.DEFAULTS["drops_per_player"]),
+                                              sudden, s.get("drop_window", engine.DEFAULTS["drop_window"]))]
                 while True:
                     race = engine.get_race(race_id)
                     if race["status"] != "running":
