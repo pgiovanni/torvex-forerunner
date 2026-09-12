@@ -258,6 +258,19 @@ class Drops(unittest.TestCase):
         self.assertEqual(len(supers), 1)
         self.assertIn(supers[0], E.SUPER)
 
+    def test_every_powerup_lists_a_benefit_and_a_weakness(self):
+        for table in (E.POWERUPS, E.SUPER):
+            for kind, (emoji, name, blurb) in table.items():
+                self.assertIn("✅", blurb, kind)
+                self.assertIn("❌", blurb, kind)
+                self.assertLess(blurb.index("✅"), blurb.index("❌"), kind)
+                self.assertTrue(emoji and name)
+
+    def test_overload_drops_more_often_than_the_plain_extra_shot(self):
+        # Paul 9/12: the +damage/−life shot should show up more than the free one
+        self.assertGreater(E.DROP_WEIGHTS["overload"], E.DROP_WEIGHTS["shot"])
+        self.assertEqual(set(E.DROP_WEIGHTS), set(E.POWERUPS))
+
     def test_super_effects(self):
         p = P(1, lives=1, shots=0)
         E.grant_super(p, "fullheal", 3, 3)

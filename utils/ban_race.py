@@ -75,15 +75,33 @@ DEFAULTS = dict(
 MODES = ("real", "ghost")
 MIN_PLAYERS = 3   # floor for the setting; below this the game has no decisions
 
+# Every power-up says what it gives AND what it costs (Paul 9/12: "make sure
+# every power up has its benefits and weaknesses listed"). The blurb is shown
+# on the drop, in the kit, and in the lobby — one string, ✅ then ❌.
 POWERUPS = {
-    "shield":    ("🛡️", "Shield",     "Eats the next shot fired at you. One held at a time — a second becomes a shot."),
-    "shot":      ("🔫", "Extra shot", "One more shot in the bank."),
-    "overload":  ("💥", "Overload",   "Take 1 damage to deal 2. Costs a shot."),
-    "transfuse": ("💉", "Transfuse",  "Give someone 1 life, lose 1 yourself."),
-    "patch":     ("🩹", "Patch",      "Heal 1 life. No strings."),
-    "medkit":    ("🏥", "Medkit",     "Heal 2 lives, but you sit this round's vote out."),
+    "shield":    ("🛡️", "Shield",
+                  "✅ Eats the next shot fired at you, whole. "
+                  "❌ One at a time (a second becomes an extra shot); OFF in sudden death; "
+                  "doesn't stop the AFK penalty or the storm."),
+    "shot":      ("🔫", "Extra shot",
+                  "✅ One more shot in the bank — fire twice in a round. "
+                  "❌ Still 1 damage each; the bank caps out, so hoarding wastes it."),
+    "overload":  ("💥", "Overload",
+                  "✅ Your shot deals 2 instead of 1 — a full-health kill in two rounds, or a finisher now. "
+                  "❌ Burns 1 of YOUR lives the moment it fires (it can kill you) and rides on a banked shot."),
+    "transfuse": ("💉", "Transfuse",
+                  "✅ Give someone 1 life — keep an ally in. "
+                  "❌ You lose 1; refused on your last life; it does NOT count as your vote, so you still owe a shot."),
+    "patch":     ("🩹", "Patch",
+                  "✅ Heal 1, instantly, no strings. "
+                  "❌ Can't go above max lives — wasted at full health."),
+    "medkit":    ("🏥", "Medkit",
+                  "✅ Heal 2, instantly. "
+                  "❌ You sit this round's vote out (can't use it after you've fired); wasted at full health."),
 }
-DROP_WEIGHTS = {"shield": 3, "shot": 3, "overload": 2, "transfuse": 2, "patch": 2, "medkit": 1}
+# Paul 9/12: the trade-off shot (Overload: +damage, −a life) should turn up
+# MORE often than the plain extra shot.
+DROP_WEIGHTS = {"shield": 3, "shot": 2, "overload": 3, "transfuse": 2, "patch": 2, "medkit": 1}
 USABLE = ("overload", "transfuse")   # the two a player has to aim
 SELF_USE = ("patch", "medkit")       # used on yourself, instantly
 ITEM_COLS = ("overload", "transfuse", "patch", "medkit")
@@ -91,9 +109,15 @@ ITEM_COLS = ("overload", "transfuse", "patch", "medkit")
 # SUPER drops: sudden death only, one per round on top of the regular ones,
 # and they fire the moment they're grabbed — no inventory, no aiming.
 SUPER = {
-    "nuke":     ("🧨", "NUKE",      "Every other survivor takes 1 when the round closes."),
-    "fullheal": ("💖", "Full heal", "Straight back to max lives."),
-    "arsenal":  ("🔫", "Arsenal",   "+3 shots, right now."),
+    "nuke":     ("🧨", "NUKE",
+                 "✅ Every other survivor takes 1 when the round closes — every kill is yours. "
+                 "❌ It's your shot for the round, it lands at close (not now), and it makes you everyone's target."),
+    "fullheal": ("💖", "Full heal",
+                 "✅ Straight back to max lives. "
+                 "❌ No shields exist in sudden death — lives are all you've got."),
+    "arsenal":  ("🔫", "Arsenal",
+                 "✅ +3 shots, right now. "
+                 "❌ Still one target per shot, and unfired shots die with you."),
 }
 SUPER_WEIGHTS = {"nuke": 2, "fullheal": 2, "arsenal": 2}
 
