@@ -180,7 +180,7 @@ def lobby_embed(race, rows, guild_name):
     names = [p["name"] for p in rows]
     shown = ", ".join(names[:40]) + (f" … +{len(names) - 40}" if len(names) > 40 else "")
     e.add_field(name=f"Players ({len(rows)})", value=shown or "*nobody yet — hit Join*", inline=False)
-    e.set_footer(text=f"{guild_name} · host starts it when enough people are in (min {engine.MIN_PLAYERS})")
+    e.set_footer(text=f"{guild_name} · host starts it at {s['min_players']}+ players")
     return e
 
 
@@ -540,6 +540,7 @@ class BanRace(commands.Cog):
     @app_commands.describe(lives="Lives per player (default 3)", round_minutes="Minutes per round (default 3)",
                            mode="real = actual bans, auto-unban at the end; ghost = no bans",
                            min_account_days="Minimum account age to enter (default 7)",
+                           min_players="Players needed before the race can start (default 3)",
                            channel="Where the race runs (default: #last-to-survive, created if missing)")
     @app_commands.choices(mode=MODE_CHOICES)
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -548,6 +549,7 @@ class BanRace(commands.Cog):
                          round_minutes: app_commands.Range[int, 1, 30] = 3,
                          mode: app_commands.Choice[str] = None,
                          min_account_days: app_commands.Range[int, 0, 365] = 7,
+                         min_players: app_commands.Range[int, 3, 500] = 3,
                          channel: discord.TextChannel = None):
         guild = interaction.guild
         mode_v = mode.value if mode else "real"
@@ -586,7 +588,7 @@ class BanRace(commands.Cog):
         try:
             race = engine.create_race(guild.id, channel.id, interaction.user.id, settings={
                 "lives": lives, "round_secs": round_minutes * 60, "mode": mode_v,
-                "min_account_days": min_account_days})
+                "min_account_days": min_account_days, "min_players": min_players})
         except ValueError as e:
             return await interaction.followup.send(str(e), ephemeral=True)
         engine.update_race(race["id"], invite_url=invite_url)
@@ -730,9 +732,10 @@ class BanRace(commands.Cog):
         if race["status"] != "lobby":
             return await interaction.response.send_message("Already started.", ephemeral=True)
         rows = engine.players(race["id"])
-        if len(rows) < engine.MIN_PLAYERS:
+        need = race["settings"].get("min_players", engine.MIN_PLAYERS)
+        if len(rows) < need:
             return await interaction.response.send_message(
-                f"Need at least {engine.MIN_PLAYERS} players ({len(rows)} in).", ephemeral=True)
+                f"Need at least {need} players ({len(rows)} in).", ephemeral=True)
         purge = engine.pick_purge_round(self._rng, len(rows))
         engine.update_race(race["id"], status="running", started_at=time.time(), purge_round=purge)
         race = engine.get_race(race["id"])

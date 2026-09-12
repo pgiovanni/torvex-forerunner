@@ -317,6 +317,14 @@ class Store(unittest.TestCase):
         self.assertIsNone(E.player(rid, 1))
         E.update_race(rid, status="aborted")
 
+    def test_min_players_stored_and_floored(self):
+        r = E.create_race(500, 5, 9, settings={"min_players": 12})
+        self.assertEqual(r["settings"]["min_players"], 12)
+        E.update_race(r["id"], status="aborted")
+        r = E.create_race(500, 5, 9, settings={"min_players": 1})
+        self.assertEqual(r["settings"]["min_players"], E.MIN_PLAYERS)
+        E.update_race(r["id"], status="aborted")
+
     def test_bad_mode_rejected(self):
         with self.assertRaises(ValueError):
             E.create_race(400, 4, 9, settings={"mode": "chaos"})

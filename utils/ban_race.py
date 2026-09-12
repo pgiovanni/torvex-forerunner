@@ -53,6 +53,7 @@ DEFAULTS = dict(
     backfire=0.10,
     sudden_death_at=5,
     min_account_days=7,
+    min_players=3,           # lobby needs this many before Start works
     shot_cap=3,
     storm_from_round=2,
     drop_chance=0.6,         # chance a round spawns a power-up drop
@@ -60,7 +61,7 @@ DEFAULTS = dict(
 )
 
 MODES = ("real", "ghost")
-MIN_PLAYERS = 3
+MIN_PLAYERS = 3   # floor for the setting; below this the game has no decisions
 
 POWERUPS = {
     "shield":    ("🛡️", "Shield",     "Eats the next shot fired at you. One held at a time — a second becomes a shot."),
@@ -159,6 +160,7 @@ def create_race(guild_id, channel_id, host_id, settings=None, now=None, db=None)
     s.update({k: v for k, v in (settings or {}).items() if v is not None})
     if s["mode"] not in MODES:
         raise ValueError("mode must be real or ghost")
+    s["min_players"] = max(MIN_PLAYERS, int(s["min_players"]))
     with _conn(db) as c:
         row = c.execute("SELECT id FROM races WHERE guild_id=? AND status IN ('lobby','running')",
                         (str(guild_id),)).fetchone()
