@@ -65,6 +65,12 @@
       "cooldown_seconds": 0
     },
     {
+      "name": "lastrace",
+      "description": "Last to survive stats — the latest race round by round (every hit, miss, heal and drop)",
+      "cog": "ban_race",
+      "required_permissions": []
+    },
+    {
       "name": "deadchat",
       "description": "Ping the Dead Chat role to wake the server up — add a question if you like",
       "cog": "deadchat",
@@ -682,11 +688,12 @@
       "required_permissions": []
     }
   ],
-  "shelved_note": "Commands listed in 'shelved' stay in the code but are removed from the slash tree at startup (Discord caps a bot at 100 top-level commands). Move a name out of this list to bring it back; picked 9/11 from command_log usage (zero uses since logging began 8/29). 9/12: roster-snapshot shelved for /deadchat (zero uses; the server_backup cog snapshots the roster on its own loop anyway).",
+  "shelved_note": "Commands listed in 'shelved' stay in the code but are removed from the slash tree at startup (Discord caps a bot at 100 top-level commands). Move a name out of this list to bring it back; picked 9/11 from command_log usage (zero uses since logging began 8/29). 9/12: roster-snapshot shelved for /deadchat (zero uses; the server_backup cog snapshots the roster on its own loop anyway). 9/12 pm: roster-missing shelved for /lastrace (zero uses; sibling of roster-snapshot).",
   "shelved": [
     "add-bot",
     "backup_emojis",
     "structure-status",
-    "roster-snapshot"
+    "roster-snapshot",
+    "roster-missing"
   ]
 }

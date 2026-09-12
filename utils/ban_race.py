@@ -246,6 +246,15 @@ def active_race(guild_id, db=None):
             " ORDER BY id DESC LIMIT 1", (str(guild_id),)).fetchone())
 
 
+def latest_race(guild_id, db=None):
+    """The guild's most recent race in any state — for post-mortems."""
+    init(db)
+    with _conn(db) as c:
+        return _race_row(c.execute(
+            "SELECT * FROM races WHERE guild_id=? ORDER BY id DESC LIMIT 1",
+            (str(guild_id),)).fetchone())
+
+
 def running_races(db=None):
     init(db)
     with _conn(db) as c:
@@ -336,6 +345,82 @@ def log(race_id, round_no, text, now=None, db=None):
     with _conn(db) as c:
         c.execute("INSERT INTO log (race_id, round_no, ts, text) VALUES (?,?,?,?)",
                   (race_id, round_no, now or time.time(), text))
+
+
+def player_log(race_id, user_id, db=None):
+    """Every logged line that mentions the player, in order: resolution
+    lines (hits, shields, kills, AFK, storm), drops grabbed, items used."""
+    with _conn(db) as c:
+        rows = c.execute("SELECT round_no, ts, text FROM log WHERE race_id=? AND text LIKE ?"
+                         " ORDER BY id", (race_id, f"%<@{user_id}>%")).fetchall()
+    return [dict(r) for r in rows]
+
+
+def race_log(race_id, db=None):
+    """The whole round log, in order — the open chart."""
+    with _conn(db) as c:
+        rows = c.execute("SELECT round_no, ts, text FROM log WHERE race_id=? ORDER BY id",
+                         (race_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def by_round(log_rows):
+    """[(round_no, [lines])] in round order."""
+    grouped = {}
+    for lg in log_rows:
+        grouped.setdefault(lg["round_no"], []).append(lg["text"])
+    return [(r, grouped[r]) for r in sorted(grouped)]
+
+
+def fit_rounds(story, max_fields=24, max_chars=5200, field_chars=1000):
+    """Newest rounds first, to fit a Discord embed (25 fields, 6000 chars,
+    1024 per field). Returns ([(round_no, text)] in round order, how many of
+    the earliest rounds didn't fit)."""
+    out, total = [], 0
+    for r, lines in reversed(story):
+        text = "\n".join(lines)
+        if len(text) > field_chars:
+            text = text[:field_chars - 2] + " …"
+        if len(out) >= max_fields or total + len(text) > max_chars:
+            break
+        out.append((r, text))
+        total += len(text)
+    out.reverse()
+    return out, len(story) - len(out)
+
+
+def player_shots(race_id, user_id, db=None):
+    """Shots the player cast or was aimed at, in cast order."""
+    with _conn(db) as c:
+        rows = c.execute("SELECT round_no, shooter_id, target_id, kind, ts FROM shots"
+                         " WHERE race_id=? AND (shooter_id=? OR target_id=?) ORDER BY id",
+                         (race_id, str(user_id), str(user_id))).fetchall()
+    return [dict(r) for r in rows]
+
+
+CAST_VERB = {"shot": "🎯 fired at", "overload": "💥 overloaded at", "transfuse": "💉 transfused",
+             "nuke": "🧨 armed a NUKE"}
+
+
+def timeline(user_id, shot_rows, log_rows):
+    """Per-round story of one player: what they aimed at (their casts, in
+    order — intent, even when a shot later backfired or was wasted), then what
+    the log says happened to and around them (hits, shields popping, kills,
+    the AFK penalty, the storm, drops grabbed, items used). Returns
+    [(round_no, [lines])] in round order; rounds with nothing are skipped.
+    Shots aimed AT the player are deliberately not listed as casts — they were
+    secret at the time and the resolution line already says who hit them."""
+    uid = str(user_id)
+    by_round = {}
+    for sh in shot_rows:
+        if sh["shooter_id"] != uid:
+            continue
+        verb = CAST_VERB.get(sh["kind"], f"cast {sh['kind']} at")
+        line = verb if sh["kind"] == "nuke" else f"{verb} {m(sh['target_id'])}"
+        by_round.setdefault(sh["round_no"], []).append(line)
+    for lg in log_rows:
+        by_round.setdefault(lg["round_no"], []).append(lg["text"])
+    return [(r, by_round[r]) for r in sorted(by_round)]
 
 
 # ── engine (pure) ─────────────────────────────────────────────────────────────

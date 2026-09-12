@@ -420,6 +420,7 @@ class BanRace(commands.Cog):
         if ok:
             engine.update_player(race_id, uid, lives=p["lives"], patch=p["patch"], medkit=p["medkit"],
                                  skip_round=p.get("skip_round"))
+            engine.log(race_id, rn, f"{engine.m(uid)} used a **{engine.POWERUPS[kind][1]}** — {text}")
         return text
 
     # ── round loop ────────────────────────────────────────────────────────────
@@ -653,6 +654,8 @@ class BanRace(commands.Cog):
 
     # ── /race ─────────────────────────────────────────────────────────────────
 
+    # Open to everyone (Paul 9/12: "anyone can see anyone's rounds") — start and
+    # stop carry their own Manage Server check; status/breakdown are for players.
     race = app_commands.Group(name="race", description="Last to survive — the ban race (host controls)",
                               guild_only=True, default_permissions=discord.Permissions(manage_guild=True))
 
@@ -753,6 +756,71 @@ class BanRace(commands.Cog):
             return await interaction.response.send_message(
                 embed=lobby_embed(race, rows, interaction.guild.name), ephemeral=True)
         await interaction.response.send_message(embed=standings_embed(race, rows), ephemeral=True)
+
+    # Top-level and open to everyone (Paul 9/12: "last race stats or something,
+    # anyone can see anyone's rounds") — /race itself stays the host's group.
+    @app_commands.command(name="lastrace",
+                          description="Last to survive stats — the latest race round by round: every hit, miss, heal and drop.")
+    @app_commands.describe(player="Only this player's story (blank = the whole race)",
+                           round="Only this round (blank = every round)")
+    @app_commands.guild_only()
+    @app_commands.checks.cooldown(1, 5, key=lambda i: (i.guild_id, i.user.id))
+    async def lastrace(self, interaction: discord.Interaction, player: discord.Member = None,
+                       round: app_commands.Range[int, 1, 500] = None):
+        race = engine.active_race(interaction.guild.id) or engine.latest_race(interaction.guild.id)
+        if not race:
+            return await interaction.response.send_message("No race has been run here.", ephemeral=True)
+        s = race["settings"]
+        if player is not None:
+            p = engine.player(race["id"], player.id)
+            if not p:
+                return await interaction.response.send_message(
+                    f"**{player.display_name}** wasn't in race #{race['id']}.", ephemeral=True)
+            story = engine.timeline(player.id, engine.player_shots(race["id"], player.id),
+                                    engine.player_log(race["id"], player.id))
+            fate = (f"still in with **{p['lives']}** lives" if p["alive"] else
+                    f"out in round **{p['died_round']}**" + (" (banned)" if p["banned"] else ""))
+            title = f"🔎 {p['name']} — race #{race['id']} ({race['status']})"
+            desc = f"{fate} · **{p['kills']}** kills · started with {s['lives']} lives"
+            footer = "Casts are the player's own aim; everything else is what the round log says happened."
+        else:
+            story = engine.by_round(engine.race_log(race["id"]))
+            title = f"📜 Race #{race['id']} — the open chart ({race['status']})"
+            desc = (f"**{len(engine.players(race['id']))}** players · {race['round_no']} rounds · "
+                    f"every hit, miss, heal and drop. Add `player:` to follow one person.")
+            footer = "The round log, verbatim."
+        if round is not None:
+            story = [(r, lines) for r, lines in story if r == round]
+        e = discord.Embed(title=title, description=desc, color=COLOR)
+        shown, dropped = engine.fit_rounds(story)
+        if not shown:
+            e.add_field(name="Nothing recorded",
+                        value=("Nothing for " + (f"round {round}." if round else "this race yet.")), inline=False)
+        for r, text in shown:
+            e.add_field(name=f"Round {r}", value=text, inline=False)
+        if dropped:
+            footer = f"Earliest {dropped} round(s) don't fit — use round: to see one. " + footer
+        e.set_footer(text=footer)
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error):
+        """Say why a command was refused instead of letting it time out."""
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "That one's for the host — it needs **Manage Server**."
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            msg = f"Easy — try again in {error.retry_after:.0f}s."
+        elif isinstance(error, app_commands.CheckFailure):
+            msg = "You can't use that here."
+        else:
+            log.exception("ban_race command error", exc_info=error)
+            msg = "That didn't work. Try again in a moment."
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
     # ── /vote and /powerup ────────────────────────────────────────────────────
 
@@ -971,9 +1039,11 @@ class BanRace(commands.Cog):
             if d["kind"] == "nuke":
                 engine.cast(race["id"], race["round_no"], p["user_id"], p["user_id"], "nuke")
                 line = f"🧨 {p['name']} armed a **NUKE** — everyone else takes 1 when the round closes."
+                engine.log(race["id"], race["round_no"], f"🧨 {engine.m(p['user_id'])} armed a **NUKE**.")
             else:
                 line = engine.grant_super(p, d["kind"], st["shot_cap"], st["lives"])
                 engine.update_player(race["id"], p["user_id"], shots=p["shots"], lives=p["lives"])
+                engine.log(race["id"], race["round_no"], line)
             title, color = f"🌟 {emoji} {name} — taken", COLOR_SUPER
         else:
             emoji, name, _ = engine.POWERUPS[d["kind"]]
@@ -981,6 +1051,7 @@ class BanRace(commands.Cog):
             engine.update_player(race["id"], p["user_id"], shots=p["shots"], shield=p["shield"],
                                  overload=p["overload"], transfuse=p["transfuse"],
                                  patch=p.get("patch", 0), medkit=p.get("medkit", 0))
+            engine.log(race["id"], race["round_no"], line)     # grabs show in /race breakdown
             title, color = f"⚡ {emoji} {name} — taken", COLOR_DROP
         await interaction.response.send_message(f"{emoji} **{name}** is yours.", ephemeral=True)
         try:
