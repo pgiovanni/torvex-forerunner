@@ -910,6 +910,245 @@
    "dm_allowed": true
   },
   {
+   "path": "lastrace",
+   "description": "Last to survive stats — all-time leaderboard, or one race round by round.",
+   "params": [
+    {
+     "name": "player",
+     "type": "user",
+     "required": false,
+     "description": "One player: their all-time record, or their story in the race you pick"
+    },
+    {
+     "name": "round",
+     "type": "integer",
+     "required": false,
+     "description": "Only this round of a race (blank = every round)",
+     "min": 1,
+     "max": 500
+    },
+    {
+     "name": "race",
+     "type": "integer",
+     "required": false,
+     "description": "A race by its number — blank = all-time stats",
+     "min": 1,
+     "max": 1000000000
+    }
+   ],
+   "signature": "/lastrace [player] [round] [race]",
+   "root": "lastrace",
+   "cog": "ban_race",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "powerup",
+   "description": "Last to survive: your power-ups — or aim an Overload / Transfuse.",
+   "params": [
+    {
+     "name": "use",
+     "type": "string",
+     "required": false,
+     "description": "Which power-up to use (leave empty to see what you hold)",
+     "choices": [
+      "Overload — take 1 damage to deal 2 (needs a player)",
+      "Transfuse — give someone 1 life, lose 1 (needs a player)",
+      "Patch — heal yourself 1",
+      "Medkit — heal yourself 2, skip this round's vote",
+      "Revive — bring an eliminated player back with 1 life (needs a player)"
+     ]
+    },
+    {
+     "name": "player",
+     "type": "user",
+     "required": false,
+     "description": "Who it's aimed at"
+    }
+   ],
+   "signature": "/powerup [use] [player]",
+   "root": "powerup",
+   "cog": "ban_race",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": false
+  },
+  {
+   "path": "race channel",
+   "description": "Mods: set this server's race channel — where /race start opens lobbies.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": false,
+     "description": "The race channel (blank = show the current one)",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    },
+    {
+     "name": "clear",
+     "type": "boolean",
+     "required": false,
+     "description": "Forget the setting (then /race start needs a mod's channel:)"
+    }
+   ],
+   "signature": "/race channel [channel] [clear]",
+   "root": "race",
+   "cog": "ban_race",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "race edit",
+   "description": "Change an open lobby's settings before the race starts.",
+   "params": [
+    {
+     "name": "min_players",
+     "type": "integer",
+     "required": false,
+     "description": "Players needed before the race starts — it starts the moment the lobby holds this many",
+     "min": 3
+    },
+    {
+     "name": "sudden_death_at",
+     "type": "integer",
+     "required": false,
+     "description": "Alive count that starts sudden death (0 = back to auto, sized to the field)",
+     "min": 0,
+     "max": 50
+    },
+    {
+     "name": "round_minutes",
+     "type": "number",
+     "required": false,
+     "description": "Minutes per round for this race (sudden death runs half that)",
+     "min": 0.5,
+     "max": 30.0
+    }
+   ],
+   "signature": "/race edit [min_players] [sudden_death_at] [round_minutes]",
+   "root": "race",
+   "cog": "ban_race",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "race start",
+   "description": "Open a lobby in the server's race channel (set with /race channel).",
+   "params": [
+    {
+     "name": "lives",
+     "type": "integer",
+     "required": false,
+     "description": "Lives per player (blank = recommended for however many join)",
+     "min": 1,
+     "max": 50
+    },
+    {
+     "name": "round_minutes",
+     "type": "number",
+     "required": false,
+     "description": "Minutes per round (default 1.5; sudden death runs half that)",
+     "min": 0.5,
+     "max": 30.0
+    },
+    {
+     "name": "mode",
+     "type": "string",
+     "required": false,
+     "description": "ghost = no bans (default); real = actual bans, auto-unban at the end",
+     "choices": [
+      "ghost — no bans, eliminated players are just out (default)",
+      "real — actual bans, auto-unban when it ends"
+     ]
+    },
+    {
+     "name": "min_account_days",
+     "type": "integer",
+     "required": false,
+     "description": "Minimum account age to enter (default 7)",
+     "min": 0,
+     "max": 365
+    },
+    {
+     "name": "min_players",
+     "type": "integer",
+     "required": false,
+     "description": "Players needed before the race can start (default 3)",
+     "min": 3
+    },
+    {
+     "name": "sudden_death_at",
+     "type": "integer",
+     "required": false,
+     "description": "Alive count that starts sudden death (blank = sized to the field: ~¼, 2–5)",
+     "min": 2,
+     "max": 50
+    },
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": false,
+     "description": "Mods only: run this race somewhere other than the server's race channel",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    }
+   ],
+   "signature": "/race start [lives] [round_minutes] [mode] [min_account_days] [min_players] [sudden_death_at] [channel]",
+   "root": "race",
+   "cog": "ban_race",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "race status",
+   "description": "Standings for the race in progress.",
+   "params": [],
+   "signature": "/race status",
+   "root": "race",
+   "cog": "ban_race",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "race stop",
+   "description": "Stop the race (host or a mod). Unbans everyone it banned.",
+   "params": [],
+   "signature": "/race stop",
+   "root": "race",
+   "cog": "ban_race",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "vote",
+   "description": "Last to survive: fire this round's shot at a player.",
+   "params": [
+    {
+     "name": "player",
+     "type": "user",
+     "required": true,
+     "description": "Who you're going for"
+    }
+   ],
+   "signature": "/vote <player>",
+   "root": "vote",
+   "cog": "ban_race",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": false
+  },
+  {
    "path": "chess",
    "description": "Play chess — vs bot or challenge a player.",
    "params": [

@@ -628,6 +628,157 @@ class Store(unittest.TestCase):
             E.create_race(400, 4, 9, settings={"mode": "chaos"})
 
 
+
+
+class Tracking(unittest.TestCase):
+    """9/12: "a better way to track how power-ups are used, especially double
+    shots (shot 1 here and shot 2 here)" — numbered casts, results written
+    back, re-aims kept, the kit digest; plus the two frequency fixes and the
+    sudden-death scaler."""
+
+    def test_two_shots_in_a_round_are_named_in_the_results(self):
+        a, b, c = P(1, shots=2), P(2), P(3)
+        s1 = dict(S(1, 2), id=11, seq=1, extra=0)
+        s2 = dict(S(1, 3), id=12, seq=2, extra=1)
+        r = resolve([a, b, c], [s1, s2])
+        self.assertTrue(any("'s shot 1 hit" in ln for ln in r["lines"]), r["lines"])
+        self.assertTrue(any("'s shot 2 (extra) hit" in ln for ln in r["lines"]), r["lines"])
+        self.assertEqual(r["results"], {11: "hit", 12: "hit"})
+
+    def test_a_lone_shot_stays_unnumbered(self):
+        a, b = P(1), P(2)
+        r = resolve([a, b], [dict(S(1, 2), id=5, seq=1, extra=0)])
+        self.assertTrue(any("'s shot hit" in ln and "shot 1" not in ln for ln in r["lines"]))
+        self.assertEqual(r["results"], {5: "hit"})
+
+    def test_results_cover_kill_shield_backfire_and_waste(self):
+        a, b, c = P(1, shots=3), P(2, lives=1), P(3, shield=1)
+        r = resolve([a, b, c], [dict(S(1, 2), id=1, seq=1), dict(S(1, 3), id=2, seq=2, extra=1),
+                                dict(S(2, 1), id=3, seq=1)])
+        self.assertEqual(r["results"][1], "kill")
+        self.assertEqual(r["results"][2], "shielded")
+        self.assertEqual(r["results"][3], "hit")      # b fires before dying (simultaneous)
+        # already-dead target = wasted; backfire = backfire
+        d = P(4, alive=0, lives=0)
+        r2 = resolve([a, d], [dict(S(1, 4), id=9, seq=1)], round_no=2)
+        self.assertEqual(r2["results"][9], "wasted")
+        x, y = P(7), P(8)
+        r3 = resolve([x, y], [dict(S(7, 8), id=21, seq=1)], rng=AlwaysBackfire())
+        self.assertEqual(r3["results"][21], "backfire")
+        self.assertEqual(x["lives"], 2)
+
+    def test_rows_without_ids_or_seq_still_resolve(self):
+        a, b = P(1), P(2)
+        r = resolve([a, b], [S(1, 2)])
+        self.assertEqual(r["results"], {})
+        self.assertEqual(b["lives"], 2)
+
+    def test_cast_numbers_and_flags_extra_past_the_allowance(self):
+        r = E.create_race(9100, 3, 9, settings={"lives": 3, "mode": "ghost"})
+        rid = r["id"]
+        E.join(rid, 1, "one", 3); E.join(rid, 2, "two", 3); E.join(rid, 3, "three", 3)
+        E.update_race(rid, status="running", round_no=1)
+        i1 = E.cast(rid, 1, 1, 2)                       # allowance 1: shot 1
+        i2 = E.cast(rid, 1, 1, 3)                       # shot 2 = extra
+        t = E.cast(rid, 1, 1, 2, "transfuse")           # not a banked shot: unnumbered
+        self.assertEqual((i1["seq"], i1["extra"]), (1, 0))
+        self.assertEqual((i2["seq"], i2["extra"]), (2, 1))
+        self.assertEqual((t["seq"], t["extra"]), (None, 0))
+        # purge round: three are free, the fourth is extra
+        for k in range(3):
+            self.assertEqual(E.cast(rid, 2, 2, 1, allowance=3)["extra"], 0)
+        self.assertEqual(E.cast(rid, 2, 2, 1, allowance=3)["extra"], 1)
+        # overloads count in the numbering too
+        self.assertEqual(E.cast(rid, 3, 3, 1, "overload")["seq"], 1)
+        self.assertEqual(E.cast(rid, 3, 3, 2)["seq"], 2)
+        # results written back by id
+        E.mark_shots({i1["id"]: "hit", i2["id"]: "kill"})
+        rows = {sh["seq"]: sh for sh in E.shots(rid, 1) if sh["kind"] == "shot"}
+        self.assertEqual((rows[1]["result"], rows[2]["result"]), ("hit", "kill"))
+        E.mark_shots({})                                  # no-op
+        E.update_race(rid, status="aborted")
+
+    def test_retarget_keeps_the_original_aim(self):
+        r = E.create_race(9101, 3, 9, settings={"lives": 3, "mode": "ghost"})
+        rid = r["id"]
+        E.join(rid, 1, "one", 3); E.join(rid, 2, "two", 3); E.join(rid, 3, "three", 3)
+        E.update_race(rid, status="running", round_no=1)
+        E.cast(rid, 1, 1, 2)
+        mv = E.retarget(rid, 1, 1, 3)
+        self.assertEqual(mv, {"seq": 1, "kind": "shot", "was": "2", "prev_target_id": "2"})
+        mv2 = E.retarget(rid, 1, 1, 2)                   # back again: original aim still 2
+        self.assertEqual((mv2["was"], mv2["prev_target_id"]), ("3", "2"))
+        self.assertIsNone(E.retarget(rid, 1, 2, 1))     # nothing cast
+        sh = E.shots(rid, 1)[0]
+        self.assertEqual((sh["target_id"], sh["prev_target_id"]), ("2", "2"))
+        # change a SPECIFIC shot by number (the "Change shot N" buttons), overloads too
+        E.cast(rid, 1, 1, 3, "overload")                 # shot 2 = the overload
+        E.cast(rid, 1, 1, 3)                             # shot 3
+        self.assertEqual([f["seq"] for f in E.fired_shots(rid, 1, 1)], [1, 2, 3])
+        mv3 = E.retarget(rid, 1, 1, 2, seq=2)
+        self.assertEqual((mv3["seq"], mv3["kind"], mv3["was"]), (2, "overload", "3"))
+        self.assertIsNone(E.retarget(rid, 1, 1, 2, seq=9))
+        by_seq = {f["seq"]: f for f in E.fired_shots(rid, 1, 1)}
+        self.assertEqual((by_seq[2]["target_id"], by_seq[2]["prev_target_id"]), ("2", "3"))
+        self.assertEqual(by_seq[3]["target_id"], "3")   # untouched
+        E.update_race(rid, status="aborted")
+
+    def test_timeline_numbers_double_shots_and_shows_outcomes(self):
+        r = E.create_race(9102, 3, 9, settings={"lives": 3, "mode": "ghost"})
+        rid = r["id"]
+        E.join(rid, 1, "one", 3); E.join(rid, 2, "two", 3); E.join(rid, 3, "three", 3)
+        E.update_race(rid, status="running", round_no=1)
+        i1 = E.cast(rid, 1, 1, 2)
+        i2 = E.cast(rid, 1, 1, 3)
+        E.retarget(rid, 1, 1, 2)                        # shot 2 re-aimed 3 → 2
+        E.mark_shots({i1["id"]: "hit", i2["id"]: "kill"})
+        E.cast(rid, 2, 1, 3)                            # a lone shot next round
+        story = dict(E.timeline(1, E.player_shots(rid, 1), E.player_log(rid, 1)))
+        r1 = story[1]
+        self.assertEqual(r1[0], f"🎯 **Shot 1** — fired at {E.m(2)} → hit")
+        self.assertEqual(r1[1], f"🎯 **Shot 2 (extra)** — fired at {E.m(2)} (re-aimed from {E.m(3)}) → **KILL**")
+        self.assertEqual(story[2][0], f"🎯 fired at {E.m(3)}")
+        E.update_race(rid, status="aborted")
+
+    def test_powerup_digest_counts_grabs_and_uses(self):
+        r = E.create_race(9103, 3, 9, settings={"lives": 3, "mode": "ghost"})
+        rid = r["id"]
+        E.join(rid, 1, "one", 3); E.join(rid, 2, "two", 3)
+        E.update_race(rid, status="running", round_no=1)
+        E.log(rid, 1, f"🛡️ {E.m(1)} grabbed a **shield**.", kind="grab", user_id=1)
+        E.log(rid, 1, f"🔫 {E.m(1)} grabbed an **extra shot**.", kind="grab", user_id=1)
+        E.log(rid, 1, f"🛡️ {E.m(1)} grabbed a **shield**.", kind="grab", user_id=1)
+        E.log(rid, 2, f"{E.m(1)} used a **Patch** — 🩹 Patched up — **3** lives.", kind="use", user_id=1)
+        E.log(rid, 2, f"🛡️ {E.m(1)}'s **shield** ate {E.m(2)}'s shot.", kind="resolve")
+        E.cast(rid, 1, 1, 2)
+        E.cast(rid, 1, 1, 2)                            # the extra one
+        E.cast(rid, 2, 1, 2, "overload")
+        d = E.powerup_digest(rid, 1)
+        self.assertEqual(d["grabbed"], {"shield": 2, "extra shot": 1})
+        self.assertEqual(d["used"], {"Patch": 1, "Overload": 1, "Extra shot": 1, "Shield": 1})
+        line = E.digest_line(d)
+        self.assertTrue(line.startswith("🎒 grabbed 3 (shield ×2, extra shot) · used 4 ("), line)
+        self.assertEqual(E.digest_line(E.powerup_digest(rid, 2)), "")
+        # old, untagged rows (pre-9/12) still reach the player's story via the mention
+        E.log(rid, 3, f"😴 {E.m(2)} didn't vote — loses a life. **2** left.")
+        self.assertTrue(any("didn't vote" in ln for _, ls in E.timeline(2, [], E.player_log(rid, 2)) for ln in ls))
+        E.update_race(rid, status="aborted")
+
+    def test_extra_shot_drops_rarer_than_the_other_rares(self):
+        self.assertLess(E.DROP_WEIGHTS["shot"], E.DROP_WEIGHTS["shield"])
+        self.assertEqual(E.DROP_WEIGHTS["shield"], E.DROP_WEIGHTS["patch"])
+        import collections
+        rng = random.Random(3)
+        n = collections.Counter(E.roll_drop(rng) for _ in range(8000))
+        self.assertLess(n["shot"], 0.7 * n["shield"])
+
+    def test_sudden_death_scales_with_the_field(self):
+        # 9/12: a fixed 5 meant a 6-player race hit sudden death in round 2
+        self.assertEqual([E.recommended_sudden_death(n) for n in (3, 6, 8, 9, 12, 15, 16, 20, 40)],
+                         [2, 2, 2, 3, 3, 4, 4, 5, 5])
+        self.assertEqual(E.recommended_sudden_death(0), 2)
+
+
 class Expiry(unittest.TestCase):
     """9/13 (Paul): "powerups should not carry between rounds"."""
 

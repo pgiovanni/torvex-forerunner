@@ -896,7 +896,7 @@ class BanRace(commands.Cog):
     @app_commands.choices(mode=MODE_CHOICES)
     async def race_start(self, interaction: discord.Interaction,
                          lives: app_commands.Range[int, 1, 50] = None,
-                         round_minutes: app_commands.Range[float, 0.5, 30] = 1.5,
+                         round_minutes: app_commands.Range[float, 0.5, 30.0] = 1.5,
                          mode: app_commands.Choice[str] = None,
                          min_account_days: app_commands.Range[int, 0, 365] = 7,
                          min_players: app_commands.Range[int, 3, None] = 3,     # no cap on players (Paul 9/12)
@@ -1005,7 +1005,7 @@ class BanRace(commands.Cog):
     async def race_edit(self, interaction: discord.Interaction,
                         min_players: app_commands.Range[int, 3, None] = None,
                         sudden_death_at: app_commands.Range[int, 0, 50] = None,
-                        round_minutes: app_commands.Range[float, 0.5, 30] = None):
+                        round_minutes: app_commands.Range[float, 0.5, 30.0] = None):
         guild = interaction.guild
         race = engine.active_race(guild.id)
         if not race:
