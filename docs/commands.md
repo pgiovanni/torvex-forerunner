@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **232 commands** (100 top-level, the rest subcommands) across 42 cogs
+- **224 commands** (96 top-level, the rest subcommands) across 41 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -31,7 +31,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Members & invites** — `/activity`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/invite`, `/levelroles`, `/mentions`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/stats-status`, `/store`, `/tracked-invite`
 
-**Games & fun** — `/8ball`, `/challenge`, `/chess`, `/connect4_bot`, `/connect4`, `/gear`, `/gift`, `/lastrace`, `/link`, `/market`, `/peepo`, `/powerup`, `/race`, `/roast`, `/rpg`, `/tictactoe_bot`, `/tictactoe`, `/trade`, `/unlink`, `/vote`, `/wordle`
+**Games & fun** — `/8ball`, `/challenge`, `/chess`, `/connect4_bot`, `/connect4`, `/gear`, `/gift`, `/link`, `/market`, `/peepo`, `/roast`, `/rpg`, `/tictactoe_bot`, `/tictactoe`, `/trade`, `/unlink`, `/wordle`
 
 **AI** — `/ai-config`, `/ai-credit-grant`, `/ai-privacy`, `/ai-status`, `/ai-usage`, `/ask`
 
@@ -2443,129 +2443,6 @@ Play Tic Tac Toe against the bot.
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `difficulty` | string | Yes | How hard should the bot play? *(one of: `Easy`, `Medium`, `Hard`)* |
-
-### Last to survive (ban race)
-
-<sub>`cogs/ban_race.py`</sub>
-
-#### `/lastrace`
-
-Last to survive stats — all-time leaderboard, or one race round by round.
-
-```
-/lastrace [player] [round] [race]
-```
-
-**Access:** Everyone &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `player` | user | No | One player: their all-time record, or their story in the race you pick |
-| `round` | integer | No | Only this round of a race (blank = every round) *(range 1–500)* |
-| `race` | integer | No | A race by its number — blank = all-time stats *(range 1–1000000000)* |
-
-#### `/powerup`
-
-Last to survive: your power-ups — or aim an Overload / Transfuse.
-
-```
-/powerup [use] [player]
-```
-
-**Access:** Everyone &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `use` | string | No | Which power-up to use (leave empty to see what you hold) *(one of: `Overload — take 1 damage to deal 2 (needs a player)`, `Transfuse — give someone 1 life, lose 1 (needs a player)`, `Patch — heal yourself 1`, `Medkit — heal yourself 2, skip this round's vote`)* |
-| `player` | user | No | Who it's aimed at |
-
-#### `/race channel`
-
-Mods: set this server's race channel — where /race start opens lobbies.
-
-```
-/race channel [channel] [clear]
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `channel` | channel | No | The race channel (blank = show the current one) *(channel types: text, announcement)* |
-| `clear` | boolean | No | Forget the setting (then /race start needs a mod's channel:) |
-
-#### `/race edit`
-
-Change an open lobby's settings before the race starts.
-
-```
-/race edit [min_players] [sudden_death_at]
-```
-
-**Access:** Everyone &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `min_players` | integer | No | Players needed before the race starts — it starts the moment the lobby holds this many *(range 3–?)* |
-| `sudden_death_at` | integer | No | Alive count that starts sudden death (0 = back to auto, sized to the field) *(range 0–50)* |
-
-#### `/race start`
-
-Open a lobby in the server's race channel (set with /race channel).
-
-```
-/race start [lives] [round_minutes] [mode] [min_account_days] [min_players] [sudden_death_at] [channel]
-```
-
-**Access:** Everyone &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `lives` | integer | No | Lives per player (blank = recommended for however many join) *(range 1–50)* |
-| `round_minutes` | integer | No | Minutes per round (default 3) *(range 1–30)* |
-| `mode` | string | No | ghost = no bans (default); real = actual bans, auto-unban at the end *(one of: `ghost — no bans, eliminated players are just out (default)`, `real — actual bans, auto-unban when it ends`)* |
-| `min_account_days` | integer | No | Minimum account age to enter (default 7) *(range 0–365)* |
-| `min_players` | integer | No | Players needed before the race can start (default 3) *(range 3–?)* |
-| `sudden_death_at` | integer | No | Alive count that starts sudden death (blank = sized to the field: ~¼, 2–5) *(range 2–50)* |
-| `channel` | channel | No | Mods only: run this race somewhere other than the server's race channel *(channel types: text, announcement)* |
-
-#### `/race status`
-
-Standings for the race in progress.
-
-```
-/race status
-```
-
-**Access:** Everyone &nbsp;·&nbsp; Server only
-
-*No parameters.*
-
-#### `/race stop`
-
-Stop the race (host or a mod). Unbans everyone it banned.
-
-```
-/race stop
-```
-
-**Access:** Everyone &nbsp;·&nbsp; Server only
-
-*No parameters.*
-
-#### `/vote`
-
-Last to survive: fire this round's shot at a player.
-
-```
-/vote <player>
-```
-
-**Access:** Everyone &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `player` | user | Yes | Who you're going for |
 
 ### RPG
 
