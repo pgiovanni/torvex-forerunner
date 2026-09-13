@@ -74,10 +74,11 @@ class Guild:
 
 
 class Msg:
-    def __init__(self, guild, author, mentions=0, role_mentions=0, everyone=False, channel_id=42):
+    def __init__(self, guild, author, mentions=0, role_mentions=0, everyone=False, channel_id=42, content=""):
         self.guild = guild; self.author = author; self.webhook_id = None
         self.mentions = [None] * mentions; self.role_mentions = [None] * role_mentions
         self.mention_everyone = everyone
+        self.content = content
         self.channel = types.SimpleNamespace(id=channel_id)
 
 
@@ -137,6 +138,21 @@ async def s_everyone_spam():
     for _ in range(4):  # EVERYONE_RATE (4, 20)
         await cog.on_message(Msg(g, user, everyone=True))
     return user.timeout.called
+
+async def s_everyone_text_spam():
+    # 9/13 raid shape: no Mention Everyone permission, so mention_everyone is
+    # False, but the text "@everyone" is pasted into channel after channel.
+    user = Member(114); cog, g = fresh(); g.add(user)
+    for cid in (1, 2, 3, 4):
+        await cog.on_message(Msg(g, user, everyone=False, channel_id=cid,
+                                 content="DM FOR NEW 2026 LEGIT ... @everyone"))
+    return user.timeout.called
+
+async def s_everyone_text_once_is_fine():
+    user = Member(115); cog, g = fresh(); g.add(user)
+    await cog.on_message(Msg(g, user, everyone=False, content="lol @everyone wake up"))
+    await cog.on_message(Msg(g, user, everyone=False, content="someone@everyone.com is an email"))
+    return not user.timeout.called
 
 async def s_flood():
     user = Member(105); cog, g = fresh(); g.add(user)
@@ -285,6 +301,8 @@ SCENARIOS = [
     ("whitelist exempt -> no action", s_whitelist_exempt),
     ("mention-bomb (15) -> timeout", s_mention_bomb),
     ("@everyone spam (4/20s) -> timeout", s_everyone_spam),
+    ("@everyone TYPED w/o ping perm, 4 channels -> timeout", s_everyone_text_spam),
+    ("@everyone typed once + email-ish -> no action", s_everyone_text_once_is_fine),
     ("message flood (12/7s) -> timeout", s_flood),
     ("legit 1 announcement -> no action", s_legit_announcement),
     ("legit 5 pings -> no action", s_legit_few_pings),
