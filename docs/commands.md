@@ -2476,7 +2476,7 @@ Last to survive: your power-ups — or aim an Overload / Transfuse.
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `use` | string | No | Which power-up to use (leave empty to see what you hold) *(one of: `Overload — take 1 damage to deal 2 (needs a player)`, `Transfuse — give someone 1 life, lose 1 (needs a player)`, `Patch — heal yourself 1`, `Medkit — heal yourself 2, skip this round's vote`, `Revive — bring an eliminated player back with 1 life (needs a player)`)* |
+| `use` | string | No | Which power-up to use (leave empty to see what you hold) *(one of: `Overload — take 1 damage to deal 2 (needs a player)`, `Transfuse — give someone 1 life, lose 1 (needs a player)`, `Patch — heal yourself 1`, `Medkit — heal yourself 2, skip this round's vote`, `Small revive — bring someone back with 1 life (needs a player)`, `Medium revive — bring someone back with 2 lives (needs a player)`, `Full revive — bring someone back at full lives (needs a player)`, `Extra revive — bring someone back one life ABOVE max (needs a player)`)* |
 | `player` | user | No | Who it's aimed at |
 
 #### `/race channel`

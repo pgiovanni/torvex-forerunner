@@ -32,7 +32,8 @@ from utils import ban_race as E  # noqa: E402
 def P(uid, lives=3, **kw):
     d = dict(user_id=str(uid), name=f"p{uid}", lives=lives, shots=1, shield=0, overload=0,
              transfuse=0, kills=0, bounty=0, alive=1, died_round=None, banned=0,
-             patch=0, medkit=0, skip_round=None, revive=0, revived=0)
+             patch=0, medkit=0, skip_round=None, revived=0,
+             revive_small=0, revive_medium=0, revive_full=0, revive_extra=0)
     d.update(kw)
     return d
 
@@ -275,8 +276,11 @@ class Drops(unittest.TestCase):
         self.assertEqual(set(E.DROP_WEIGHTS), set(E.POWERUPS))
         common = [k for k, t in E.POWERUP_TIER.items() if t == "common"]
         rare = [k for k, t in E.POWERUP_TIER.items() if t == "rare"]
-        self.assertEqual(sorted(common), ["medkit", "overload", "transfuse"])
-        self.assertEqual(sorted(rare), ["patch", "revive", "shield", "shot"])
+        self.assertEqual(sorted(common), ["medkit", "overload", "revive_small", "transfuse"])
+        self.assertEqual(sorted(rare), ["patch", "revive_medium", "shield", "shot"])
+        # the two big revives are supers; the extra one is golden-apple rare
+        self.assertEqual(E.SUPER_WEIGHTS["revive_full"], 3)
+        self.assertEqual(E.SUPER_WEIGHTS["revive_extra"], 1)
         self.assertGreater(min(E.DROP_WEIGHTS[k] for k in common), max(E.DROP_WEIGHTS[k] for k in rare))
         self.assertGreater(E.DROP_WEIGHTS["overload"], E.DROP_WEIGHTS["shot"])
         self.assertEqual(E.tier_of("overload"), ("⚪", "Common"))
@@ -316,11 +320,13 @@ class Drops(unittest.TestCase):
 
     def test_golden_apple_is_the_rarest_super(self):
         self.assertIn("goldapple", E.SUPER)
-        self.assertEqual(min(E.SUPER_WEIGHTS, key=E.SUPER_WEIGHTS.get), "goldapple")
+        low = min(E.SUPER_WEIGHTS.values())
+        rarest = sorted(k for k, w in E.SUPER_WEIGHTS.items() if w == low)
+        self.assertEqual(rarest, ["goldapple", "revive_extra"])      # 9/13: the extra revive is as rare
         self.assertEqual(set(E.SUPER_WEIGHTS), set(E.SUPER))
         rng = random.Random(11)
         n = sum(E.roll_drop(rng, E.SUPER_WEIGHTS) == "goldapple" for _ in range(5000))
-        self.assertTrue(350 < n < 650, n)                # ≈ 1 in 10
+        self.assertTrue(250 < n < 480, n)                # ≈ 1 in 14 of supers
         # only ever offered in sudden death (supers are), never in a regular drop
         sched = E.drop_schedule(random.Random(1), 180, 10, 0.5, sudden=False)
         self.assertFalse(any(k == "goldapple" for _, k, _ in sched))
@@ -780,69 +786,75 @@ class Tracking(unittest.TestCase):
 
 
 class Expiry(unittest.TestCase):
-    """9/13 (Paul): "powerups should not carry between rounds"."""
+    """9/13 (Paul, final): power-ups stay until the RACE ends. The optional
+    use-it-or-lose-it mode still works when asked for."""
 
-    def test_unused_items_expire_at_close_but_a_kill_shield_survives(self):
-        a, b = P(1, shield=1, overload=1, patch=1, medkit=1, transfuse=1, revive=1), P(2, lives=1)
-        r = resolve([a, b], [S(1, 2), S(2, 1)])              # b votes, so the kill pays
-        self.assertFalse(b["alive"])
-        self.assertEqual((a["overload"], a["patch"], a["medkit"], a["transfuse"], a["revive"]), (0, 0, 0, 0, 0))
-        self.assertEqual(a["shield"], 1)                    # the kill paid it AFTER expiry
+    def test_unused_items_stay_by_default(self):
+        a, b = P(1, shield=1, overload=1, patch=1, medkit=1, transfuse=1, revive_small=1), P(2)
+        r = resolve([a, b], [S(2, 1)])                       # b shoots a: the shield pops, the rest stays
+        self.assertEqual((a["shield"], a["overload"], a["patch"], a["medkit"], a["transfuse"], a["revive_small"]),
+                         (0, 1, 1, 1, 1, 1))
+        self.assertFalse(any("expired" in ln for ln in r["lines"]))
+
+    def test_optional_expiry_mode_clears_unused_items_but_a_kill_shield_survives(self):
+        a, b = P(1, overload=1, patch=1, medkit=1, transfuse=1, revive_medium=1), P(2, lives=1)
+        r = resolve([a, b], [S(1, 2), S(2, 1)], expire_items=True)   # b votes, so the kill pays
+        self.assertEqual((a["overload"], a["patch"], a["medkit"], a["transfuse"], a["revive_medium"]), (0, 0, 0, 0, 0))
+        self.assertEqual(a["shield"], 1)
         self.assertTrue(any("expired" in ln for ln in r["lines"]))
-
-    def test_a_shield_grabbed_this_round_still_eats_a_shot(self):
-        a, b = P(1), P(2, shield=1)
-        resolve([a, b], [S(1, 2), S(2, 1)])
-        self.assertEqual(b["lives"], 3)                     # ate the shot, then expired
-        self.assertEqual(b["shield"], 0)
-
-    def test_expiry_can_be_switched_off(self):
-        a, b = P(1, patch=1), P(2)
-        resolve([a, b], [S(1, 2), S(2, 1)], expire_items=False)
-        self.assertEqual(a["patch"], 1)
 
 
 class Revive(unittest.TestCase):
     """9/13 (Paul): "add a revive item"."""
 
     def test_revive_brings_a_dead_player_back_with_one_life_after_everything_else(self):
-        a, b, c = P(1, revive=1, shots=1), P(2, alive=0, lives=0, died_round=1), P(3)
-        r = resolve([a, b, c], [S(1, 3), S(3, 1), S(1, 2, "revive")], round_no=2, storm=True, msgs={})
+        a, b, c = P(1, revive_small=1, shots=1), P(2, alive=0, lives=0, died_round=1), P(3)
+        r = resolve([a, b, c], [S(1, 3), S(3, 1), S(1, 2, "revive_small")], round_no=2, storm=True, msgs={})
         self.assertTrue(b["alive"])
         self.assertEqual((b["lives"], b["revived"], b["shots"]), (1, 1, 0))
         self.assertNotIn("2", r["dead"])
         self.assertEqual(r["revived"], ["2"])
         self.assertEqual(r["winners"], [])
-        self.assertTrue(any("revived" in ln for ln in r["lines"]))
+        self.assertTrue(any("is back" in ln for ln in r["lines"]))
+
+    def test_each_revive_tier_brings_back_the_right_lives(self):
+        for kind, want in (("revive_small", 1), ("revive_medium", 2), ("revive_full", 3), ("revive_extra", 4)):
+            a, b, c = P(1, **{kind: 1}), P(2, alive=0, lives=0, died_round=1), P(3)
+            resolve([a, b, c], [S(1, 3), S(3, 1), S(1, 2, kind)])
+            self.assertEqual((b["alive"], b["lives"]), (1, want), kind)
+        self.assertEqual(E.revive_lives("revive_medium", 1), 1)   # never above a 1-life race's max on medium
 
     def test_nobody_returns_twice(self):
-        a, b, c = P(1, revive=1), P(2, alive=0, lives=0, revived=1), P(3)
-        r = resolve([a, b, c], [S(1, 3), S(3, 1), S(1, 2, "revive")])
+        a, b, c = P(1, revive_full=1), P(2, alive=0, lives=0, revived=1), P(3)
+        r = resolve([a, b, c], [S(1, 3), S(3, 1), S(1, 2, "revive_full")])
         self.assertFalse(b["alive"])
         self.assertEqual(r["revived"], [])
         self.assertTrue(any("fizzled" in ln for ln in r["lines"]))
 
     def test_dying_and_being_revived_in_the_same_round_means_no_ban(self):
-        a, b, c = P(1, revive=1), P(2, revive=1), P(3, lives=1)
-        r = resolve([a, b, c], [S(1, 3), S(3, 1), S(2, 3, "revive")])
+        a, b, c = P(1, revive_small=1), P(2, revive_small=1), P(3, lives=1)
+        r = resolve([a, b, c], [S(1, 3), S(3, 1), S(2, 3, "revive_small")])
         self.assertTrue(c["alive"])
         self.assertEqual(c["lives"], 1)
         self.assertNotIn("3", r["dead"])
         self.assertEqual(r["killers"].get("3"), "1")       # the kill still counts for a
 
     def test_cast_rules(self):
-        a, dead, alive_, twice = P(1, revive=1), P(2, alive=0, lives=0), P(3), P(4, alive=0, revived=1)
-        self.assertIsNone(E.cast_error(a, dead, "revive"))
-        self.assertIn("still in", E.cast_error(a, alive_, "revive"))
-        self.assertIn("twice", E.cast_error(a, twice, "revive"))
-        self.assertIn("alive", E.cast_error(a, a, "revive"))
-        a["revive"] = 0
-        self.assertIn("don't hold", E.cast_error(a, dead, "revive"))
+        a, dead, alive_, twice = P(1, revive_small=1), P(2, alive=0, lives=0), P(3), P(4, alive=0, revived=1)
+        self.assertIsNone(E.cast_error(a, dead, "revive_small"))
+        self.assertIn("still in", E.cast_error(a, alive_, "revive_small"))
+        self.assertIn("twice", E.cast_error(a, twice, "revive_small"))
+        self.assertIn("alive", E.cast_error(a, a, "revive_small"))
+        a["revive_small"] = 0
+        self.assertIn("don't hold", E.cast_error(a, dead, "revive_small"))
         p = P(5)
-        E.grant(p, "revive", shot_cap=3)
-        self.assertEqual(p["revive"], 1)
-        E.spend(p, "revive")
-        self.assertEqual(p["revive"], 0)
+        E.grant(p, "revive_medium", shot_cap=3)
+        self.assertEqual(p["revive_medium"], 1)
+        E.spend(p, "revive_medium")
+        self.assertEqual(p["revive_medium"], 0)
+        E.grant_super(p, "revive_extra", 3, 3)            # super revives go to the kit, not instant
+        self.assertEqual(p["revive_extra"], 1)
+        self.assertEqual(p["lives"], 3)
 
 
 if __name__ == "__main__":
