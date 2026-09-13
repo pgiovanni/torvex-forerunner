@@ -12,6 +12,10 @@ Deliberately GENEROUS so normal use passes: ONE announcement (@everyone) is
 fine, tagging 5-10 people in a message is fine, normal chatting is fine. Only
 sustained/extreme behavior trips.
 
+The @everyone rule counts the TEXT "@everyone" / "@here", not just pings that
+fired: a spammer without Mention Everyone still types it into every channel
+(9/13 CSAM-advert raid — 14 inert "@everyone"s in 77 s, rule never counted one).
+
 Per-guild + opt-in: runs only where `antinuke` is enabled in security_config.
 Each guild has its own enforce/shadow mode, whitelist, quarantine role, modlog
 channel and timeout — read per event from security_config (no module globals).
@@ -28,6 +32,7 @@ import sys
 import time
 import datetime
 import logging
+import re
 from collections import defaultdict, deque
 
 import discord
@@ -73,8 +78,20 @@ VECTOR_LABELS = {
 # chat abuse: GENEROUS thresholds so announcements / normal pings pass clean.
 MENTION_BOMB = 15        # >= this many mentions in ONE message = instant flag
 MENTION_RATE = (25, 10)  # >= 25 mentions across messages in 10s
-EVERYONE_RATE = (4, 20)  # >= 4 @everyone/@here that actually pinged in 20s
+EVERYONE_RATE = (4, 20)  # >= 4 @everyone/@here (pinged OR typed) in 20s
 FLOOD_RATE = (12, 7)     # >= 12 messages in 7s
+
+# literal "@everyone" / "@here" in message text — matches whether or not the
+# author had Mention Everyone (message.mention_everyone is False when it didn't
+# actually ping, which is exactly the no-permission spammer case).
+_EVERYONE_RX = re.compile(r"@(everyone|here)\b")
+
+
+def everyone_mentioned(message) -> bool:
+    """True if the message pinged @everyone/@here OR merely contains the text."""
+    if getattr(message, "mention_everyone", False):
+        return True
+    return bool(_EVERYONE_RX.search(getattr(message, "content", "") or ""))
 
 _AUDIT = {
     "channel_delete": discord.AuditLogAction.channel_delete,
@@ -569,15 +586,17 @@ class AntiNuke(commands.Cog):
                                         f"ping spam: {sum(c for _,c in dq)} mentions in {MENTION_RATE[1]}s", cfg)
             return
 
-        # 3) @everyone / @here spam (only counts pings that actually fired)
-        if message.mention_everyone:
+        # 3) @everyone / @here spam — pinged OR just typed (a member without
+        #    Mention Everyone still pastes "@everyone" into every channel).
+        if everyone_mentioned(message):
             eq = self.everyone[(gid, uid)]
             eq.append(now)
             while eq and now - eq[0] > EVERYONE_RATE[1]:
                 eq.popleft()
             if len(eq) >= EVERYONE_RATE[0] and not self._debounced(gid, uid, "everyone", EVERYONE_RATE[1]):
+                how = "pinged" if message.mention_everyone else "typed, no ping permission"
                 await self._respond_timeout(message.guild, message.author,
-                                            f"@everyone spam: {len(eq)} in {EVERYONE_RATE[1]}s", cfg)
+                                            f"@everyone spam: {len(eq)} in {EVERYONE_RATE[1]}s ({how})", cfg)
                 return
 
         # 4) message flood — per channel; spam channels exempt, per-channel and
@@ -897,7 +916,7 @@ class AntiNuke(commands.Cog):
         spam_txt = ", ".join(f"<#{c}>" for c in spam) if spam else "none"
         chat = (f"• mention-bomb: {MENTION_BOMB}+ in one msg → timeout\n"
                 f"• ping spam: {MENTION_RATE[0]} mentions / {MENTION_RATE[1]}s → timeout\n"
-                f"• @everyone spam: {EVERYONE_RATE[0]} / {EVERYONE_RATE[1]}s → timeout\n"
+                f"• @everyone spam: {EVERYONE_RATE[0]} / {EVERYONE_RATE[1]}s → timeout (pinged or just typed)\n"
                 f"{flood}\n-# one announcement / tagging a few people is FINE")
         wl = ", ".join(f"`{w}`" for w in (cfg.get("whitelist") or [])) or "(owner + bot only)"
         lock = "✅ ON — only owner + this bot may grant admin" if cfg.get("antinuke_admin_lockdown", 1) else "⚠️ OFF"
