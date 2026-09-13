@@ -67,7 +67,16 @@ USE_CHOICES = [
     app_commands.Choice(name="Transfuse — give someone 1 life, lose 1 (needs a player)", value="transfuse"),
     app_commands.Choice(name="Patch — heal yourself 1", value="patch"),
     app_commands.Choice(name="Medkit — heal yourself 2, skip this round's vote", value="medkit"),
+    app_commands.Choice(name="Revive — bring an eliminated player back with 1 life (needs a player)", value="revive"),
 ]
+
+
+def _fmt_round(secs):
+    """'1.5 min', '3 min', '45 s' — whatever reads cleanly."""
+    secs = int(secs or 0)
+    if secs < 60:
+        return f"{secs} s"
+    return f"{secs / 60:g} min"
 
 PITCH = ("You've got **{lives} lives**. There are **power-ups**. Pick who you're going for "
          "and shoot. See you after the round ends.")
@@ -134,11 +143,20 @@ class _TargetSelect(discord.ui.View):
     def __init__(self, cog, race_id, kind, me, rows, label=None, seq=None):
         super().__init__(timeout=120)
         self.cog, self.race_id, self.kind, self.seq = cog, race_id, kind, seq
-        opts = [discord.SelectOption(label=p["name"][:100], value=p["user_id"],
-                                     description=f"{p['lives']} lives · {p['kills']} kills")
-                for p in engine.alive(rows) if p["user_id"] != str(me)][:25]
+        if kind == "revive":
+            pool = [p for p in rows if not p["alive"] and not p.get("revived")]
+            opts = [discord.SelectOption(label=p["name"][:100], value=p["user_id"],
+                                         description=f"out since round {p.get('died_round') or '?'}")
+                    for p in pool][:25]
+        else:
+            opts = [discord.SelectOption(label=p["name"][:100], value=p["user_id"],
+                                         description=f"{p['lives']} lives · {p['kills']} kills")
+                    for p in engine.alive(rows) if p["user_id"] != str(me)][:25]
+        if not opts:
+            opts = [discord.SelectOption(label="(nobody to pick)", value="0")]
         label = label or {"shot": "Who are you going for?", "overload": "Overload — who takes 2?",
-                          "transfuse": "Transfuse — who gets your life?"}[kind]
+                          "transfuse": "Transfuse — who gets your life?",
+                          "revive": "Revive — who comes back?"}[kind]
         sel = discord.ui.Select(placeholder=label, options=opts, min_values=1, max_values=1)
         sel.callback = self._pick
         self.add_item(sel)
@@ -195,6 +213,11 @@ class _PowerupView(discord.ui.View):
             b = discord.ui.Button(label=f"Use Transfuse ×{p['transfuse']}", emoji="💉",
                                   style=discord.ButtonStyle.primary)
             b.callback = self._mk("transfuse")
+            self.add_item(b)
+        if p.get("revive", 0) > 0:
+            b = discord.ui.Button(label=f"Use Revive ×{p['revive']}", emoji="💫",
+                                  style=discord.ButtonStyle.success)
+            b.callback = self._mk("revive")
             self.add_item(b)
         for kind in engine.SELF_USE:
             if p.get(kind, 0) > 0:
@@ -273,7 +296,8 @@ def lobby_embed(race, rows, guild_name):
     s = race["settings"]
     e = discord.Embed(title="🔫 LAST TO SURVIVE", color=COLOR,
                       description=PITCH.format(lives=s["lives"]))
-    how = (f"• Rounds last **{s['round_secs'] // 60} min**; shots are secret and all land at once.\n"
+    how = (f"• Rounds last **{_fmt_round(s['round_secs'])}**; shots are secret and all land at once.\n"
+           f"• One shot per round — it doesn't stack. Power-ups you don't use are gone when the round closes.\n"
            f"• Zero lives = {'**actually banned**' if s['mode'] == 'real' else 'out'}. "
            f"{'Everyone is unbanned the moment it ends, and you get the invite by DM first.' if s['mode'] == 'real' else ''}\n"
            f"• Don't vote in a round and you lose a life. AFK is not a strategy.\n"
@@ -517,7 +541,7 @@ class BanRace(commands.Cog):
             return "You're out of shots this round and have nothing to re-aim. Grab a drop."
         engine.spend(p, kind)
         engine.update_player(race_id, shooter_id, shots=p["shots"], overload=p["overload"],
-                             transfuse=p["transfuse"])
+                             transfuse=p["transfuse"], revive=p.get("revive", 0))
         # purge rounds hand everyone three; anything past the allowance was paid
         # for by a drop, a bounty or Arsenal — the story labels those "(extra)"
         allowance = 3 if rn == race.get("purge_round") else 1
@@ -528,10 +552,28 @@ class BanRace(commands.Cog):
         if kind == "shot":
             return (f"🔫 {tag}locked on **{t['name']}**. Lands {when}. " +
                     (f"**{p['shots']}** left — fire again for **Shot {seq + 1}**."
-                     if p["shots"] > 0 else "That's all your shots this round."))
+                     if p["shots"] > 0 else "That's all your shots this round.")
+                    + self._slate(race_id, rn, shooter_id))
         if kind == "overload":
-            return f"💥 {tag}Overload armed at **{t['name']}** — you burn 1, they take 2. Lands {when}."
+            return (f"💥 {tag}Overload armed at **{t['name']}** — you burn 1, they take 2. Lands {when}."
+                    + self._slate(race_id, rn, shooter_id))
+        if kind == "revive":
+            return (f"💫 Revive set for **{t['name']}** — they come back with **1** life when the round "
+                    f"closes {when}. It doesn't count as your shot.")
         return f"💉 Transfuse set for **{t['name']}** — they gain 1, you lose 1. Lands {when}."
+
+    def _slate(self, race_id, rn, shooter_id):
+        """Every shot the player has placed this round, so a reply can never
+        read as "your shot moved" when it was a second shot (Paul 9/13: race 7
+        round 3 — fired shot 2 at a new target believing shot 1 had moved)."""
+        fired = engine.fired_shots(race_id, rn, shooter_id)
+        if len(fired) < 2:
+            return ""
+        names = {p["user_id"]: p["name"] for p in engine.players(race_id)}
+        parts = [f"Shot {sh['seq']}{' (extra)' if sh.get('extra') else ''} → {names.get(sh['target_id'], '?')}"
+                 for sh in fired]
+        return ("\n📋 Your shots this round: " + " · ".join(parts)
+                + ". To MOVE one, hit **Vote** → **Change shot N**.")
 
     async def _do_retarget(self, race_id, shooter_id, target_id, seq):
         """Move shot `seq` (fired this round) onto a new target. Same checks as
@@ -557,7 +599,8 @@ class BanRace(commands.Cog):
         what = "Overload" if mv["kind"] == "overload" else "Shot"
         return (f"🔁 **{what} {seq}** moved to **{t['name']}**"
                 f"{' (was ' + was['name'] + ')' if was else ''}. "
-                f"Lands <t:{int(race['round_ends_at'])}:R>.")
+                f"Lands <t:{int(race['round_ends_at'])}:R>."
+                + self._slate(race_id, race["round_no"], shooter_id))
 
     async def _do_use_self(self, race_id, uid, kind):
         """Patch / Medkit from /powerup or the inventory button."""
@@ -612,6 +655,8 @@ class BanRace(commands.Cog):
                     round_no = race["round_no"] + 1
                     sudden = engine.is_sudden_death(rows, s["sudden_death_at"])
                     extra = engine.open_round(rows, round_no, race["purge_round"], s["shot_cap"])
+                    for line in extra:      # e.g. PURGE ROUND — on the card AND in the story (9/13)
+                        engine.log(race_id, round_no, line, kind="open")
                     engine.save_players(race_id, rows)
                     secs = max(30, s["round_secs"] // 2 if sudden else s["round_secs"])
                     ends = time.time() + secs
@@ -694,6 +739,8 @@ class BanRace(commands.Cog):
 
         for uid in res["dead"]:
             await self._eliminate(guild, channel, race, uid, round_no, res["killers"].get(uid))
+        for uid in res.get("revived", []):
+            await self._revive(guild, channel, race, uid, round_no)
 
         # the dead still watch: DM earlier casualties the round's results.
         # Real mode only — banned players can't see the channel; ghosts can,
@@ -729,6 +776,26 @@ class BanRace(commands.Cog):
                                    f"race regardless.", allowed_mentions=NO_MENTIONS)
             except discord.HTTPException:
                 pass
+
+    async def _revive(self, guild, channel, race, uid, round_no):
+        """Undo an elimination for a revived player: Racer role back so they can
+        talk; in a real race lift the ban and DM the invite (they left the
+        server when they were banned)."""
+        s = race["settings"]
+        p = engine.player(race["id"], uid)
+        if s["mode"] == "real" and p and p["banned"]:
+            try:
+                await guild.unban(discord.Object(id=int(uid)),
+                                  reason=f"Last to survive: revived in round {round_no}")
+            except (discord.Forbidden, discord.HTTPException, discord.NotFound) as e:
+                log.warning("race %s: could not unban revived %s: %s", race["id"], uid, e)
+            engine.update_player(race["id"], uid, banned=0)
+            invite = race.get("invite_url") or ""
+            await self._dm(uid, content=(f"💫 Someone **revived** you in **{guild.name}** — you're back in the "
+                                         f"race with 1 life. Rejoin now: {invite}" if invite else
+                                         f"💫 Someone **revived** you in **{guild.name}** — you're back in the "
+                                         f"race with 1 life. Ask the host for the invite."))
+        await self._set_racer(guild, race, uid, True)
 
     async def _unban_all(self, guild, race):
         n = 0
@@ -820,7 +887,7 @@ class BanRace(commands.Cog):
 
     @race.command(name="start", description="Open a lobby in the server's race channel (set with /race channel).")
     @app_commands.describe(lives="Lives per player (blank = recommended for however many join)",
-                           round_minutes="Minutes per round (default 3)",
+                           round_minutes="Minutes per round (default 1.5; sudden death runs half that)",
                            mode="ghost = no bans (default); real = actual bans, auto-unban at the end",
                            min_account_days="Minimum account age to enter (default 7)",
                            min_players="Players needed before the race can start (default 3)",
@@ -829,7 +896,7 @@ class BanRace(commands.Cog):
     @app_commands.choices(mode=MODE_CHOICES)
     async def race_start(self, interaction: discord.Interaction,
                          lives: app_commands.Range[int, 1, 50] = None,
-                         round_minutes: app_commands.Range[int, 1, 30] = 3,
+                         round_minutes: app_commands.Range[float, 0.5, 30] = 1.5,
                          mode: app_commands.Choice[str] = None,
                          min_account_days: app_commands.Range[int, 0, 365] = 7,
                          min_players: app_commands.Range[int, 3, None] = 3,     # no cap on players (Paul 9/12)
@@ -891,7 +958,7 @@ class BanRace(commands.Cog):
             race = engine.create_race(guild.id, channel.id, interaction.user.id, settings={
                 "lives": engine.recommended_lives(min_players) if lives_auto else lives,
                 "lives_auto": lives_auto,
-                "round_secs": round_minutes * 60, "mode": mode_v,
+                "round_secs": int(round(round_minutes * 60)), "mode": mode_v,
                 "min_account_days": min_account_days, "min_players": min_players,
                 # a fixed 5 put a 6-player race in sudden death from round 2 (9/12);
                 # blank = sized to the field, re-done for the real head-count at start
@@ -933,10 +1000,12 @@ class BanRace(commands.Cog):
     # rule as a join: if the lobby already holds that many, it goes now.
     @race.command(name="edit", description="Change an open lobby's settings before the race starts.")
     @app_commands.describe(min_players="Players needed before the race starts — it starts the moment the lobby holds this many",
-                           sudden_death_at="Alive count that starts sudden death (0 = back to auto, sized to the field)")
+                           sudden_death_at="Alive count that starts sudden death (0 = back to auto, sized to the field)",
+                           round_minutes="Minutes per round for this race (sudden death runs half that)")
     async def race_edit(self, interaction: discord.Interaction,
                         min_players: app_commands.Range[int, 3, None] = None,
-                        sudden_death_at: app_commands.Range[int, 0, 50] = None):
+                        sudden_death_at: app_commands.Range[int, 0, 50] = None,
+                        round_minutes: app_commands.Range[float, 0.5, 30] = None):
         guild = interaction.guild
         race = engine.active_race(guild.id)
         if not race:
@@ -947,7 +1016,7 @@ class BanRace(commands.Cog):
         if race["status"] != "lobby":
             return await interaction.response.send_message(
                 "The race is on — these only matter in the lobby.", ephemeral=True)
-        if min_players is None and sudden_death_at is None:
+        if min_players is None and sudden_death_at is None and round_minutes is None:
             return await interaction.response.send_message("Give me something to change.", ephemeral=True)
         s = race["settings"]
         changes = []
@@ -974,6 +1043,11 @@ class BanRace(commands.Cog):
                 s["sudden_auto"] = False
                 s["sudden_death_at"] = sudden_death_at
                 changes.append(f"sudden death {old_sd} → **{sudden_death_at}** alive")
+        if round_minutes is not None:
+            new_secs = int(round(round_minutes * 60))
+            if new_secs != s.get("round_secs"):
+                changes.append(f"rounds {_fmt_round(s.get('round_secs'))} → **{_fmt_round(new_secs)}**")
+                s["round_secs"] = new_secs
         if not changes:
             return await interaction.response.send_message("That's what it's already set to.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
@@ -1214,14 +1288,15 @@ class BanRace(commands.Cog):
         rows = engine.players(race["id"])
         e = discord.Embed(title="🎒 Your kit", color=COLOR_DROP)
         e.add_field(name="Lives", value=_lives_bar(p["lives"], race["settings"]["lives"]), inline=True)
-        e.add_field(name="Shots banked", value=str(p["shots"]), inline=True)
-        e.add_field(name="Shield", value="🛡️ held" if p["shield"] else "none", inline=True)
+        e.add_field(name="Shots this round", value=str(p["shots"]), inline=True)
+        e.add_field(name="Shield", value=f"🛡️ ×{p['shield']}", inline=True)
         e.add_field(name="Overload", value=f"💥 ×{p['overload']}", inline=True)
         e.add_field(name="Transfuse", value=f"💉 ×{p['transfuse']}", inline=True)
         e.add_field(name="Patch / Medkit", value=f"🩹 ×{p.get('patch', 0)} · 🏥 ×{p.get('medkit', 0)}", inline=True)
+        e.add_field(name="Revive", value=f"💫 ×{p.get('revive', 0)}", inline=True)
         e.add_field(name="Kills", value=str(p["kills"]), inline=True)
-        e.set_footer(text="Shields and extra shots work on their own. Overload and Transfuse need a target. "
-                          "Patch and Medkit heal you.")
+        e.set_footer(text="Shields and extra shots work on their own. Overload, Transfuse and Revive need a target. "
+                          "Patch and Medkit heal you. Anything unused is gone when the round closes.")
         e.add_field(name="What they do", value=powerup_guide(), inline=False)
         e.add_field(name="Super drops (sudden death)", value=super_guide(), inline=False)
         view = _PowerupView(self, race["id"], p, rows)
@@ -1374,9 +1449,10 @@ class BanRace(commands.Cog):
                          f"{names.get(sh['target_id'], '?')}" for sh in fired)
         if p["shots"] > 0:
             n, total = len(fired) + 1, len(fired) + p["shots"]
-            head = (f"🔫 **Shot {n} of {total}** — pick a target." +
-                    (f"\n{done}\nUse a **Change shot** button to move one you've already fired." if fired else "") + note)
-            label = f"Shot {n} of {total} — who are you going for?"
+            head = (f"🔫 **Fire shot {n} of {total}** — pick a target." +
+                    (f"\n{done}\n⚠️ Picking a target here fires a NEW shot — it does not move the one(s) above. "
+                     f"To move one, use its **Change shot** button." if fired else "") + note)
+            label = f"Fire shot {n} of {total} — who are you going for?"
         elif fired:
             head = (f"All **{len(fired)}** of your shots are placed this round.\n{done}\n"
                     f"Use a **Change shot** button to move one.{note}")
@@ -1434,7 +1510,8 @@ class BanRace(commands.Cog):
             line = engine.grant(p, d["kind"], st["shot_cap"])
             engine.update_player(race["id"], p["user_id"], shots=p["shots"], shield=p["shield"],
                                  overload=p["overload"], transfuse=p["transfuse"],
-                                 patch=p.get("patch", 0), medkit=p.get("medkit", 0))
+                                 patch=p.get("patch", 0), medkit=p.get("medkit", 0),
+                                 revive=p.get("revive", 0))
             engine.log(race["id"], race["round_no"], line, kind="grab", user_id=p["user_id"])
             title, color = f"⚡ {emoji} {name} — taken", COLOR_DROP
         await interaction.response.send_message(f"{emoji} **{name}** is yours.", ephemeral=True)

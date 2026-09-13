@@ -13,7 +13,9 @@ makes rules possible at all (lives, hidden shots, power-ups) instead of a
 ten-second click race.
 
 Round model (all resolution is SIMULTANEOUS at round close):
-  * every living player gets one shot per round, banked up to `shot_cap`;
+  * every living player gets ONE shot per round — it does not stack (Paul 9/13:
+    "one shot per round, they don't compile"); extras come only from power-ups
+    and are good for that round; a PURGE round hands out three;
   * shots are cast privately and resolve together in a random order — so a
     player who dies this round still fires (dead man's shot) and two people
     focusing one target is how you kill someone in a single round;
@@ -62,7 +64,7 @@ DEFAULT_CHANNEL = "last-to-survive"
 
 DEFAULTS = dict(
     lives=3,
-    round_secs=180,
+    round_secs=90,           # 1.5 min (Paul 9/13: "people are complaining it's too long")
     mode="ghost",            # ghost = marked out only; real = actual bans (opt-in)
     backfire=0.10,
     sudden_death_at=5,       # overwritten at start from the head-count unless the host set it (9/12)
@@ -86,8 +88,8 @@ POWERUPS = {
                   "❌ One at a time (a second becomes a Patch); OFF in sudden death; "
                   "doesn't stop the AFK penalty or the storm."),
     "shot":      ("🔫", "Extra shot",
-                  "✅ One more shot in the bank — fire twice in a round. "
-                  "❌ Still 1 damage each; the bank caps out, so hoarding wastes it."),
+                  "✅ One more shot this round — fire twice. "
+                  "❌ Still 1 damage each, and it's gone when the round closes — use it or lose it."),
     "overload":  ("💥", "Overload",
                   "✅ Your shot deals 2 instead of 1 — a full-health kill in two rounds, or a finisher now. "
                   "❌ Burns 1 of YOUR lives the moment it fires (it can kill you) and rides on a banked shot."),
@@ -100,6 +102,11 @@ POWERUPS = {
     "medkit":    ("🏥", "Medkit",
                   "✅ Heal 2, instantly. "
                   "❌ You sit this round's vote out (can't use it after you've fired); wasted at full health."),
+    "revive":    ("💫", "Revive",
+                  "✅ Bring an eliminated player back — they return with 1 life when the round closes "
+                  "(unbanned and re-invited in a real race). "
+                  "❌ Needs a target who's already out; nobody comes back twice; it's this round's "
+                  "power-up, so it expires unused at the close."),
 }
 # Drop tiers (Paul 9/12): "the ones that have a pitfall should be more common;
 # the ones that don't have pitfalls are rares." A pitfall is a COST you pay
@@ -114,7 +121,7 @@ TIERS = {
 }
 POWERUP_TIER = {
     "overload": "common", "transfuse": "common", "medkit": "common",
-    "shield": "rare", "shot": "rare", "patch": "rare",
+    "shield": "rare", "shot": "rare", "patch": "rare", "revive": "rare",
 }
 # Within a tier a kind can be rarer still. Extra shots also arrive from
 # bounties, purge rounds and Arsenal, so the drop itself is halved (Paul 9/12:
@@ -127,9 +134,12 @@ def tier_of(kind):
     """(emoji, label) of a power-up's drop tier."""
     e, label, _ = TIERS[POWERUP_TIER[kind]]
     return e, label
-USABLE = ("overload", "transfuse")   # the two a player has to aim
+USABLE = ("overload", "transfuse", "revive")   # the ones a player has to aim (revive aims at the dead)
 SELF_USE = ("patch", "medkit")       # used on yourself, instantly
-ITEM_COLS = ("overload", "transfuse", "patch", "medkit")
+ITEM_COLS = ("overload", "transfuse", "patch", "medkit", "revive")
+# Everything that vanishes unused at round close (Paul 9/13: "powerups should not
+# carry between rounds"). Shots are reset by open_round; lives obviously stay.
+EXPIRING = ("shield", "overload", "transfuse", "patch", "medkit", "revive")
 
 # SUPER drops: sudden death only, one per round on top of the regular ones,
 # and they fire the moment they're grabbed — no inventory, no aiming.
@@ -234,7 +244,9 @@ def init(db=None):
         for table, cols in (
             ("players", (("patch", "INTEGER NOT NULL DEFAULT 0"),
                          ("medkit", "INTEGER NOT NULL DEFAULT 0"),
-                         ("skip_round", "INTEGER"))),
+                         ("skip_round", "INTEGER"),
+                         ("revive", "INTEGER NOT NULL DEFAULT 0"),
+                         ("revived", "INTEGER NOT NULL DEFAULT 0"))),
             ("shots", (("seq", "INTEGER"),
                        ("extra", "INTEGER NOT NULL DEFAULT 0"),
                        ("result", "TEXT"),
@@ -418,11 +430,13 @@ def save_players(race_id, rows, db=None):
         for p in rows:
             c.execute(
                 "UPDATE players SET lives=?, shots=?, shield=?, overload=?, transfuse=?, kills=?,"
-                " bounty=?, alive=?, died_round=?, banned=?, patch=?, medkit=?, skip_round=?"
+                " bounty=?, alive=?, died_round=?, banned=?, patch=?, medkit=?, skip_round=?,"
+                " revive=?, revived=?"
                 " WHERE race_id=? AND user_id=?",
                 (p["lives"], p["shots"], p["shield"], p["overload"], p["transfuse"], p["kills"],
                  p["bounty"], p["alive"], p["died_round"], p["banned"], p.get("patch", 0),
-                 p.get("medkit", 0), p.get("skip_round"), race_id, str(p["user_id"])))
+                 p.get("medkit", 0), p.get("skip_round"), p.get("revive", 0), p.get("revived", 0),
+                 race_id, str(p["user_id"])))
 
 
 def update_player(race_id, user_id, db=None, **fields):
@@ -725,14 +739,13 @@ def pick_purge_round(rng, n_players):
 
 
 def open_round(rows, round_no, purge_round, shot_cap):
-    """Bank the round's shot for every survivor. Returns the lines to announce."""
+    """Hand every survivor this round's shot. ONE per round, never carried
+    (Paul 9/13: a purge's three used to leak into the next three rounds);
+    a purge round hands out three. Returns the lines to announce."""
     lines = []
     purge = round_no == purge_round
     for p in alive(rows):
-        if purge:
-            p["shots"] = max(p["shots"], 3)
-        else:
-            p["shots"] = min(shot_cap, p["shots"] + 1)
+        p["shots"] = 3 if purge else 1
     if purge:
         lines.append("🩸 **PURGE ROUND** — everyone has three shots. Nobody is safe.")
     return lines
@@ -812,6 +825,9 @@ def grant(p, kind, shot_cap):
     if kind == "medkit":
         p["medkit"] = p.get("medkit", 0) + 1
         return f"🏥 {m(p['user_id'])} grabbed a **Medkit** — heal 2, skip a vote."
+    if kind == "revive":
+        p["revive"] = p.get("revive", 0) + 1
+        return f"💫 {m(p['user_id'])} grabbed a **Revive** — bring someone back."
     raise ValueError(kind)
 
 
@@ -847,6 +863,18 @@ def cast_error(p, target, kind="shot", round_no=None):
     """Why this cast is illegal — or None. `target` may be None for a bad id."""
     if p is None or not p["alive"]:
         return "You're out of the race."
+    if kind == "revive":
+        if p.get("revive", 0) <= 0:
+            return "You don't hold a Revive."
+        if target is None:
+            return "That player isn't in this race."
+        if target["user_id"] == p["user_id"]:
+            return "You're alive — Revive is for someone who's out."
+        if target["alive"]:
+            return f"{target['name']} is still in the race."
+        if target.get("revived"):
+            return f"{target['name']} already came back once — nobody returns twice."
+        return None
     if kind in ("shot", "overload") and round_no is not None and p.get("skip_round") == round_no:
         return "You used a Medkit this round — no shooting until the next one."
     if target is None or not target["alive"]:
@@ -879,6 +907,8 @@ def spend(p, kind):
         p["overload"] -= 1
     elif kind == "transfuse":
         p["transfuse"] -= 1
+    elif kind == "revive":
+        p["revive"] = p.get("revive", 0) - 1
 
 
 def _die(p, round_no, lines, how):
@@ -889,7 +919,7 @@ def _die(p, round_no, lines, how):
 
 
 def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, msgs,
-                  max_lives, shot_cap, afk=True):
+                  max_lives, shot_cap, afk=True, expire_items=True):
     """Apply every shot cast this round, then the storm, then re-place the
     bounty. Mutates `rows` in place. Returns a dict:
       lines   — announcement lines in resolution order (mentions inline)
@@ -897,13 +927,15 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
       killers — {victim_id: killer_id} for kill credit (storm/self deaths absent)
       winners — [] while the race goes on; [uid] for a winner; several = draw
       results — {shot_id: outcome} for rows that carry an id (hit|kill|
-                shielded|backfire|wasted|self|transfused|late|nuke)
+                shielded|backfire|wasted|self|transfused|late|nuke|revived)
+      revived — user_ids brought back this round (the cog unbans / re-roles them)
     `sudden` disables shields. `msgs` is {user_id: messages this round} for the
     storm. `afk` charges a life to every survivor who cast no shot/overload.
     Shooters who die mid-batch still fire (dead man's shot)."""
     P = {p["user_id"]: p for p in rows}
     lines, dead, killers, results = [], [], {}, {}
-    order = list(shot_rows)
+    revives = [s for s in shot_rows if s["kind"] == "revive"]     # resolved last, after the storm
+    order = [s for s in shot_rows if s["kind"] != "revive"]
     rng.shuffle(order)
 
     # "A's shot" vs "A's shot 2 (extra)": number a shooter's banked shots only
@@ -1043,6 +1075,22 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
         out = hit(shooter, victim, dmg, name)
         record(s, "backfire" if backfired else out)
 
+    # Unused power-ups expire here — after every shot has landed (a shield
+    # grabbed this round still ate its shot) and BEFORE kill rewards pay, so
+    # a shield earned by a kill at the close is yours for the next round.
+    if expire_items:
+        gone = []
+        for p in alive(rows):
+            bits = []
+            for col in EXPIRING:
+                n = p.get(col, 0) or 0
+                if n:
+                    bits.append(POWERUPS[col][0] + (f"×{n}" if n > 1 else ""))
+                    p[col] = 0
+            if bits:
+                gone.append(f"{m(p['user_id'])} {' '.join(bits)}")
+        if gone:
+            lines.append("🧹 Unused power-ups expired: " + " · ".join(gone))
     # kill rewards land only now: a shield earned this round must not eat a
     # shot that was fired this round (resolution is simultaneous)
     for shooter, victim in rewards:
@@ -1078,6 +1126,26 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
                                      f"**Eliminated.**")
             dead.append(v["user_id"])
 
+    # revives resolve last: the returning player skips this round's shots,
+    # AFK penalty and storm entirely (they weren't here for it)
+    revived = []
+    for s in revives:
+        shooter, target = P.get(s["shooter_id"]), P.get(s["target_id"])
+        if shooter is None or target is None:
+            continue
+        if target["alive"] or target.get("revived") or target["user_id"] in revived:
+            why = "still in" if target["alive"] else "already came back once"
+            lines.append(f"💫 {m(shooter['user_id'])}'s Revive on {m(target['user_id'])} fizzled — {why}.")
+            record(s, "late")
+            continue
+        target.update(alive=1, lives=1, died_round=None, revived=1, shots=0, shield=0,
+                      overload=0, transfuse=0, patch=0, medkit=0, revive=0, bounty=0)
+        revived.append(target["user_id"])
+        record(s, "revived")
+        lines.append(f"💫 {m(shooter['user_id'])} **revived** {m(target['user_id'])} — back with **1** life. "
+                     f"Nobody returns twice.")
+    if revived:
+        dead = [d for d in dead if d not in revived]      # died and came back in the same round: never banned
     # bounty: unique top killer with 2+
     survivors = alive(rows)
     for p in rows:
@@ -1102,7 +1170,8 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
         if d not in seen:
             seen.add(d)
             uniq.append(d)
-    return {"lines": lines, "dead": uniq, "killers": killers, "winners": winners, "results": results}
+    return {"lines": lines, "dead": uniq, "killers": killers, "winners": winners, "results": results,
+            "revived": revived}
 
 
 def standings(rows):
