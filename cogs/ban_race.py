@@ -285,8 +285,8 @@ def lobby_embed(race, rows, guild_name):
            f"• Last one standing wins. 🎁")
     e.add_field(name="How it works", value=how, inline=False)
     e.add_field(name="Lives", value=lives_line(s, len(rows)), inline=False)
-    e.add_field(name="Power-ups (drop in the channel — first click takes it)", value=powerup_guide(), inline=False)
-    e.add_field(name="Super drops (sudden death)", value=super_guide(), inline=False)
+    # No power-up catalogue here (Paul 9/13: "way too much") — the item blurbs
+    # live on the drops themselves and behind the Power-ups button.
     names = [p["name"] for p in rows]
     shown = ", ".join(names[:40]) + (f" … +{len(names) - 40}" if len(names) > 40 else "")
     e.add_field(name=f"Players ({len(rows)})", value=shown or "*nobody yet — hit Join*", inline=False)
