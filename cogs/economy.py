@@ -60,6 +60,37 @@ BUCKS_PER_MESSAGE = 1
 XP_PER_MESSAGE = 10
 PEEPOS_GUILD_ID = 1215140346800119868
 
+# Who counts as staff for store access: anyone holding a moderation permission
+# (same list the honeypot / link-guard cogs use) or the guild owner.
+STAFF_PERMS = ("administrator", "manage_guild", "manage_channels", "manage_messages",
+               "kick_members", "ban_members", "moderate_members", "manage_roles")
+
+
+def _is_staff(member) -> bool:
+    if member is None or getattr(member, "guild", None) is None:
+        return False
+    if member.guild.owner_id == member.id:
+        return True
+    p = member.guild_permissions
+    return any(getattr(p, name, False) for name in STAFF_PERMS)
+
+
+def _store_staff_only(guild) -> bool:
+    """Per-guild setting `store_staff_only` (security_config). Default: ON for
+    the home guild (Paul 9/13: "only allow staff to use the peepo bucks store in
+    my server"), OFF everywhere else. A dashboard card can flip it later."""
+    if guild is None:
+        return False
+    cfg = security_config.get_config(guild.id)
+    val = cfg.get("store_staff_only")
+    if val is None:
+        return guild.id == PEEPOS_GUILD_ID
+    return str(val).lower() in ("1", "true", "yes", "on")
+
+
+STORE_STAFF_ONLY_MSG = ("🔒 The Peepo Bucks store is **staff-only** in this server right now. "
+                        "Your bucks are safe — keep earning them by chatting.")
+
 STORE_ITEMS = [
     {"id": "nitro_basic",   "name": "Discord Nitro Basic",  "emoji": "💎", "price": 7_500,   "description": "1 month of Nitro Basic ($2.99)"},
     {"id": "nitro",         "name": "Discord Nitro",        "emoji": "✨", "price": 25_000,  "description": "1 month of Nitro ($9.99)"},
@@ -601,6 +632,8 @@ class Economy(commands.Cog):
     # ── /store ────────────────────────────────────────────────────────────────
     @app_commands.command(name="store", description="Browse the Peepo Bucks store.")
     async def store(self, interaction: discord.Interaction):
+        if _store_staff_only(interaction.guild) and not _is_staff(interaction.user):
+            return await interaction.response.send_message(STORE_STAFF_ONLY_MSG, ephemeral=True)
         embed = discord.Embed(
             title="🛒 Peepo Bucks Store",
             description=f"Earn up to **{DAILY_CAP:,} 💰/day** by chatting.\nUse `/redeem <item>` to claim a reward — staff will fulfill it manually.",
@@ -618,6 +651,8 @@ class Economy(commands.Cog):
     @app_commands.command(name="redeem", description="Redeem a store item with your Peepo Bucks.")
     @app_commands.describe(item="Item ID to redeem (e.g. nitro, nitro_basic, robux_800)")
     async def redeem(self, interaction: discord.Interaction, item: str):
+        if _store_staff_only(interaction.guild) and not _is_staff(interaction.user):
+            return await interaction.response.send_message(STORE_STAFF_ONLY_MSG, ephemeral=True)
         item = item.lower().strip()
         store_item = next((i for i in STORE_ITEMS if i["id"] == item), None)
         if not store_item:
