@@ -55,6 +55,8 @@ INVITE_DAYS = 7
 RACER_ROLE = "Racer"     # only this role can talk in the race channel; Join grants it
 MAX_PINGS = 60
 START_DELAY = 30        # seconds between the start ping and round 1 opening
+BUMP_AFTER = 6          # human messages in the race channel before the panel is re-posted at the bottom
+BUMP_COOLDOWN = 20      # seconds between two bumps of the same race
 
 MODE_CHOICES = [
     app_commands.Choice(name="ghost — no bans, eliminated players are just out (default)", value="ghost"),
@@ -354,6 +356,9 @@ class BanRace(commands.Cog):
         self._tasks = {}                  # race_id -> asyncio.Task
         self._running = {}                # guild_id -> race_id
         self._msgs = defaultdict(int)     # (race_id, user_id) -> messages this round
+        self._chatter = defaultdict(int)  # race_id -> human messages since the panel was last (re)posted
+        self._last_bump = {}              # race_id -> time of the last re-post
+        self._chan_cache = {}             # guild_id -> (expires, race dict | None) for on_message's channel check
         self._drops = {}                  # nonce -> {kind, race_id, claimed}
         self._resumed = False
         self._rng = random.Random()
@@ -616,6 +621,7 @@ class BanRace(commands.Cog):
                     msg = await channel.send(embed=round_embed(race, rows, round_no, ends, sudden, extra),
                                              view=round_view(race_id))
                     engine.update_race(race_id, round_msg_id=str(msg.id))
+                    self._chatter[race_id] = 0
 
                     # every round drops, scaled to the players still alive (Paul 9/12:
                     # "powerups should scale with the amount of active users");
@@ -637,10 +643,12 @@ class BanRace(commands.Cog):
                         _, kind, is_super = queue.pop(0)
                         asyncio.create_task(self._spawn_drop(race_id, channel, s, kind, is_super))
                     await asyncio.sleep(min(2.0, max(0.2, race["round_ends_at"] - now)))
-                if msg is not None:
+                cur_id = (engine.get_race(race_id) or {}).get("round_msg_id")
+                if cur_id:
                     try:
-                        await msg.edit(view=round_view(race_id, closed=True))
-                    except discord.HTTPException:
+                        panel = msg if (msg is not None and str(msg.id) == str(cur_id))                             else await channel.fetch_message(int(cur_id))
+                        await panel.edit(view=round_view(race_id, closed=True))
+                    except (discord.HTTPException, ValueError):
                         pass
                 await self._close_round(race_id, round_no, guild, channel)
                 engine.update_race(race_id, round_ends_at=None)    # closed: nothing to resume
@@ -1446,6 +1454,65 @@ class BanRace(commands.Cog):
         rid = self._running.get(message.guild.id)
         if rid:
             self._msgs[(rid, str(message.author.id))] += 1
+        # Chat buries the panel (Paul 9/12: "bump the panel to the bottom so people
+        # can see it if typing happens"): count human messages in the race channel
+        # and re-post the lobby/round card once enough have piled on top of it.
+        race = self._race_in_channel(message.guild.id, message.channel.id)
+        if race is None:
+            return
+        self._chatter[race["id"]] += 1
+        if (self._chatter[race["id"]] >= BUMP_AFTER
+                and time.time() - self._last_bump.get(race["id"], 0) >= BUMP_COOLDOWN):
+            self._last_bump[race["id"]] = time.time()     # claim it before awaiting
+            await self._bump_panel(engine.get_race(race["id"]), message.channel)
+
+    def _race_in_channel(self, guild_id, channel_id):
+        """The lobby/running race whose channel this is, or None. Cached 20 s per
+        guild so the message firehose doesn't hit sqlite on every line."""
+        now = time.time()
+        hit = self._chan_cache.get(guild_id)
+        if hit is None or hit[0] < now:
+            hit = (now + 20, engine.active_race(guild_id))
+            self._chan_cache[guild_id] = hit
+        race = hit[1]
+        return race if race and str(race["channel_id"]) == str(channel_id) else None
+
+    async def _bump_panel(self, race, channel):
+        """Re-post the current panel (lobby card or round card) at the bottom of
+        the channel and retire the old copy. Buttons carry persistent custom ids,
+        so the new message works exactly like the old one; the stored message id
+        is updated so joins / round-close edits target the fresh copy."""
+        if not race or race["status"] not in ("lobby", "running"):
+            return
+        key = "lobby_msg_id" if race["status"] == "lobby" else "round_msg_id"
+        old_id = race.get(key)
+        if not old_id:
+            return
+        try:
+            old = await channel.fetch_message(int(old_id))
+        except (discord.HTTPException, ValueError):
+            return
+        if race["status"] == "lobby":
+            embed = lobby_embed(race, engine.players(race["id"]), channel.guild.name)
+            view = lobby_view(race["id"])
+        else:
+            if not old.embeds:
+                return
+            embed, view = old.embeds[0], round_view(race["id"])
+        try:
+            new = await channel.send(embed=embed, view=view)
+        except discord.HTTPException:
+            return
+        engine.update_race(race["id"], **{key: str(new.id)})
+        self._chatter[race["id"]] = 0
+        try:
+            await old.delete()
+        except discord.HTTPException:
+            try:
+                await old.edit(content="⬇️ The panel moved to the bottom of the channel.", embed=None, view=None)
+            except discord.HTTPException:
+                pass
+        log.info("race %s: %s panel bumped in #%s", race["id"], race["status"], channel.name)
 
 
 async def setup(bot):
