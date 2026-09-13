@@ -102,12 +102,45 @@ POWERUPS = {
     "medkit":    ("🏥", "Medkit",
                   "✅ Heal 2, instantly. "
                   "❌ You sit this round's vote out (can't use it after you've fired); wasted at full health."),
-    "revive":    ("💫", "Revive",
-                  "✅ Bring an eliminated player back — they return with 1 life when the round closes "
+    "revive_small": ("💫", "Small revive",
+                  "✅ Bring an eliminated player back with **1** life when the round closes "
                   "(unbanned and re-invited in a real race). "
-                  "❌ Needs a target who's already out; nobody comes back twice; it's this round's "
-                  "power-up, so it expires unused at the close."),
+                  "❌ One life is one shot from being out again; nobody comes back twice."),
+    "revive_medium": ("✨", "Medium revive",
+                  "✅ Bring an eliminated player back with **2** lives when the round closes. "
+                  "❌ Needs someone who's already out; nobody comes back twice."),
 }
+
+# Every revive variant: kind -> (emoji, label, lives rule). Small/medium are
+# regular drops (common/rare), full/extra are SUPER drops (sudden death only,
+# extra = SUPER RARE). Paul 9/13: "small revive, medium revive, full revive,
+# extra revive — all placed in according drop categories."
+REVIVES = {
+    "revive_small":  ("💫", "Small revive",  "one"),
+    "revive_medium": ("✨", "Medium revive", "two"),
+    "revive_full":   ("🌟", "Full revive",   "max"),
+    "revive_extra":  ("🪄", "Extra revive",  "over"),
+}
+REVIVE_COLS = tuple(REVIVES)
+
+
+def revive_lives(kind, max_lives):
+    """Lives a revived player comes back with."""
+    rule = REVIVES[kind][2]
+    if rule == "one":
+        return 1
+    if rule == "two":
+        return min(2, max_lives)
+    if rule == "max":
+        return max_lives
+    return max_lives + 1                      # "over": one above the cap, like a golden apple
+
+
+def blurb(kind):
+    """The ✅/❌ text for any power-up or super, by kind."""
+    if kind in POWERUPS:
+        return POWERUPS[kind][2]
+    return SUPER[kind][2]
 # Drop tiers (Paul 9/12): "the ones that have a pitfall should be more common;
 # the ones that don't have pitfalls are rares." A pitfall is a COST you pay
 # (a life, your vote) — not a mere limit like "one shield at a time".
@@ -121,7 +154,8 @@ TIERS = {
 }
 POWERUP_TIER = {
     "overload": "common", "transfuse": "common", "medkit": "common",
-    "shield": "rare", "shot": "rare", "patch": "rare", "revive": "rare",
+    "shield": "rare", "shot": "rare", "patch": "rare",
+    "revive_small": "common", "revive_medium": "rare",
 }
 # Within a tier a kind can be rarer still. Extra shots also arrive from
 # bounties, purge rounds and Arsenal, so the drop itself is halved (Paul 9/12:
@@ -134,12 +168,17 @@ def tier_of(kind):
     """(emoji, label) of a power-up's drop tier."""
     e, label, _ = TIERS[POWERUP_TIER[kind]]
     return e, label
-USABLE = ("overload", "transfuse", "revive")   # the ones a player has to aim (revive aims at the dead)
+USABLE = ("overload", "transfuse",             # the ones a player has to aim
+          "revive_small", "revive_medium", "revive_full", "revive_extra")   # (revives aim at the dead)
 SELF_USE = ("patch", "medkit")       # used on yourself, instantly
-ITEM_COLS = ("overload", "transfuse", "patch", "medkit", "revive")
-# Everything that vanishes unused at round close (Paul 9/13: "powerups should not
-# carry between rounds"). Shots are reset by open_round; lives obviously stay.
-EXPIRING = ("shield", "overload", "transfuse", "patch", "medkit", "revive")
+ITEM_COLS = ("overload", "transfuse", "patch", "medkit",
+             "revive_small", "revive_medium", "revive_full", "revive_extra")
+# Power-ups STAY with a player until the race ends (Paul 9/13, final: "unused
+# power ups should stay until RACE end not round close"). Only shots reset each
+# round. resolve_round(expire_items=True) still exists for a mode that wants
+# use-it-or-lose-it; nothing sets it today.
+EXPIRING = ("shield", "overload", "transfuse", "patch", "medkit",
+            "revive_small", "revive_medium", "revive_full", "revive_extra")
 
 # SUPER drops: sudden death only, one per round on top of the regular ones,
 # and they fire the moment they're grabbed — no inventory, no aiming.
@@ -157,11 +196,17 @@ SUPER = {
                   "✅ +2 lives that go ABOVE max — the only thing in the race that does. "
                   "❌ SUPER RARE: one super in ten, sudden death only; a shot still takes 1 (it's a buffer, "
                   "not armor), heals can't stack past max+2."),
+    "revive_full": ("🌟", "Full revive",
+                    "✅ Goes to your kit: bring an eliminated player back at FULL lives when a round closes. "
+                    "❌ Sudden death only; nobody comes back twice; the one you bring back is everyone's target."),
+    "revive_extra": ("🪄", "Extra revive",
+                     "✅ Goes to your kit: bring an eliminated player back with one life ABOVE max. "
+                     "❌ SUPER RARE — as rare as the golden apple; nobody comes back twice."),
 }
 GOLDAPPLE_OVER = 2          # how far above max lives a golden apple can take you
 # Golden apple is LEGENDARY — one super drop in ten (Paul: "SUPER rare, only at
 # the sudden death finale"; supers only ever fall in sudden death).
-SUPER_WEIGHTS = {"nuke": 3, "fullheal": 3, "arsenal": 3, "goldapple": 1}
+SUPER_WEIGHTS = {"nuke": 3, "fullheal": 3, "arsenal": 3, "goldapple": 1, "revive_full": 3, "revive_extra": 1}
 
 ACTIVE = ("lobby", "running")
 
@@ -245,8 +290,11 @@ def init(db=None):
             ("players", (("patch", "INTEGER NOT NULL DEFAULT 0"),
                          ("medkit", "INTEGER NOT NULL DEFAULT 0"),
                          ("skip_round", "INTEGER"),
-                         ("revive", "INTEGER NOT NULL DEFAULT 0"),
-                         ("revived", "INTEGER NOT NULL DEFAULT 0"))),
+                         ("revived", "INTEGER NOT NULL DEFAULT 0"),
+                         ("revive_small", "INTEGER NOT NULL DEFAULT 0"),
+                         ("revive_medium", "INTEGER NOT NULL DEFAULT 0"),
+                         ("revive_full", "INTEGER NOT NULL DEFAULT 0"),
+                         ("revive_extra", "INTEGER NOT NULL DEFAULT 0"))),
             ("shots", (("seq", "INTEGER"),
                        ("extra", "INTEGER NOT NULL DEFAULT 0"),
                        ("result", "TEXT"),
@@ -431,12 +479,13 @@ def save_players(race_id, rows, db=None):
             c.execute(
                 "UPDATE players SET lives=?, shots=?, shield=?, overload=?, transfuse=?, kills=?,"
                 " bounty=?, alive=?, died_round=?, banned=?, patch=?, medkit=?, skip_round=?,"
-                " revive=?, revived=?"
+                " revived=?, revive_small=?, revive_medium=?, revive_full=?, revive_extra=?"
                 " WHERE race_id=? AND user_id=?",
                 (p["lives"], p["shots"], p["shield"], p["overload"], p["transfuse"], p["kills"],
                  p["bounty"], p["alive"], p["died_round"], p["banned"], p.get("patch", 0),
-                 p.get("medkit", 0), p.get("skip_round"), p.get("revive", 0), p.get("revived", 0),
-                 race_id, str(p["user_id"])))
+                 p.get("medkit", 0), p.get("skip_round"), p.get("revived", 0),
+                 p.get("revive_small", 0), p.get("revive_medium", 0), p.get("revive_full", 0),
+                 p.get("revive_extra", 0), race_id, str(p["user_id"])))
 
 
 def update_player(race_id, user_id, db=None, **fields):
@@ -797,6 +846,10 @@ def grant_super(p, kind, shot_cap, max_lives):
     if kind == "arsenal":
         p["shots"] = min(shot_cap + 3, p["shots"] + 3)
         return f"🔫 {m(p['user_id'])} grabbed **Arsenal** — three more shots."
+    if kind in REVIVES:                       # the two super revives go to the kit, not instant
+        p[kind] = p.get(kind, 0) + 1
+        emoji, label, _ = REVIVES[kind]
+        return f"{emoji} {m(p['user_id'])} grabbed a **{label}** — it's in their kit."
     raise ValueError(kind)
 
 
@@ -825,9 +878,10 @@ def grant(p, kind, shot_cap):
     if kind == "medkit":
         p["medkit"] = p.get("medkit", 0) + 1
         return f"🏥 {m(p['user_id'])} grabbed a **Medkit** — heal 2, skip a vote."
-    if kind == "revive":
-        p["revive"] = p.get("revive", 0) + 1
-        return f"💫 {m(p['user_id'])} grabbed a **Revive** — bring someone back."
+    if kind in REVIVES:
+        p[kind] = p.get(kind, 0) + 1
+        emoji, label, _ = REVIVES[kind]
+        return f"{emoji} {m(p['user_id'])} grabbed a **{label}** — bring someone back."
     raise ValueError(kind)
 
 
@@ -863,9 +917,9 @@ def cast_error(p, target, kind="shot", round_no=None):
     """Why this cast is illegal — or None. `target` may be None for a bad id."""
     if p is None or not p["alive"]:
         return "You're out of the race."
-    if kind == "revive":
-        if p.get("revive", 0) <= 0:
-            return "You don't hold a Revive."
+    if kind in REVIVES:
+        if p.get(kind, 0) <= 0:
+            return f"You don't hold a {REVIVES[kind][1]}."
         if target is None:
             return "That player isn't in this race."
         if target["user_id"] == p["user_id"]:
@@ -907,8 +961,8 @@ def spend(p, kind):
         p["overload"] -= 1
     elif kind == "transfuse":
         p["transfuse"] -= 1
-    elif kind == "revive":
-        p["revive"] = p.get("revive", 0) - 1
+    elif kind in REVIVES:
+        p[kind] = p.get(kind, 0) - 1
 
 
 def _die(p, round_no, lines, how):
@@ -919,7 +973,7 @@ def _die(p, round_no, lines, how):
 
 
 def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, msgs,
-                  max_lives, shot_cap, afk=True, expire_items=True):
+                  max_lives, shot_cap, afk=True, expire_items=False):
     """Apply every shot cast this round, then the storm, then re-place the
     bounty. Mutates `rows` in place. Returns a dict:
       lines   — announcement lines in resolution order (mentions inline)
@@ -934,8 +988,8 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
     Shooters who die mid-batch still fire (dead man's shot)."""
     P = {p["user_id"]: p for p in rows}
     lines, dead, killers, results = [], [], {}, {}
-    revives = [s for s in shot_rows if s["kind"] == "revive"]     # resolved last, after the storm
-    order = [s for s in shot_rows if s["kind"] != "revive"]
+    revives = [s for s in shot_rows if s["kind"] in REVIVES]      # resolved last, after the storm
+    order = [s for s in shot_rows if s["kind"] not in REVIVES]
     rng.shuffle(order)
 
     # "A's shot" vs "A's shot 2 (extra)": number a shooter's banked shots only
@@ -1075,9 +1129,9 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
         out = hit(shooter, victim, dmg, name)
         record(s, "backfire" if backfired else out)
 
-    # Unused power-ups expire here — after every shot has landed (a shield
-    # grabbed this round still ate its shot) and BEFORE kill rewards pay, so
-    # a shield earned by a kill at the close is yours for the next round.
+    # Optional use-it-or-lose-it mode (OFF by default — Paul 9/13: power-ups
+    # stay until the race ends). If on: expire after every shot has landed and
+    # BEFORE kill rewards pay, so a kill's shield survives into the next round.
     if expire_items:
         gone = []
         for p in alive(rows):
@@ -1138,12 +1192,15 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
             lines.append(f"💫 {m(shooter['user_id'])}'s Revive on {m(target['user_id'])} fizzled — {why}.")
             record(s, "late")
             continue
-        target.update(alive=1, lives=1, died_round=None, revived=1, shots=0, shield=0,
-                      overload=0, transfuse=0, patch=0, medkit=0, revive=0, bounty=0)
+        back = revive_lives(s["kind"], max_lives)
+        emoji, label, _ = REVIVES[s["kind"]]
+        target.update(alive=1, lives=back, died_round=None, revived=1, shots=0, shield=0,
+                      overload=0, transfuse=0, patch=0, medkit=0, bounty=0,
+                      revive_small=0, revive_medium=0, revive_full=0, revive_extra=0)
         revived.append(target["user_id"])
         record(s, "revived")
-        lines.append(f"💫 {m(shooter['user_id'])} **revived** {m(target['user_id'])} — back with **1** life. "
-                     f"Nobody returns twice.")
+        lines.append(f"{emoji} {m(shooter['user_id'])} used a **{label}** — {m(target['user_id'])} is back "
+                     f"with **{back}** {'life' if back == 1 else 'lives'}. Nobody returns twice.")
     if revived:
         dead = [d for d in dead if d not in revived]      # died and came back in the same round: never banned
     # bounty: unique top killer with 2+

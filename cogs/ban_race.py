@@ -67,7 +67,10 @@ USE_CHOICES = [
     app_commands.Choice(name="Transfuse — give someone 1 life, lose 1 (needs a player)", value="transfuse"),
     app_commands.Choice(name="Patch — heal yourself 1", value="patch"),
     app_commands.Choice(name="Medkit — heal yourself 2, skip this round's vote", value="medkit"),
-    app_commands.Choice(name="Revive — bring an eliminated player back with 1 life (needs a player)", value="revive"),
+    app_commands.Choice(name="Small revive — bring someone back with 1 life (needs a player)", value="revive_small"),
+    app_commands.Choice(name="Medium revive — bring someone back with 2 lives (needs a player)", value="revive_medium"),
+    app_commands.Choice(name="Full revive — bring someone back at full lives (needs a player)", value="revive_full"),
+    app_commands.Choice(name="Extra revive — bring someone back one life ABOVE max (needs a player)", value="revive_extra"),
 ]
 
 
@@ -143,7 +146,7 @@ class _TargetSelect(discord.ui.View):
     def __init__(self, cog, race_id, kind, me, rows, label=None, seq=None):
         super().__init__(timeout=120)
         self.cog, self.race_id, self.kind, self.seq = cog, race_id, kind, seq
-        if kind == "revive":
+        if kind in engine.REVIVES:
             pool = [p for p in rows if not p["alive"] and not p.get("revived")]
             opts = [discord.SelectOption(label=p["name"][:100], value=p["user_id"],
                                          description=f"out since round {p.get('died_round') or '?'}")
@@ -155,8 +158,8 @@ class _TargetSelect(discord.ui.View):
         if not opts:
             opts = [discord.SelectOption(label="(nobody to pick)", value="0")]
         label = label or {"shot": "Who are you going for?", "overload": "Overload — who takes 2?",
-                          "transfuse": "Transfuse — who gets your life?",
-                          "revive": "Revive — who comes back?"}[kind]
+                          "transfuse": "Transfuse — who gets your life?"}.get(kind) \
+            or f"{engine.REVIVES[kind][1]} — who comes back?"
         sel = discord.ui.Select(placeholder=label, options=opts, min_values=1, max_values=1)
         sel.callback = self._pick
         self.add_item(sel)
@@ -214,11 +217,12 @@ class _PowerupView(discord.ui.View):
                                   style=discord.ButtonStyle.primary)
             b.callback = self._mk("transfuse")
             self.add_item(b)
-        if p.get("revive", 0) > 0:
-            b = discord.ui.Button(label=f"Use Revive ×{p['revive']}", emoji="💫",
-                                  style=discord.ButtonStyle.success)
-            b.callback = self._mk("revive")
-            self.add_item(b)
+        for kind, (emoji, label, _) in engine.REVIVES.items():
+            if p.get(kind, 0) > 0:
+                b = discord.ui.Button(label=f"Use {label} ×{p[kind]}", emoji=emoji,
+                                      style=discord.ButtonStyle.success)
+                b.callback = self._mk(kind)
+                self.add_item(b)
         for kind in engine.SELF_USE:
             if p.get(kind, 0) > 0:
                 emoji, name, _ = engine.POWERUPS[kind]
@@ -236,7 +240,7 @@ class _PowerupView(discord.ui.View):
     def _mk(self, kind):
         async def cb(interaction):
             v = _TargetSelect(self.cog, self.race_id, kind, interaction.user.id, self.rows)
-            await interaction.response.edit_message(content=engine.POWERUPS[kind][2], embed=None, view=v)
+            await interaction.response.edit_message(content=engine.blurb(kind), embed=None, view=v)
         return cb
 
 
@@ -285,9 +289,10 @@ def lives_line(s, n_joined):
 
 def super_guide():
     """The sudden-death supers, golden apple flagged as the super-rare one."""
-    lines = ["🌟 **SUPER** · sudden death only, one per round, fires the moment it's grabbed"]
+    lines = ["🌟 **SUPER** · sudden death only, one per round — most fire the moment they're grabbed, "
+             "revives go to your kit"]
     for kind, (emoji, name, blurb) in engine.SUPER.items():
-        tag = " · 🍎 **SUPER RARE**" if kind == "goldapple" else ""
+        tag = " · **SUPER RARE**" if engine.SUPER_WEIGHTS.get(kind) == 1 else ""
         lines.append(f"{emoji} **{name}**{tag} — {blurb}")
     return "\n".join(lines)
 
@@ -297,7 +302,7 @@ def lobby_embed(race, rows, guild_name):
     e = discord.Embed(title="🔫 LAST TO SURVIVE", color=COLOR,
                       description=PITCH.format(lives=s["lives"]))
     how = (f"• Rounds last **{_fmt_round(s['round_secs'])}**; shots are secret and all land at once.\n"
-           f"• One shot per round — it doesn't stack. Power-ups you don't use are gone when the round closes.\n"
+           f"• One shot per round — it doesn't stack. Power-ups you grab stay with you for the whole race.\n"
            f"• Zero lives = {'**actually banned**' if s['mode'] == 'real' else 'out'}. "
            f"{'Everyone is unbanned the moment it ends, and you get the invite by DM first.' if s['mode'] == 'real' else ''}\n"
            f"• Don't vote in a round and you lose a life. AFK is not a strategy.\n"
@@ -349,8 +354,8 @@ def standings_embed(race, rows):
 def drop_embed(kind, is_super=False):
     if is_super:
         emoji, name, blurb = engine.SUPER[kind]
-        if kind == "goldapple":
-            return discord.Embed(title=f"🍎 SUPER RARE DROP — {name}", description=blurb, color=COLOR_LEGENDARY)
+        if engine.SUPER_WEIGHTS.get(kind) == 1:
+            return discord.Embed(title=f"{emoji} SUPER RARE DROP — {name}", description=blurb, color=COLOR_LEGENDARY)
         return discord.Embed(title=f"🌟 SUPER DROP — {emoji} {name}", description=blurb, color=COLOR_SUPER)
     emoji, name, blurb = engine.POWERUPS[kind]
     t_emoji, t_label = engine.tier_of(kind)
@@ -541,7 +546,7 @@ class BanRace(commands.Cog):
             return "You're out of shots this round and have nothing to re-aim. Grab a drop."
         engine.spend(p, kind)
         engine.update_player(race_id, shooter_id, shots=p["shots"], overload=p["overload"],
-                             transfuse=p["transfuse"], revive=p.get("revive", 0))
+                             transfuse=p["transfuse"], **{k: p.get(k, 0) for k in engine.REVIVE_COLS})
         # purge rounds hand everyone three; anything past the allowance was paid
         # for by a drop, a bounty or Arsenal — the story labels those "(extra)"
         allowance = 3 if rn == race.get("purge_round") else 1
@@ -557,9 +562,11 @@ class BanRace(commands.Cog):
         if kind == "overload":
             return (f"💥 {tag}Overload armed at **{t['name']}** — you burn 1, they take 2. Lands {when}."
                     + self._slate(race_id, rn, shooter_id))
-        if kind == "revive":
-            return (f"💫 Revive set for **{t['name']}** — they come back with **1** life when the round "
-                    f"closes {when}. It doesn't count as your shot.")
+        if kind in engine.REVIVES:
+            emoji, label, _ = engine.REVIVES[kind]
+            back = engine.revive_lives(kind, race["settings"]["lives"])
+            return (f"{emoji} {label} set for **{t['name']}** — they come back with **{back}** "
+                    f"{'life' if back == 1 else 'lives'} when the round closes {when}. It doesn't count as your shot.")
         return f"💉 Transfuse set for **{t['name']}** — they gain 1, you lose 1. Lands {when}."
 
     def _slate(self, race_id, rn, shooter_id):
@@ -1293,10 +1300,11 @@ class BanRace(commands.Cog):
         e.add_field(name="Overload", value=f"💥 ×{p['overload']}", inline=True)
         e.add_field(name="Transfuse", value=f"💉 ×{p['transfuse']}", inline=True)
         e.add_field(name="Patch / Medkit", value=f"🩹 ×{p.get('patch', 0)} · 🏥 ×{p.get('medkit', 0)}", inline=True)
-        e.add_field(name="Revive", value=f"💫 ×{p.get('revive', 0)}", inline=True)
+        e.add_field(name="Revives", value=" ".join(f"{em}×{p.get(k, 0)}" for k, (em, _, _) in engine.REVIVES.items()),
+                    inline=True)
         e.add_field(name="Kills", value=str(p["kills"]), inline=True)
-        e.set_footer(text="Shields and extra shots work on their own. Overload, Transfuse and Revive need a target. "
-                          "Patch and Medkit heal you. Anything unused is gone when the round closes.")
+        e.set_footer(text="Shields and extra shots work on their own. Overload, Transfuse and revives need a target. "
+                          "Patch and Medkit heal you. Everything stays with you until the race ends.")
         e.add_field(name="What they do", value=powerup_guide(), inline=False)
         e.add_field(name="Super drops (sudden death)", value=super_guide(), inline=False)
         view = _PowerupView(self, race["id"], p, rows)
@@ -1502,7 +1510,8 @@ class BanRace(commands.Cog):
                            kind="use", user_id=p["user_id"])
             else:
                 line = engine.grant_super(p, d["kind"], st["shot_cap"], st["lives"])
-                engine.update_player(race["id"], p["user_id"], shots=p["shots"], lives=p["lives"])
+                engine.update_player(race["id"], p["user_id"], shots=p["shots"], lives=p["lives"],
+                                     **{k: p.get(k, 0) for k in engine.REVIVE_COLS})
                 engine.log(race["id"], race["round_no"], line, kind="grab", user_id=p["user_id"])
             title, color = f"🌟 {emoji} {name} — taken", COLOR_SUPER
         else:
@@ -1511,7 +1520,7 @@ class BanRace(commands.Cog):
             engine.update_player(race["id"], p["user_id"], shots=p["shots"], shield=p["shield"],
                                  overload=p["overload"], transfuse=p["transfuse"],
                                  patch=p.get("patch", 0), medkit=p.get("medkit", 0),
-                                 revive=p.get("revive", 0))
+                                 **{k: p.get(k, 0) for k in engine.REVIVE_COLS})
             engine.log(race["id"], race["round_no"], line, kind="grab", user_id=p["user_id"])
             title, color = f"⚡ {emoji} {name} — taken", COLOR_DROP
         await interaction.response.send_message(f"{emoji} **{name}** is yours.", ephemeral=True)
