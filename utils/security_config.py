@@ -229,6 +229,16 @@ DEFAULTS = {
     "deadchat_role_id": None,
     "deadchat_cooldown_min": 30,
     "deadchat_channels": [],
+    # Who may run it (9/13, Paul: "staff and level 20+ for my server"). Both
+    # blank = any member. `deadchat_min_level_role_id` is one of the server's
+    # level-reward roles: the cog looks its tier up in level_roles and lets
+    # anyone holding THAT tier or a higher one through (level sync gives a
+    # member only their current tier, so "Level 20+" alone would miss a
+    # level-50 member). A role that isn't a level tier just has to be held.
+    # `deadchat_ping_roles` always may; members who can Manage Messages or
+    # Timeout Members always may.
+    "deadchat_min_level_role_id": None,
+    "deadchat_ping_roles": [],
     # ── automation rules (cogs/auto_rules.py) ─────────────────────────────────
     # The dashboard's rule builder writes these. `rules` is a LIST of rule
     # objects, not flat keys — see cogs/auto_rules.py for the shape and for why
