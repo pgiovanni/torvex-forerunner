@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **231 commands** (100 top-level, the rest subcommands) across 42 cogs
+- **232 commands** (100 top-level, the rest subcommands) across 42 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -2479,6 +2479,21 @@ Last to survive: your power-ups — or aim an Overload / Transfuse.
 | `use` | string | No | Which power-up to use (leave empty to see what you hold) *(one of: `Overload — take 1 damage to deal 2 (needs a player)`, `Transfuse — give someone 1 life, lose 1 (needs a player)`, `Patch — heal yourself 1`, `Medkit — heal yourself 2, skip this round's vote`)* |
 | `player` | user | No | Who it's aimed at |
 
+#### `/race channel`
+
+Mods: set this server's race channel — where /race start opens lobbies.
+
+```
+/race channel [channel] [clear]
+```
+
+**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `channel` | channel | No | The race channel (blank = show the current one) *(channel types: text, announcement)* |
+| `clear` | boolean | No | Forget the setting (then /race start needs a mod's channel:) |
+
 #### `/race edit`
 
 Change an open lobby's settings before the race starts.
@@ -2496,7 +2511,7 @@ Change an open lobby's settings before the race starts.
 
 #### `/race start`
 
-Open a lobby. Posts in #last-to-survive (created if missing) or the channel you pick.
+Open a lobby in the server's race channel (set with /race channel).
 
 ```
 /race start [lives] [round_minutes] [mode] [min_account_days] [min_players] [sudden_death_at] [channel]
@@ -2512,7 +2527,7 @@ Open a lobby. Posts in #last-to-survive (created if missing) or the channel you 
 | `min_account_days` | integer | No | Minimum account age to enter (default 7) *(range 0–365)* |
 | `min_players` | integer | No | Players needed before the race can start (default 3) *(range 3–?)* |
 | `sudden_death_at` | integer | No | Alive count that starts sudden death (blank = sized to the field: ~¼, 2–5) *(range 2–50)* |
-| `channel` | channel | No | Where the race runs (default: #last-to-survive, created if missing) *(channel types: text, announcement)* |
+| `channel` | channel | No | Mods only: run this race somewhere other than the server's race channel *(channel types: text, announcement)* |
 
 #### `/race status`
 

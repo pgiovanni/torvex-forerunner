@@ -974,6 +974,34 @@
    "dm_allowed": false
   },
   {
+   "path": "race channel",
+   "description": "Mods: set this server's race channel — where /race start opens lobbies.",
+   "params": [
+    {
+     "name": "channel",
+     "type": "channel",
+     "required": false,
+     "description": "The race channel (blank = show the current one)",
+     "channel_types": [
+      "text",
+      "announcement"
+     ]
+    },
+    {
+     "name": "clear",
+     "type": "boolean",
+     "required": false,
+     "description": "Forget the setting (then /race start needs a mod's channel:)"
+    }
+   ],
+   "signature": "/race channel [channel] [clear]",
+   "root": "race",
+   "cog": "ban_race",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "race edit",
    "description": "Change an open lobby's settings before the race starts.",
    "params": [
@@ -1002,7 +1030,7 @@
   },
   {
    "path": "race start",
-   "description": "Open a lobby. Posts in #last-to-survive (created if missing) or the channel you pick.",
+   "description": "Open a lobby in the server's race channel (set with /race channel).",
    "params": [
     {
      "name": "lives",
@@ -1057,7 +1085,7 @@
      "name": "channel",
      "type": "channel",
      "required": false,
-     "description": "Where the race runs (default: #last-to-survive, created if missing)",
+     "description": "Mods only: run this race somewhere other than the server's race channel",
      "channel_types": [
       "text",
       "announcement"
@@ -5362,6 +5390,14 @@
    "cog": "ban_race",
    "visibility_permissions": [],
    "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "race channel": {
+   "cog": "ban_race",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_guild"
+   ],
    "server_owner_only": false
   },
   "race status": {
