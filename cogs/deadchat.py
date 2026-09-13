@@ -23,8 +23,20 @@ in that channel, otherwise Discord shows the mention without notifying
 anyone. The command refuses (ephemerally, with the fix) rather than post a
 ping that pings nobody.
 
+Who may run it (Paul, 2026-09-13: "change it to staff and level 20+ for my
+server"): two dashboard fields, both blank = any member.
+  * `deadchat_min_level_role_id` — one of the server's level-reward roles.
+    The tier is looked up in the LevelRoles mapping and anyone holding that
+    tier OR a higher one passes. This matters because `/levelroles sync`
+    gives a member only their CURRENT tier — a level-50 member holds
+    "Level 50+", not "Level 20+" — so a plain role check would lock out the
+    most active people. A role that isn't a level tier simply has to be held.
+  * `deadchat_ping_roles` — roles that may always ping (staff, boosters…).
+  Members who can Manage Messages or Timeout Members always pass.
+
 Config keys (utils/security_config.DEFAULTS, mirrored in the dashboard):
-  deadchat_enabled, deadchat_role_id, deadchat_cooldown_min, deadchat_channels
+  deadchat_enabled, deadchat_role_id, deadchat_cooldown_min, deadchat_channels,
+  deadchat_min_level_role_id, deadchat_ping_roles
 """
 import os
 import sys
@@ -88,6 +100,65 @@ def channel_allowed(cfg, channel_id, parent_id=None) -> bool:
     return int(channel_id) in allow or (parent_id is not None and int(parent_id) in allow)
 
 
+def _int_or_none(raw) -> Optional[int]:
+    try:
+        v = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return v or None
+
+
+def min_level_role(cfg) -> Optional[int]:
+    return _int_or_none(cfg.get("deadchat_min_level_role_id"))
+
+
+def ping_roles(cfg) -> set:
+    out = set()
+    for x in cfg.get("deadchat_ping_roles") or []:
+        v = _int_or_none(x)
+        if v:
+            out.add(v)
+    return out
+
+
+def restricted(cfg) -> bool:
+    """True when the card limits who may ping (either field set)."""
+    return min_level_role(cfg) is not None or bool(ping_roles(cfg))
+
+
+def qualifying_level_roles(min_rid, mapping) -> set:
+    """Every level-reward role at or above the tier `min_rid` belongs to.
+    `mapping` is {level: role_id} (LevelRoles._mapping). Not a tier → {min_rid}
+    so a plain role still works as "must hold this"."""
+    tiers = {int(rid): int(lvl) for lvl, rid in (mapping or {}).items()}
+    tier = tiers.get(int(min_rid))
+    if tier is None:
+        return {int(min_rid)}
+    return {rid for rid, lvl in tiers.items() if lvl >= tier}
+
+
+def can_ping(cfg, member_role_ids, is_mod=False, mapping=None) -> bool:
+    """Whether this member may run /deadchat. Open server (nothing configured)
+    → yes. Otherwise mods, the always-allowed roles, or a level tier at/above
+    the minimum."""
+    if not restricted(cfg):
+        return True
+    if is_mod:
+        return True
+    held = {int(r) for r in member_role_ids}
+    if held & ping_roles(cfg):
+        return True
+    min_rid = min_level_role(cfg)
+    if min_rid is not None and held & qualifying_level_roles(min_rid, mapping):
+        return True
+    return False
+
+
+def is_mod(perms) -> bool:
+    return bool(perms.administrator or perms.manage_guild or perms.manage_messages
+                or perms.moderate_members)
+
+
 def render(user_mention, rid, message) -> str:
     """The public ping. The member's words go in a quote block, one '> ' per
     line, capped — AllowedMentions on send is what keeps them from pinging."""
@@ -128,6 +199,13 @@ class DeadChat(commands.Cog):
                 "The configured Dead Chat role no longer exists — a server manager needs to pick "
                 "another one on the dashboard (**Dead Chat Ping** card).", ephemeral=True)
             return
+        if not can_ping(cfg, [r.id for r in interaction.user.roles],
+                        is_mod(interaction.user.guild_permissions),
+                        await self._level_mapping(guild.id)):
+            await interaction.response.send_message(
+                self._who_may_text(guild, cfg), ephemeral=True,
+                allowed_mentions=discord.AllowedMentions.none())
+            return
         parent_id = getattr(channel, "parent_id", None)
         if not channel_allowed(cfg, channel.id, parent_id):
             where = " ".join(f"<#{c}>" for c in sorted(allowed_channels(cfg))) or "the allowed channels"
@@ -158,6 +236,32 @@ class DeadChat(commands.Cog):
         await interaction.response.send_message(
             render(interaction.user.mention, rid, message),
             allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=[role]))
+
+    async def _level_mapping(self, guild_id) -> dict:
+        """{level: role_id} from the LevelRoles cog; {} when it isn't loaded or
+        its pool is down — the check then treats the minimum role as
+        'must hold it', never as 'let everyone through'."""
+        cog = self.bot.get_cog("LevelRoles")
+        if cog is None or getattr(cog, "pool", None) is None:
+            return {}
+        try:
+            return await cog._mapping(guild_id)
+        except Exception as e:  # noqa: BLE001 — a DB blip must not crash the command
+            print(f"[deadchat] level mapping unavailable for {guild_id}: {e}")
+            return {}
+
+    @staticmethod
+    def _who_may_text(guild, cfg) -> str:
+        parts = []
+        min_rid = min_level_role(cfg)
+        if min_rid is not None:
+            r = guild.get_role(min_rid)
+            parts.append(f"**{r.name}** and up" if r else "a high enough level")
+        names = [guild.get_role(x).name for x in sorted(ping_roles(cfg)) if guild.get_role(x)]
+        if names:
+            parts.append(", ".join(f"**{n}**" for n in names))
+        who = " or ".join(parts) if parts else "staff"
+        return f"Dead Chat pings here are for {who} (staff always can). Keep chatting and you'll get there!"
 
     @deadchat.error
     async def _deadchat_error(self, interaction: discord.Interaction, error):

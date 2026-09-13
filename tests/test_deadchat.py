@@ -81,5 +81,51 @@ class Render(unittest.TestCase):
         self.assertIn("@everyone", out)
 
 
+class WhoMayPing(unittest.TestCase):
+    """staff + level 20+ (Paul, 9/13). mapping = {level: role_id} as LevelRoles
+    stores it; a synced member holds ONLY their current tier."""
+    MAP = {1: 101, 5: 105, 10: 110, 20: 120, 30: 130, 50: 150}
+    CFG = {"deadchat_min_level_role_id": "120", "deadchat_ping_roles": ["900", "901"]}
+
+    def test_open_when_nothing_configured(self):
+        self.assertTrue(D.can_ping({}, [], False, self.MAP))
+        self.assertTrue(D.can_ping({"deadchat_min_level_role_id": "", "deadchat_ping_roles": []}, [], False, {}))
+        self.assertFalse(D.restricted({}))
+        self.assertTrue(D.restricted(self.CFG))
+
+    def test_minimum_tier_and_every_tier_above_pass(self):
+        self.assertTrue(D.can_ping(self.CFG, [120], False, self.MAP))       # exactly Level 20+
+        self.assertTrue(D.can_ping(self.CFG, [150], False, self.MAP))       # Level 50+ only (synced)
+        self.assertTrue(D.can_ping(self.CFG, [130, 5], False, self.MAP))
+        self.assertFalse(D.can_ping(self.CFG, [110], False, self.MAP))      # Level 10+
+        self.assertFalse(D.can_ping(self.CFG, [], False, self.MAP))
+        self.assertEqual(D.qualifying_level_roles(120, self.MAP), {120, 130, 150})
+
+    def test_always_roles_and_mods_bypass(self):
+        self.assertTrue(D.can_ping(self.CFG, [900], False, self.MAP))
+        self.assertTrue(D.can_ping(self.CFG, ["901"], False, self.MAP))
+        self.assertTrue(D.can_ping(self.CFG, [], True, self.MAP))
+        only_roles = {"deadchat_ping_roles": ["900"]}
+        self.assertTrue(D.can_ping(only_roles, [900], False, {}))
+        self.assertFalse(D.can_ping(only_roles, [120], False, self.MAP))
+
+    def test_non_tier_role_or_no_mapping_means_must_hold_it(self):
+        # not a level tier → plain "must hold this role"
+        cfg = {"deadchat_min_level_role_id": 777}
+        self.assertTrue(D.can_ping(cfg, [777], False, self.MAP))
+        self.assertFalse(D.can_ping(cfg, [150], False, self.MAP))
+        # LevelRoles down → {} mapping → never opens the door, only the role itself passes
+        self.assertTrue(D.can_ping(self.CFG, [120], False, {}))
+        self.assertFalse(D.can_ping(self.CFG, [150], False, {}))
+        self.assertFalse(D.can_ping(self.CFG, [150], False, None))
+
+    def test_junk_config_fails_closed_to_open(self):
+        # unparsable role id / junk list entries = "not configured", same rule as deadchat_role_id
+        self.assertIsNone(D.min_level_role({"deadchat_min_level_role_id": "abc"}))
+        self.assertEqual(D.ping_roles({"deadchat_ping_roles": ["x", "", None, "5"]}), {5})
+        self.assertTrue(D.can_ping({"deadchat_min_level_role_id": "abc", "deadchat_ping_roles": ["x"]},
+                                   [], False, self.MAP))
+
+
 if __name__ == "__main__":
     unittest.main()
