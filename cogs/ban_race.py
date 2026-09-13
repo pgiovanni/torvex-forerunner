@@ -2,6 +2,8 @@
 
     /race start|stop|edit|status   anyone can open a ghost race; real bans and
                               channel: need Manage Server; stop/edit = host or mod
+    /race channel <#channel>  Manage Server: the server's race channel (a setting —
+                              the bot never creates channels)
     /vote <player>            fire this round's shot — private until the round closes
     /powerup [use] [target]   inventory, or aim an Overload / Transfuse
 
@@ -35,6 +37,7 @@ from discord.ext import commands
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils import ban_race as engine  # noqa: E402
 from utils.quiet_removals import mark as quiet_mark  # noqa: E402
+from utils.security_config import get_config, set_config  # noqa: E402
 
 log = logging.getLogger("ban_race")
 
@@ -400,6 +403,17 @@ class BanRace(commands.Cog):
 
     async def _channel_for(self, guild, race):
         return guild.get_channel(int(race["channel_id"]))
+
+    def _configured_channel(self, guild):
+        """The server's race channel from config, or None. Coerces the stored
+        id and fails closed on junk (see antinuke id-coercion trap)."""
+        raw = get_config(guild.id).get("race_channel_id")
+        try:
+            cid = int(raw) if raw else 0
+        except (TypeError, ValueError):
+            return None
+        ch = guild.get_channel(cid) if cid else None
+        return ch if isinstance(ch, discord.TextChannel) else None
 
     # ── the Racer role: the channel's send permission ─────────────────────────
     # "No one can message the channel unless they click Join" (Paul, 9/11).
@@ -796,14 +810,14 @@ class BanRace(commands.Cog):
     race = app_commands.Group(name="race", description="Last to survive — the ban race (anyone can start one)",
                               guild_only=True)
 
-    @race.command(name="start", description="Open a lobby. Posts in #last-to-survive (created if missing) or the channel you pick.")
+    @race.command(name="start", description="Open a lobby in the server's race channel (set with /race channel).")
     @app_commands.describe(lives="Lives per player (blank = recommended for however many join)",
                            round_minutes="Minutes per round (default 3)",
                            mode="ghost = no bans (default); real = actual bans, auto-unban at the end",
                            min_account_days="Minimum account age to enter (default 7)",
                            min_players="Players needed before the race can start (default 3)",
                            sudden_death_at="Alive count that starts sudden death (blank = sized to the field: ~¼, 2–5)",
-                           channel="Where the race runs (default: #last-to-survive, created if missing)")
+                           channel="Mods only: run this race somewhere other than the server's race channel")
     @app_commands.choices(mode=MODE_CHOICES)
     async def race_start(self, interaction: discord.Interaction,
                          lives: app_commands.Range[int, 1, 50] = None,
@@ -825,28 +839,23 @@ class BanRace(commands.Cog):
                 "**Manage Server**.", ephemeral=True)
         if not is_mod and channel is not None:
             return await interaction.response.send_message(
-                f"Picking the channel needs **Manage Server** (the race locks it down). Leave `channel:` blank "
-                f"and it runs in #{engine.DEFAULT_CHANNEL}.", ephemeral=True)
+                "Picking the channel needs **Manage Server** (the race locks it down). Leave `channel:` blank "
+                "and it runs in the server's race channel.", ephemeral=True)
         me = guild.me.guild_permissions
         if mode_v == "real" and not me.ban_members:
             return await interaction.response.send_message(
                 "I need **Ban Members** to run a real race (that's the whole game).", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
 
+        # The race channel is a SERVER SETTING (Paul 9/12: "not a 'create a
+        # channel', that's crazy") — /race channel sets it; the bot never
+        # creates one. A mod may still point one race elsewhere with channel:.
         if channel is None:
-            channel = discord.utils.get(guild.text_channels, name=engine.DEFAULT_CHANNEL)
+            channel = self._configured_channel(guild)
         if channel is None:
-            if not me.manage_channels:
-                return await interaction.followup.send(
-                    f"No #{engine.DEFAULT_CHANNEL} here and I can't create channels — pass `channel:`.",
-                    ephemeral=True)
-            try:
-                channel = await guild.create_text_channel(
-                    engine.DEFAULT_CHANNEL, reason=f"Last to survive — opened by {interaction.user}",
-                    topic="Last to survive: lives, secret shots, power-up drops. Zero lives = banned. "
-                          "Everyone comes back when it ends.")
-            except discord.HTTPException as e:
-                return await interaction.followup.send(f"Couldn't create the channel: {e}", ephemeral=True)
+            return await interaction.followup.send(
+                "This server has no race channel yet — a mod picks one with `/race channel #channel`.",
+                ephemeral=True)
 
         warn = []
         racer_role_id = None
@@ -983,6 +992,33 @@ class BanRace(commands.Cog):
                 pass
         await interaction.followup.send(
             f"{summary}. {len(rows)} in so far — it starts at {need}.", ephemeral=True)
+
+    @race.command(name="channel", description="Mods: set this server's race channel — where /race start opens lobbies.")
+    @app_commands.describe(channel="The race channel (blank = show the current one)",
+                           clear="Forget the setting (then /race start needs a mod's channel:)")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def race_channel(self, interaction: discord.Interaction,
+                           channel: discord.TextChannel = None, clear: bool = False):
+        guild = interaction.guild
+        if clear:
+            set_config(guild.id, race_channel_id=None)
+            return await interaction.response.send_message(
+                "Race channel cleared. `/race start` needs one again — set it here, or a mod passes `channel:`.",
+                ephemeral=True)
+        if channel is None:
+            cur = self._configured_channel(guild)
+            return await interaction.response.send_message(
+                f"Race channel: {cur.mention}" if cur else
+                "No race channel set — `/race channel #channel` to pick one.", ephemeral=True)
+        perms = channel.permissions_for(guild.me)
+        missing = [name for name, ok in (("Send Messages", perms.send_messages),
+                                         ("Manage Permissions", perms.manage_roles),
+                                         ("Create Invite", perms.create_instant_invite)) if not ok]
+        set_config(guild.id, race_channel_id=str(channel.id))
+        note = ("\n" + f"⚠️ I'm missing **{', '.join(missing)}** there — the Racer lock / return invite "
+                f"will fail until that's fixed." if missing else "")
+        await interaction.response.send_message(
+            f"Race channel set to {channel.mention}. `/race start` opens lobbies there.{note}", ephemeral=True)
 
     @race.command(name="status", description="Standings for the race in progress.")
     async def race_status(self, interaction: discord.Interaction):
