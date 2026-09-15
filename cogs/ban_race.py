@@ -255,19 +255,62 @@ def _lives_bar(n, max_lives=None):
     return "❤️" * max(0, n)
 
 
-def powerup_guide():
-    """Every power-up with its benefit and its cost, grouped by drop tier —
+FIELD_LIMIT = 1024  # Discord's hard cap on one embed field's value
+
+
+def add_chunked(e, name, blocks, inline=False):
+    """Add `blocks` to embed `e` under `name`, spilling into "(cont.)" fields so
+    no value ever passes Discord's 1024-char limit. A block is a group of lines
+    kept together when it fits (a drop tier, say); an oversized block splits
+    line by line, and a single oversized line is trimmed.
+
+    Why this exists: an over-long value is a 400 on the WHOLE message, and a
+    button handler that 400s never answers its interaction — the player just
+    sees "didn't respond in time". The 9/13 revive tiers pushed the kit's two
+    guides past 1024 and killed the Power-ups button for races 8 and 9.
+    """
+    parts, cur = [], ""
+
+    def flush():
+        nonlocal cur
+        if cur:
+            parts.append(cur)
+            cur = ""
+
+    for block in blocks:
+        text = "\n".join(block)
+        if len(text) <= FIELD_LIMIT:
+            if cur and len(cur) + 1 + len(text) <= FIELD_LIMIT:
+                cur = f"{cur}\n{text}"
+            else:
+                flush()
+                cur = text
+            continue
+        for line in block:
+            if len(line) > FIELD_LIMIT:
+                line = line[:FIELD_LIMIT - 2] + " …"
+            if cur and len(cur) + 1 + len(line) > FIELD_LIMIT:
+                flush()
+            cur = f"{cur}\n{line}" if cur else line
+    flush()
+    for i, value in enumerate(parts or ["—"]):
+        e.add_field(name=name if i == 0 else f"{name} (cont.)", value=value, inline=inline)
+
+
+def powerup_blocks():
+    """Every power-up with its benefit and its cost, ONE BLOCK PER DROP TIER —
     the same text the drop shows, so nobody grabs something they don't
-    understand."""
-    out = []
+    understand. A block keeps a tier's header with its items when fields split."""
+    blocks = []
     for tier, (t_emoji, t_label, _) in engine.TIERS.items():
         kinds = [k for k, t in engine.POWERUP_TIER.items() if t == tier]
         note = "they bite back — drop often" if tier == "common" else "no strings — drop rarely"
-        out.append(f"{t_emoji} **{t_label.upper()}** · {note}")
+        block = [f"{t_emoji} **{t_label.upper()}** · {note}"]
         for k in kinds:
             emoji, name, blurb = engine.POWERUPS[k]
-            out.append(f"{emoji} **{name}** — {blurb}")
-    return "\n".join(out)
+            block.append(f"{emoji} **{name}** — {blurb}")
+        blocks.append(block)
+    return blocks
 
 
 def lives_line(s, n_joined):
@@ -287,14 +330,15 @@ def lives_line(s, n_joined):
             + (f", for the {n_joined} in so far: **{rec_now}**" if rec_now != rec_full and n_joined else "") + ".")
 
 
-def super_guide():
-    """The sudden-death supers, golden apple flagged as the super-rare one."""
-    lines = ["🌟 **SUPER** · sudden death only, one per round — most fire the moment they're grabbed, "
-             "revives go to your kit"]
+def super_blocks():
+    """The sudden-death supers, golden apple flagged as the super-rare one.
+    One block per line, so the list packs into as few fields as it needs."""
+    blocks = [["🌟 **SUPER** · sudden death only, one per round — most fire the moment they're grabbed, "
+               "revives go to your kit"]]
     for kind, (emoji, name, blurb) in engine.SUPER.items():
         tag = " · **SUPER RARE**" if engine.SUPER_WEIGHTS.get(kind) == 1 else ""
-        lines.append(f"{emoji} **{name}**{tag} — {blurb}")
-    return "\n".join(lines)
+        blocks.append([f"{emoji} **{name}**{tag} — {blurb}"])
+    return blocks
 
 
 def lobby_embed(race, rows, guild_name):
@@ -342,10 +386,10 @@ def standings_embed(race, rows):
     for p in live:
         tag = " 🎯" if p["bounty"] else ""
         lines.append(f"{_lives_bar(p['lives'], race['settings']['lives'])} **{p['name']}**{tag} · {p['kills']} kills")
-    e.add_field(name=f"Alive ({len(live)})", value="\n".join(lines[:30]) or "—", inline=False)
+    add_chunked(e, f"Alive ({len(live)})", [[ln] for ln in lines[:30]])
     if fallen:
         f = [f"💀 {p['name']} · round {p['died_round']}" for p in fallen[:30]]
-        e.add_field(name=f"Fallen ({len(fallen)})", value="\n".join(f), inline=False)
+        add_chunked(e, f"Fallen ({len(fallen)})", [[ln] for ln in f])
     e.set_footer(text="Shields are secret. Kills pay a shield (a Patch if you already hold one); "
                       "the bounty pays two shots. AFK kills pay nothing.")
     return e
@@ -1305,8 +1349,8 @@ class BanRace(commands.Cog):
         e.add_field(name="Kills", value=str(p["kills"]), inline=True)
         e.set_footer(text="Shields and extra shots work on their own. Overload, Transfuse and revives need a target. "
                           "Patch and Medkit heal you. Everything stays with you until the race ends.")
-        e.add_field(name="What they do", value=powerup_guide(), inline=False)
-        e.add_field(name="Super drops (sudden death)", value=super_guide(), inline=False)
+        add_chunked(e, "What they do", powerup_blocks())
+        add_chunked(e, "Super drops (sudden death)", super_blocks())
         view = _PowerupView(self, race["id"], p, rows)
         # discord.py treats view=None as "a view" and calls .is_finished() on it —
         # pass the kwarg only when there are buttons to show (crashed live 9/12).
@@ -1332,6 +1376,24 @@ class BanRace(commands.Cog):
                 await handler(interaction, race, extra)
         except discord.HTTPException as e:
             log.warning("race button %s failed: %s", action, e)
+            await self._button_failed(interaction)
+        except Exception:
+            log.exception("race button %s crashed", action)
+            await self._button_failed(interaction)
+
+    @staticmethod
+    async def _button_failed(interaction):
+        """A handler that raised has usually not answered its interaction, and
+        Discord then shows the player "didn't respond in time" with nothing to
+        act on. Always put something in front of them."""
+        text = "That didn't go through — hit the button again. If it keeps failing, tell the host."
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(text, ephemeral=True)
+            else:
+                await interaction.response.send_message(text, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
     def _is_host(self, interaction, race):
         return (str(interaction.user.id) == race["host_id"]
