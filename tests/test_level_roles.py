@@ -19,7 +19,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
 
 from cogs.economy import mee6_xp_for_level, mee6_level_from_xp  # noqa: E402
-from cogs.level_roles import pick_reward, role_changes, merged_totals  # noqa: E402
+from cogs.level_roles import (pick_reward, role_changes, merged_totals,  # noqa: E402
+                             parse_guild_allowlist)
 
 _fails = []
 _total = 0
@@ -109,6 +110,16 @@ check("empty merge stays empty", m == {"xp": 0, "level": 0, "message_count": 0, 
 # the emptied source lands on level 0 and the sweep strips every tier from it
 add, rem = role_changes({110, 150}, 0, MAP)
 check("emptied source loses every reward tier", add == [] and sorted(rem) == [110, 150])
+
+# ── operator allowlist for /levelroles transfer ────────────────────────
+check("commas and spaces both parse",
+      parse_guild_allowlist("111, 222  333") == {111, 222, 333})
+check("falls back to the next value when the first is unset",
+      parse_guild_allowlist(None, "", "444") == {444})
+check("no env anywhere = nobody, not everybody",
+      parse_guild_allowlist(None, "") == set())
+check("junk entries are dropped, not crashed on",
+      parse_guild_allowlist("111, not-an-id, 222") == {111, 222})
 
 print(f"\n{_total - len(_fails)}/{_total} passed")
 if _fails:

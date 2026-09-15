@@ -37,6 +37,28 @@ DB_DSN = os.getenv("DISCORD_DB_DSN", "")
 MEE6_API = "https://mee6.xyz/api/plugins/levels/leaderboard/{gid}?limit=1000&page={page}"
 
 JOB_POLL_SECONDS = 10
+
+
+def parse_guild_allowlist(*values):
+    """Guild ids from the first env value that has any — commas or spaces.
+
+    Same shape as RECON_GUILDS / BACKUP_GUILDS / MSGLOG_ARCHIVE_GUILDS: the
+    operator grants a capability to their OWN servers from the environment,
+    because it is their data and their call, not a toggle a guild admin finds
+    on a dashboard.
+    """
+    for raw in values:
+        ids = {int(g) for g in (raw or "").replace(",", " ").split() if g.strip().isdigit()}
+        if ids:
+            return ids
+    return set()
+
+
+# Where /levelroles transfer works. Moving XP between accounts is an operator
+# tool, not something every server's admins get (Paul 9/15: "it shouldn't be
+# given to everyone yet, just a tool for us"). Unset = the operator's own guild.
+XP_TRANSFER_GUILDS = parse_guild_allowlist(
+    os.environ.get("XP_TRANSFER_GUILDS"), os.environ.get("ALTGUARD_GUILD_ID"))
 LEADERBOARD_HELP = (
     "MEE6's leaderboard for this server isn't public (or MEE6 was never here). "
     "Turn it on: MEE6 dashboard → Levels → **Make leaderboard public**, then try again."
@@ -438,6 +460,9 @@ class LevelRoles(commands.Cog):
                        bucks: bool = False, preview: bool = False):
         """Merge an old/alt account's server progress into a new one.
 
+        Operator-gated: only guilds in XP_TRANSFER_GUILDS (default: the
+        operator's own) can run it, on top of the group's admin requirement.
+
         The ONE deliberate exception to the never-lower policy everywhere else
         in this cog: the source account is emptied (0 XP / level 0 / 0 msgs) on
         purpose — a transfer that left the XP behind would be a copy. Totals are
@@ -447,6 +472,11 @@ class LevelRoles(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
+        if guild.id not in XP_TRANSFER_GUILDS:
+            await interaction.followup.send(
+                "❌ Moving XP between accounts is an operator tool and isn't enabled for this "
+                "server. Everything else in `/levelroles` works normally.", ephemeral=True)
+            return
         if source.id == target.id:
             await interaction.followup.send("❌ Those are the same account.", ephemeral=True)
             return
