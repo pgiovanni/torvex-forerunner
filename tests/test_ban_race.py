@@ -56,7 +56,10 @@ class AlwaysBackfire(NoBackfire):
         return 0.0
 
 
-def resolve(rows, shots, round_no=1, rng=None, sudden=False, storm=False, msgs=None, afk=False, **kw):
+def resolve(rows, shots, round_no=1, rng=None, sudden=False, storm=False, msgs=None, afk=False,
+            rows_extra=None, **kw):
+    if rows_extra is not None:
+        rows = rows + [rows_extra]
     args = dict(backfire=0.10, sudden=sudden, storm=storm, msgs=msgs or {}, max_lives=3, shot_cap=3,
                 afk=afk)
     args.update(kw)
@@ -90,9 +93,12 @@ class Damage(unittest.TestCase):
         self.assertFalse(b["alive"])
         self.assertEqual(sorted(r["winners"]), ["1", "2"])   # mutual destruction = draw
 
-    def test_shot_at_a_corpse_is_wasted(self):
-        a, b, c = P(1), P(2, lives=1), P(3)
-        r = resolve([a, b, c], [S(1, 2), S(3, 2)])
+    def test_shot_at_a_corpse_from_an_earlier_round_is_wasted(self):
+        # same-round corpses are overkill now (see Overkill below); a body from
+        # a previous round is still just a wasted shot
+        a, c = P(1), P(3)
+        b = P(2, lives=0, alive=0, died_round=1)
+        r = resolve([a, c], [S(1, 2), S(3, 2)], rows_extra=b, round_no=2)
         self.assertEqual(c["kills"], 0)
         self.assertTrue(any("Wasted" in ln for ln in r["lines"]))
 
@@ -855,6 +861,84 @@ class Revive(unittest.TestCase):
         E.grant_super(p, "revive_extra", 3, 3)            # super revives go to the kit, not instant
         self.assertEqual(p["revive_extra"], 1)
         self.assertEqual(p["lives"], 3)
+
+
+class Overkill(unittest.TestCase):
+    """Damage past a victim's last life, inside one round (Paul 9/15). The
+    killing blow's excess plus every shot that lands on them once they're
+    already down — pile-ons used to resolve as "wasted"."""
+
+    def test_reward_table(self):
+        self.assertIsNone(E.overkill_reward(0))
+        self.assertIsNone(E.overkill_reward(1))            # 1 over is flavour only
+        self.assertEqual(E.overkill_reward(2)[1:], ("OVERKILL", 1))
+        self.assertEqual(E.overkill_reward(3)[1:], ("BRUTAL", 2))
+        self.assertEqual(E.overkill_reward(4)[1:], ("OBLITERATED", 3))
+        self.assertEqual(E.overkill_reward(20)[2], E.OVERKILL_MAX_PATCHES)   # capped
+
+    def test_one_over_pays_nothing(self):
+        # overload's 2 into a one-life player: 1 over, under the threshold
+        a, b = P(1), P(2, lives=1)
+        r = resolve([a, b], [S(1, 2, "overload"), S(2, 1)])
+        self.assertEqual(r["overkill"], {"2": 1})
+        self.assertEqual(a["patch"], 0)
+        self.assertEqual(a["shield"], 1)                   # the plain kill pay still lands
+
+    def test_two_over_pays_one_patch_to_the_killer(self):
+        a, b, c, v = P(1), P(2), P(3), P(4, lives=1)
+        r = resolve([a, b, c, v], [S(1, 4), S(2, 4), S(3, 4), S(4, 1)])
+        self.assertEqual(r["overkill"], {"4": 2})          # two shots landed on the corpse
+        self.assertEqual(a["patch"], 1)                    # killer collects for the whole pile
+        self.assertEqual(a["overkill"], 2)
+        self.assertEqual(b["patch"], 0)                    # pilers get named, not paid
+        self.assertEqual(c["patch"], 0)
+
+    def test_the_pile_is_capped(self):
+        rows = [P(i) for i in range(1, 7)] + [P(7, lives=1)]
+        shots = [S(i, 7) for i in range(1, 7)] + [S(7, 1)]
+        resolve(rows, shots)
+        self.assertEqual(rows[0]["overkill"], 5)           # 5 shots past the last life
+        self.assertEqual(rows[0]["patch"], E.OVERKILL_MAX_PATCHES)
+
+    def test_overload_excess_and_a_pile_on_add_up(self):
+        a, b, v = P(1), P(2), P(3, lives=1)
+        r = resolve([a, b, v], [S(1, 3, "overload"), S(2, 3), S(3, 1)])
+        self.assertEqual(r["overkill"], {"3": 2})          # 1 excess + 1 pile-on
+        self.assertEqual(a["patch"], 1)
+
+    def test_an_afk_victim_still_pays_nothing(self):
+        # the whole point of the AFK rule: no free anything off someone absent
+        a, b, c, v = P(1), P(2), P(3), P(4, lives=1)
+        resolve([a, b, c, v], [S(1, 4), S(2, 4), S(3, 4)], afk=True)
+        self.assertEqual(a["patch"], 0)
+        self.assertEqual(a["shield"], 0)
+        self.assertEqual(a.get("overkill", 0), 0)
+        self.assertEqual(a["kills"], 0)
+
+    def test_a_shot_at_last_round_s_corpse_is_still_wasted(self):
+        a, v = P(1), P(2, lives=0, alive=0, died_round=1)
+        s = S(1, 2)
+        s["id"] = 7
+        r = resolve([a, v], [s], round_no=2)
+        self.assertEqual(r["results"][7], "wasted")
+        self.assertEqual(r["overkill"], {})
+
+    def test_pile_on_shots_are_recorded_as_overkill_not_wasted(self):
+        a, b, v = P(1), P(2), P(3, lives=1)
+        first, pile = S(1, 3), S(2, 3)
+        first["id"], pile["id"] = 1, 2
+        r = resolve([a, b, v], [first, pile, S(3, 1)])
+        self.assertEqual(r["results"][1], "kill")
+        self.assertEqual(r["results"][2], "overkill")
+
+    def test_it_survives_a_save_and_reload(self):
+        # the running total is the hook an XP system would read later
+        race = E.create_race("g-overkill", "c", "h")
+        E.join(race["id"], 1, "one", 3)
+        rows = E.players(race["id"])
+        rows[0]["overkill"] = 6
+        E.save_players(race["id"], rows)
+        self.assertEqual(E.player(race["id"], 1)["overkill"], 6)
 
 
 if __name__ == "__main__":

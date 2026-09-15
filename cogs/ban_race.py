@@ -341,6 +341,19 @@ def super_blocks():
     return blocks
 
 
+def overkill_blocks():
+    """How overkill pays, for the kit pop-up. Rules live in the engine, so the
+    thresholds here can never drift from what actually resolves."""
+    ladder = " · ".join(f"{emoji} **{label}** {need}+ \u2192 🩹 ×{min(need - 1, engine.OVERKILL_MAX_PATCHES)}"
+                        for need, emoji, label in reversed(engine.OVERKILL_LABELS))
+    return [[
+        "💀 **Overkill** = damage past a victim's last life, inside one round. A shot at someone "
+        "who's already down THIS round is no longer wasted — it piles on.",
+        f"The credited killer collects for the whole pile: {ladder}.",
+        "❌ Killing someone who was AFK still pays nothing, and a pile of 1 pays nothing.",
+    ]]
+
+
 def lobby_embed(race, rows, guild_name):
     s = race["settings"]
     e = discord.Embed(title="🔫 LAST TO SURVIVE", color=COLOR,
@@ -355,6 +368,8 @@ def lobby_embed(race, rows, guild_name):
            f"Sudden death adds **super drops**.\n"
            f"• **Sudden death** (shields off, half-length rounds) once **{s.get('sudden_death_at', engine.DEFAULTS['sudden_death_at'])}** are left"
            f"{' — sized to the head-count when it starts' if s.get('sudden_auto') else ''}.\n"
+           f"• **Overkill**: damage past someone's last life still counts — pile on a target who's "
+           f"already down and the killer takes the Patches.\n"
            f"• Last one standing wins. 🎁")
     e.add_field(name="How it works", value=how, inline=False)
     e.add_field(name="Lives", value=lives_line(s, len(rows)), inline=False)
@@ -1254,7 +1269,8 @@ class BanRace(commands.Cog):
                 title=f"🔎 {st['name']} — all time",
                 description=(f"**{st['races']}** races · **{st['wins']}** wins ({rate}) · **{st['kills']}** kills · "
                              f"**{st['shots']}** shots fired · out **{st['outs']}** times · "
-                             f"**{st['rounds']}** rounds survived"),
+                             f"**{st['rounds']}** rounds survived · "
+                             f"💀 **{st.get('overkill', 0)}** overkill"),
                 color=COLOR)
             lines = []
             for h in st["history"][:15]:
@@ -1351,6 +1367,7 @@ class BanRace(commands.Cog):
                           "Patch and Medkit heal you. Everything stays with you until the race ends.")
         add_chunked(e, "What they do", powerup_blocks())
         add_chunked(e, "Super drops (sudden death)", super_blocks())
+        add_chunked(e, "Overkill", overkill_blocks())
         view = _PowerupView(self, race["id"], p, rows)
         # discord.py treats view=None as "a view" and calls .is_finished() on it —
         # pass the kwarg only when there are buttons to show (crashed live 9/12).

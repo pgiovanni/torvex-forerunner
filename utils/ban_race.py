@@ -168,6 +168,33 @@ def tier_of(kind):
     """(emoji, label) of a power-up's drop tier."""
     e, label, _ = TIERS[POWERUP_TIER[kind]]
     return e, label
+# ── Overkill (Paul 9/15: "when you kill them with 2 or more over their health
+# … the more over they get eliminated the more benefit") ─────────────────────
+# Overkill is damage that lands on a victim BEYOND what it took to eliminate
+# them, inside one round: the excess on the killing blow (an Overload's 2 into
+# a one-life player is 1 over) plus every shot that lands on them after they
+# are already down that round. Those pile-on shots used to resolve as "wasted"
+# — now they count, which is what makes a dogpile worth joining.
+#
+# The reward is Patches and nothing else: clean no-strings heals, never extra
+# shots (Paul 9/12: "extra shot appearing way too much"), never a pitfall item.
+# Every point of overkill past the first pays one, capped.
+OVERKILL_MIN = 2           # below this it is flavour on the card, no reward
+OVERKILL_MAX_PATCHES = 3   # even a ten-player dogpile pays at most this
+OVERKILL_LABELS = ((4, "💥", "OBLITERATED"), (3, "☠️", "BRUTAL"), (2, "💀", "OVERKILL"))
+
+
+def overkill_reward(over):
+    """(emoji, label, patches) for `over` points of excess damage, or None
+    below OVERKILL_MIN. Patches = over − 1, capped at OVERKILL_MAX_PATCHES."""
+    if over < OVERKILL_MIN:
+        return None
+    for need, emoji, label in OVERKILL_LABELS:
+        if over >= need:
+            return emoji, label, min(over - 1, OVERKILL_MAX_PATCHES)
+    return None
+
+
 USABLE = ("overload", "transfuse",             # the ones a player has to aim
           "revive_small", "revive_medium", "revive_full", "revive_extra")   # (revives aim at the dead)
 SELF_USE = ("patch", "medkit")       # used on yourself, instantly
@@ -294,7 +321,8 @@ def init(db=None):
                          ("revive_small", "INTEGER NOT NULL DEFAULT 0"),
                          ("revive_medium", "INTEGER NOT NULL DEFAULT 0"),
                          ("revive_full", "INTEGER NOT NULL DEFAULT 0"),
-                         ("revive_extra", "INTEGER NOT NULL DEFAULT 0"))),
+                         ("revive_extra", "INTEGER NOT NULL DEFAULT 0"),
+                         ("overkill", "INTEGER NOT NULL DEFAULT 0"))),
             ("shots", (("seq", "INTEGER"),
                        ("extra", "INTEGER NOT NULL DEFAULT 0"),
                        ("result", "TEXT"),
@@ -375,7 +403,7 @@ def alltime(guild_id, db=None):
     """Career numbers across every FINISHED race in the guild (aborted ones
     never crowned anyone, so they don't count). Returns
       races   — finished races, newest first, each with `winner_names`
-      players — {user_id: {name, races, wins, kills, outs, rounds, shots}}
+      players — {user_id: {name, races, wins, kills, outs, rounds, shots, overkill}}
                 rounds = rounds survived (died_round, or the race length if
                 they were standing at the end); name = latest seen.
     Only structured columns are used — nothing is parsed out of log text."""
@@ -402,7 +430,8 @@ def alltime(guild_id, db=None):
         uid = p["user_id"]
         names.setdefault(uid, p["name"])
         st = players.setdefault(uid, {"name": p["name"], "races": 0, "wins": 0, "kills": 0,
-                                      "outs": 0, "rounds": 0, "shots": 0, "history": []})
+                                      "outs": 0, "rounds": 0, "shots": 0, "overkill": 0,
+                                      "history": []})
         won = uid in race["winner_ids"]
         survived = p["died_round"] if p["died_round"] else race["round_no"]
         st["races"] += 1
@@ -411,6 +440,7 @@ def alltime(guild_id, db=None):
         st["outs"] += 0 if p["alive"] else 1
         st["rounds"] += survived or 0
         st["shots"] += shots.get((str(p["race_id"]), uid), 0)
+        st["overkill"] += p.get("overkill") or 0
         st["history"].append({"race_id": p["race_id"], "won": won, "kills": p["kills"] or 0,
                               "out_round": p["died_round"], "rounds": race["round_no"],
                               "finished_at": race["finished_at"]})
@@ -479,13 +509,15 @@ def save_players(race_id, rows, db=None):
             c.execute(
                 "UPDATE players SET lives=?, shots=?, shield=?, overload=?, transfuse=?, kills=?,"
                 " bounty=?, alive=?, died_round=?, banned=?, patch=?, medkit=?, skip_round=?,"
-                " revived=?, revive_small=?, revive_medium=?, revive_full=?, revive_extra=?"
+                " revived=?, revive_small=?, revive_medium=?, revive_full=?, revive_extra=?,"
+                " overkill=?"
                 " WHERE race_id=? AND user_id=?",
                 (p["lives"], p["shots"], p["shield"], p["overload"], p["transfuse"], p["kills"],
                  p["bounty"], p["alive"], p["died_round"], p["banned"], p.get("patch", 0),
                  p.get("medkit", 0), p.get("skip_round"), p.get("revived", 0),
                  p.get("revive_small", 0), p.get("revive_medium", 0), p.get("revive_full", 0),
-                 p.get("revive_extra", 0), race_id, str(p["user_id"])))
+                 p.get("revive_extra", 0), p.get("overkill", 0) or 0,
+                 race_id, str(p["user_id"])))
 
 
 def update_player(race_id, user_id, db=None, **fields):
@@ -981,7 +1013,9 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
       killers — {victim_id: killer_id} for kill credit (storm/self deaths absent)
       winners — [] while the race goes on; [uid] for a winner; several = draw
       results — {shot_id: outcome} for rows that carry an id (hit|kill|
-                shielded|backfire|wasted|self|transfused|late|nuke|revived)
+                shielded|backfire|wasted|self|transfused|late|nuke|revived|
+                overkill)
+      overkill — {victim_id: excess damage} landed past their last life
       revived — user_ids brought back this round (the cog unbans / re-roles them)
     `sudden` disables shields. `msgs` is {user_id: messages this round} for the
     storm. `afk` charges a life to every survivor who cast no shot/overload.
@@ -1021,6 +1055,16 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
         return p["user_id"] not in voted and p.get("skip_round") != round_no
 
     rewards = []   # (shooter, victim) — paid AFTER every shot has landed
+    # overkill: damage past the victim's last life, and who put it there. A
+    # shot that lands on someone already down THIS round is a pile-on, not a
+    # waste; the credited killer collects for the lot.
+    overkill, pilers = {}, {}
+
+    def pile(victim_id, shooter_id, amount):
+        if amount <= 0:
+            return
+        overkill[victim_id] = overkill.get(victim_id, 0) + amount
+        pilers.setdefault(victim_id, []).append(shooter_id)
 
     def reward_kill(shooter, victim):
         victim_id = victim["user_id"]
@@ -1033,6 +1077,27 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
             return
         shooter["kills"] += 1
         rewards.append((shooter, victim))
+
+    def pay_overkill(shooter, victim):
+        """Paid with the kill, so it inherits every kill rule: an AFK victim
+        and a self-kill pay nothing, because neither reaches `rewards`."""
+        vid = victim["user_id"]
+        over = overkill.get(vid, 0)
+        if over <= 0:
+            return
+        shooter["overkill"] = (shooter.get("overkill", 0) or 0) + over
+        helpers = [u for u in dict.fromkeys(pilers.get(vid, [])) if u != shooter["user_id"]]
+        won = overkill_reward(over)
+        if won is None:
+            lines.append(f"   ↳ 💀 **{over} over** on {m(vid)} — one more would have paid.")
+            return
+        emoji, label, patches = won
+        shooter["patch"] = (shooter.get("patch", 0) or 0) + patches
+        line = (f"   ↳ {emoji} **{label}** — {m(shooter['user_id'])} put **{over}** past "
+                f"{m(vid)}'s last life and takes 🩹 ×{patches}.")
+        if helpers:
+            line += " Piled on by " + ", ".join(m(u) for u in helpers) + "."
+        lines.append(line)
 
     def pay(shooter, victim):
         if shooter["shield"]:
@@ -1055,6 +1120,7 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
             victim["shield"] = 0
             lines.append(f"🛡️ {m(vid)}'s **shield** ate {via}.")
             return "shielded"
+        before = victim["lives"]
         victim["lives"] = max(0, victim["lives"] - dmg)
         if victim["lives"] > 0:
             who = "themselves" if victim is shooter else m(vid)
@@ -1062,6 +1128,8 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
                          f"{'life' if victim['lives'] == 1 else 'lives'} left.")
             return "self" if victim is shooter else "hit"
         by = "their own shot" if victim is shooter else via
+        if victim is not shooter:
+            pile(vid, shooter["user_id"], dmg - before)
         _die(victim, round_no, lines, f"⛔ {m(vid)} was **BANNED** by {by}.")
         reward_kill(shooter, victim)
         return "self" if victim is shooter else "kill"
@@ -1123,6 +1191,12 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
             if victim is shooter:
                 record(s, "backfire")
                 continue
+            if victim.get("died_round") == round_no:
+                pile(tid, sid, dmg)
+                lines.append(f"💀 {via_cap(name)} lands on {m(tid)} — already down. "
+                             f"**Overkill +{dmg}.**")
+                record(s, "overkill")
+                continue
             lines.append(f"💨 {via_cap(name)} at {m(tid)} — already gone. Wasted.")
             record(s, "wasted")
             continue
@@ -1149,6 +1223,7 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
     # shot that was fired this round (resolution is simultaneous)
     for shooter, victim in rewards:
         pay(shooter, victim)
+        pay_overkill(shooter, victim)
 
     # AFK: didn't vote this round = one life gone, shields don't apply
     afk_hit = set()
@@ -1228,7 +1303,7 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
             seen.add(d)
             uniq.append(d)
     return {"lines": lines, "dead": uniq, "killers": killers, "winners": winners, "results": results,
-            "revived": revived}
+            "revived": revived, "overkill": overkill}
 
 
 def standings(rows):
