@@ -482,8 +482,15 @@ class Rounds(unittest.TestCase):
 
     def test_recommended_lives_scale_with_players(self):
         # Paul 9/12: "scale lives with the amount of people playing — recommended, not forced"
+        # Paul 9/15: "default life count should be 5 and scaled from there instead of 3"
         self.assertEqual([E.recommended_lives(n) for n in (0, 3, 5, 6, 10, 15, 20, 32, 100)],
-                         [2, 2, 3, 3, 4, 5, 7, 10, 10])
+                         [5, 5, 5, 5, 6, 7, 9, 12, 12])
+        # nobody ever drops below the base, and the ladder only ever climbs
+        ladder = [E.recommended_lives(n) for n in range(0, 200)]
+        self.assertEqual(min(ladder), E.BASE_LIVES)
+        self.assertEqual(max(ladder), E.MAX_RECOMMENDED_LIVES)
+        self.assertEqual(ladder, sorted(ladder))
+        self.assertEqual(E.DEFAULTS["lives"], E.BASE_LIVES)
         # explicit lives survive create_race untouched; auto is a flag the cog acts on at start
         r = E.create_race(9191, 3, 9, settings={"lives": 5, "lives_auto": False, "min_players": 15})
         self.assertEqual((r["settings"]["lives"], r["settings"]["lives_auto"]), (5, False))
@@ -522,7 +529,7 @@ class Store(unittest.TestCase):
         E.update_race(r1["id"], status="finished", winner_ids=["5"])
         self.assertIsNone(E.active_race(100))
         self.assertEqual(E.get_race(r1["id"])["winner_ids"], ["5"])
-        self.assertEqual(E.get_race(r1["id"])["settings"]["lives"], 3)
+        self.assertEqual(E.get_race(r1["id"])["settings"]["lives"], E.DEFAULTS["lives"])
         self.assertEqual(E.get_race(r1["id"])["settings"]["mode"], "ghost")   # real bans are opt-in
         E.update_race(r2["id"], status="aborted")
 

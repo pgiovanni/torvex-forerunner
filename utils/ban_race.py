@@ -1,6 +1,6 @@
 """Last to survive — the ban race. Engine + store, no discord import.
 
-The pitch Paul gives players is the whole rulebook: "you've got three lives,
+The pitch Paul gives players is the whole rulebook: "you've got five lives,
 there are power-ups, pick who you're going for and shoot, see you after the
 round ends." Everything below exists so the bot can enforce that sentence
 without anyone reading more than it.
@@ -63,7 +63,7 @@ DB_PATH = os.environ.get("TORVEX_BANRACE_DB") or os.path.join(ROOT, "ban_race.db
 DEFAULT_CHANNEL = "last-to-survive"
 
 DEFAULTS = dict(
-    lives=3,
+    lives=5,
     round_secs=90,           # 1.5 min (Paul 9/13: "people are complaining it's too long")
     mode="ghost",            # ghost = marked out only; real = actual bans (opt-in)
     backfire=0.10,
@@ -792,16 +792,22 @@ def recommended_lives(n_players):
     """Lives that keep a race of n players interesting (Paul 9/12: "scale
     lives with the amount of people playing — a recommended value, not
     forced"). Every survivor fires once a round, so the more players the more
-    incoming fire per round; 3 lives was right for 10 and thin for 15.
-      3 → 2 · 6 → 3 · 10 → 4 · 15 → 5 · 20 → 7 · 32+ → 10
-    Soft cap 10 (Paul 9/12: "it can go above 6, idk if that's too much" —
-    ten lives is ~10+ rounds, half an hour at 3 min; raise MAX_RECOMMENDED
-    if a huge lobby wants longer). A host who sets `lives:` explicitly
-    always wins over this. There is NO cap on players."""
-    return max(2, min(MAX_RECOMMENDED_LIVES, 2 + max(0, n_players) // 4))
+    incoming fire per round.
+
+    BASE_LIVES is the floor every race starts from (Paul 9/15: "default life
+    count should be 5 and scaled from there instead of 3") and the ladder adds
+    one life per 4 players on top of it:
+      3 → 5 · 8 → 6 · 12 → 7 · 16 → 8 · 20 → 9 · 24 → 10 · 28 → 11 · 32+ → 12
+    Soft cap 12 — the old cap of 10 sat only 5 above the old floor of 2, so
+    keeping it would have flattened every lobby past 24 onto the same number.
+    A host who sets `lives:` explicitly always wins over this (up to 50).
+    There is NO cap on players."""
+    return max(BASE_LIVES,
+               min(MAX_RECOMMENDED_LIVES, BASE_LIVES - 1 + max(0, n_players) // 4))
 
 
-MAX_RECOMMENDED_LIVES = 10
+BASE_LIVES = 5            # floor + the number a small lobby plays with
+MAX_RECOMMENDED_LIVES = 12
 
 
 def recommended_sudden_death(n_players):
