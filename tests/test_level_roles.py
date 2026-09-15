@@ -19,7 +19,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
 
 from cogs.economy import mee6_xp_for_level, mee6_level_from_xp  # noqa: E402
-from cogs.level_roles import pick_reward, role_changes  # noqa: E402
+from cogs.level_roles import pick_reward, role_changes, merged_totals  # noqa: E402
 
 _fails = []
 _total = 0
@@ -80,6 +80,35 @@ check("unrelated roles untouched", add == [] and rem == [])
 # level dropped is impossible by policy, but the picker must still not crash
 add, rem = role_changes({150}, 0, MAP)
 check("level 0 with a stray top tier strips it", add == [] and rem == [150])
+
+
+# ── XP transfer between two accounts of one person (/levelroles transfer) ───
+def _row(xp, level, msgs, bucks=0):
+    return {"xp": xp, "level": level, "message_count": msgs, "regular_bucks": bucks}
+
+
+m = merged_totals(_row(6401, 11, 882, 878), _row(31, 0, 4, 4))
+check("transfer sums xp", m["xp"] == 6432)
+check("transfer sums messages", m["message_count"] == 886)
+check("transfer sums server bucks", m["regular_bucks"] == 882)
+check("merged level re-derived from merged xp", m["level"] == mee6_level_from_xp(6432))
+
+# the target already outranks the source: nobody is demoted by receiving XP
+m = merged_totals(_row(100, 1, 5), _row(1_404_075, 90, 9000))
+check("receiving a small account never lowers the target",
+      m["level"] == 90 and m["xp"] == 1_404_175)
+
+# a stored level ahead of the curve (manual grant / MEE6 import) survives
+m = merged_totals(_row(0, 0, 0), _row(50, 7, 3))
+check("stored level above the curve is kept", m["level"] == 7)
+
+# empty source into empty target is a clean zero, not a crash
+m = merged_totals(_row(0, 0, 0), _row(0, 0, 0))
+check("empty merge stays empty", m == {"xp": 0, "level": 0, "message_count": 0, "regular_bucks": 0})
+
+# the emptied source lands on level 0 and the sweep strips every tier from it
+add, rem = role_changes({110, 150}, 0, MAP)
+check("emptied source loses every reward tier", add == [] and sorted(rem) == [110, 150])
 
 print(f"\n{_total - len(_fails)}/{_total} passed")
 if _fails:

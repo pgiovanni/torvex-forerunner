@@ -93,6 +93,20 @@ def pick_reward(level: int, mapping: dict[int, int]) -> int | None:
     return best_role
 
 
+def merged_totals(src: dict, dst: dict) -> dict:
+    """Destination totals after absorbing `src` — an XP transfer between two
+    accounts of the same person. Progress ADDS up (both accounts really did
+    chat), and the level is re-derived from the merged XP but never drops
+    below a level either account already held."""
+    xp = src["xp"] + dst["xp"]
+    return {
+        "xp": xp,
+        "level": max(dst["level"], src["level"], mee6_level_from_xp(xp)),
+        "message_count": src["message_count"] + dst["message_count"],
+        "regular_bucks": src["regular_bucks"] + dst["regular_bucks"],
+    }
+
+
 def role_changes(member_role_ids: set[int], level: int, mapping: dict[int, int]) -> tuple[list[int], list[int]]:
     """(to_add, to_remove) role ids so the member holds exactly their highest
     qualifying reward role and no other reward role."""
@@ -409,6 +423,124 @@ class LevelRoles(commands.Cog):
             await interaction.followup.send(summary, ephemeral=True)
         except discord.HTTPException:
             pass  # completion already in the journal
+
+    @group.command(name="transfer",
+                   description="Move one account's server XP, level & messages onto another account")
+    @app_commands.describe(
+        source="account to take the XP FROM (it ends at level 0)",
+        target="account to give the XP TO",
+        bucks="also move this server's 💵 Server Bucks balance",
+        preview="show what would move without writing anything")
+    @app_commands.rename(source="from", target="to")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def transfer(self, interaction: discord.Interaction,
+                       source: discord.User, target: discord.User,
+                       bucks: bool = False, preview: bool = False):
+        """Merge an old/alt account's server progress into a new one.
+
+        The ONE deliberate exception to the never-lower policy everywhere else
+        in this cog: the source account is emptied (0 XP / level 0 / 0 msgs) on
+        purpose — a transfer that left the XP behind would be a copy. Totals are
+        ADDED, so a target that already chatted keeps what it earned. Global
+        (cross-server) XP in discord_users is a separate system, untouched.
+        """
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+
+        if source.id == target.id:
+            await interaction.followup.send("❌ Those are the same account.", ephemeral=True)
+            return
+        if source.bot or target.bot:
+            await interaction.followup.send("❌ Bots don't hold server XP.", ephemeral=True)
+            return
+
+        rows = await self.pool.fetch(
+            "SELECT discord_id, xp, level, message_count, regular_bucks "
+            "FROM guild_xp WHERE guild_id = $1 AND discord_id = ANY($2)",
+            str(guild.id), [str(source.id), str(target.id)])
+        by_id = {r["discord_id"]: dict(r) for r in rows}
+        empty = {"xp": 0, "level": 0, "message_count": 0, "regular_bucks": 0}
+        src = by_id.get(str(source.id), empty)
+        dst = by_id.get(str(target.id), empty)
+
+        if not (src["xp"] or src["message_count"] or (bucks and src["regular_bucks"])):
+            await interaction.followup.send(
+                f"{source.mention} has nothing to transfer in this server.", ephemeral=True)
+            return
+
+        new = merged_totals(src, dst)
+        moved = (f"**{src['xp']:,} XP** · **{src['message_count']:,}** messages"
+                 + (f" · **{src['regular_bucks']:,}** 💵" if bucks else ""))
+        lands = (f"{target.mention}: level **{dst['level']}** → **{new['level']}**, "
+                 f"{dst['xp']:,} → **{new['xp']:,} XP**, "
+                 f"{dst['message_count']:,} → **{new['message_count']:,}** messages"
+                 + (f", {dst['regular_bucks']:,} → **{new['regular_bucks']:,}** 💵" if bucks else ""))
+
+        if preview:
+            await interaction.followup.send(
+                f"**Dry run — nothing was written.**\nFrom {source.mention}: {moved}\n{lands}\n"
+                f"{source.mention} would end at level 0 with 0 XP.\n\n"
+                f"Run again without `preview` to move it.", ephemeral=True)
+            return
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                if bucks:
+                    await conn.execute("""
+                        INSERT INTO guild_xp (discord_id, guild_id, xp, level, message_count, regular_bucks)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        ON CONFLICT (discord_id, guild_id) DO UPDATE SET
+                            xp = $3, level = $4, message_count = $5, regular_bucks = $6
+                    """, str(target.id), str(guild.id), new["xp"], new["level"],
+                         new["message_count"], new["regular_bucks"])
+                    await conn.execute("""
+                        UPDATE guild_xp SET xp = 0, level = 0, message_count = 0, regular_bucks = 0
+                        WHERE discord_id = $1 AND guild_id = $2
+                    """, str(source.id), str(guild.id))
+                else:
+                    await conn.execute("""
+                        INSERT INTO guild_xp (discord_id, guild_id, xp, level, message_count)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (discord_id, guild_id) DO UPDATE SET
+                            xp = $3, level = $4, message_count = $5
+                    """, str(target.id), str(guild.id), new["xp"], new["level"], new["message_count"])
+                    await conn.execute("""
+                        UPDATE guild_xp SET xp = 0, level = 0, message_count = 0
+                        WHERE discord_id = $1 AND guild_id = $2
+                    """, str(source.id), str(guild.id))
+
+        # Reward roles follow the new numbers on BOTH sides, same as a levelup.
+        notes = []
+        mapping = await self._mapping(guild.id)
+        if mapping:
+            tgt_member = guild.get_member(target.id)
+            if tgt_member:
+                added, removed = await self._apply(
+                    tgt_member, new["level"], mapping, reason=f"XP transfer from {source.id}")
+                notes.append(f"🎖️ {target.mention}: {added} reward role(s) added, {removed} removed.")
+            else:
+                notes.append(f"⚠️ {target.mention} isn't in this server — their reward role "
+                             f"lands when they join (or run `/levelroles sync`).")
+            src_member = guild.get_member(source.id)
+            if src_member:
+                _, stripped = await self._apply(
+                    src_member, 0, mapping, reason=f"XP transferred to {target.id}")
+                if stripped:
+                    notes.append(f"🎖️ {source.mention}: {stripped} reward role(s) stripped.")
+        else:
+            notes.append("⚠️ No level reward roles are configured in this server.")
+
+        print(f"[level_roles] {guild.id} xp transfer {source.id} -> {target.id}: "
+              f"{src['xp']} xp, {src['message_count']} msgs"
+              f"{', ' + str(src['regular_bucks']) + ' bucks' if bucks else ''} "
+              f"(by {interaction.user.id})", flush=True)
+
+        msg = (f"✅ Moved {moved}\nfrom {source.mention} → {target.mention}.\n"
+               f"{lands}\n{source.mention} is now level **0** with 0 XP"
+               + (" and 0 💵" if bucks else "") + ".")
+        if notes:
+            msg += "\n" + "\n".join(notes)
+        await interaction.followup.send(msg[:1900], ephemeral=True)
 
     @group.command(name="list", description="Show the level → role reward map")
     @app_commands.checks.has_permissions(administrator=True)
