@@ -948,5 +948,89 @@ class Overkill(unittest.TestCase):
         self.assertEqual(E.player(race["id"], 1)["overkill"], 6)
 
 
+class ScheduleTests(unittest.TestCase):
+    """The clock, not the lobby, starts a race (Paul 9/16). These pin the two
+    things that can silently ruin a night: firing the same slot twice across a
+    restart, and the slots sliding an hour when the US changes its clocks."""
+
+    TZ = "America/New_York"
+
+    def at(self, s):
+        """'2026-09-16 20:00' local -> unix time."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        return datetime.strptime(s, "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo(self.TZ)).timestamp()
+
+    def local(self, ts):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        return datetime.fromtimestamp(ts, ZoneInfo(self.TZ)).strftime("%Y-%m-%d %H:%M")
+
+    def test_the_four_slots_parse(self):
+        self.assertEqual(E.parse_slots("2:00, 8:00 14:00,20:00"),
+                         ("02:00", "08:00", "14:00", "20:00"))
+        self.assertEqual(E.parse_slots(None), tuple(E.SCHEDULE_SLOTS))
+        self.assertEqual(E.parse_slots(["20:00", "8:00", "20:00"]), ("08:00", "20:00"))
+        for bad in ("25:00", "8:61", "lunch"):
+            with self.assertRaises(ValueError):
+                E.parse_slots(bad)
+
+    def test_next_slot_walks_the_day(self):
+        self.assertEqual(self.local(E.next_slot(self.at("2026-09-16 18:28"), tz=self.TZ)),
+                         "2026-09-16 20:00")
+        self.assertEqual(self.local(E.next_slot(self.at("2026-09-16 14:00"), tz=self.TZ)),
+                         "2026-09-16 20:00")   # exactly on a slot -> the NEXT one
+        self.assertEqual(self.local(E.next_slot(self.at("2026-09-16 23:30"), tz=self.TZ)),
+                         "2026-09-17 02:00")   # over midnight
+
+    def test_previous_slot_looks_back_over_midnight(self):
+        self.assertEqual(self.local(E.previous_slot(self.at("2026-09-17 01:30"), tz=self.TZ)),
+                         "2026-09-16 20:00")
+        self.assertEqual(self.local(E.previous_slot(self.at("2026-09-16 20:00"), tz=self.TZ)),
+                         "2026-09-16 20:00")   # on the slot, it IS the slot
+
+    def test_the_slots_hold_their_wall_clock_across_dst(self):
+        # EDT -> EST (fall back, 2026-11-01) and EST -> EDT (spring forward,
+        # 2027-03-14). 8pm must stay 8pm on Paul's clock, not slide to 7 or 9.
+        for day in ("2026-10-31", "2026-11-01", "2026-11-02", "2027-03-13", "2027-03-15"):
+            got = self.local(E.next_slot(self.at(f"{day} 19:00"), tz=self.TZ))
+            self.assertEqual(got, f"{day} 20:00", day)
+
+    def test_spring_forward_does_not_lose_the_2am_slot(self):
+        # 2027-03-14 02:00 does not exist locally; the race still happens once,
+        # at the instant the clock reaches 03:00.
+        ts = E.next_slot(self.at("2027-03-14 01:30"), tz=self.TZ)
+        self.assertEqual(self.local(ts), "2027-03-14 03:00")
+        self.assertEqual(self.local(E.next_slot(ts, tz=self.TZ)), "2027-03-14 08:00")
+
+    def test_a_slot_is_owed_once_and_only_once(self):
+        slot = self.at("2026-09-16 20:00")
+        self.assertIsNone(E.due_slot(slot - 1, None, tz=self.TZ))       # not yet
+        self.assertEqual(E.due_slot(slot, None, tz=self.TZ), slot)      # on the second
+        self.assertEqual(E.due_slot(slot + 120, None, tz=self.TZ), slot)
+        # already acted on it: a restart 10 s later must not fire it again
+        self.assertIsNone(E.due_slot(slot + 10, slot, tz=self.TZ))
+        self.assertIsNone(E.due_slot(slot + 10, str(slot), tz=self.TZ))  # config round-trips as a string
+
+    def test_a_slot_missed_to_downtime_expires(self):
+        slot = self.at("2026-09-16 20:00")
+        self.assertEqual(E.due_slot(slot + E.FIRE_GRACE - 5, None, tz=self.TZ), slot)
+        self.assertIsNone(E.due_slot(slot + E.FIRE_GRACE + 5, None, tz=self.TZ))
+
+    def test_warnings_fire_biggest_first_and_never_twice(self):
+        slot = self.at("2026-09-16 20:00")
+        self.assertIsNone(E.warning_due(slot - 3600, slot))
+        self.assertEqual(E.warning_due(slot - 900, slot), 900)
+        self.assertEqual(E.warning_due(slot - 300, slot, sent=[900]), None)
+        self.assertEqual(E.warning_due(slot - 60, slot, sent=[900]), 60)
+        self.assertIsNone(E.warning_due(slot - 30, slot, sent=[900, 60]))
+        self.assertIsNone(E.warning_due(slot + 5, slot))
+
+    def test_the_line_says_how_many_more_are_needed(self):
+        slot = self.at("2026-09-16 20:00")
+        self.assertIn("needs **1** more", E.schedule_line(slot, 2, 3))
+        self.assertIn("it's on", E.schedule_line(slot, 4, 3))
+
+
 if __name__ == "__main__":
     unittest.main()

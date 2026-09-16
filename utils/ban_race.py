@@ -1319,3 +1319,123 @@ def standings(rows):
     fallen = sorted([p for p in rows if not p["alive"]],
                     key=lambda p: (-(p["died_round"] or 0), p["name"].lower()))
     return live, fallen
+
+
+# ── the schedule: races start on the clock, not when the lobby fills ─────────
+# Paul 9/16: "instead of starting when everyone joins, it should be scheduled 4
+# times a day … 2am, 8am, 2pm and 8pm EST", and "if there's only 2 people it
+# should delay till the next round, minimum 3".
+#
+# Everything below is pure arithmetic over a wall clock — the cog owns the
+# Discord side. Times are LOCAL to `tz` (America/New_York, so the slots stay at
+# 2/8/2/8 on Paul's clock through a DST change rather than sliding an hour).
+
+SCHEDULE_SLOTS = ("02:00", "08:00", "14:00", "20:00")   # every 6 hours
+SCHEDULE_TZ = "America/New_York"
+FIRE_GRACE = 600        # a slot missed to downtime still fires if we're back within 10 min
+WARN_OFFSETS = (900, 60)   # ping the lobby at T-15 min and T-1 min
+
+
+def _zone(tz=None):
+    from zoneinfo import ZoneInfo
+    return ZoneInfo(tz or SCHEDULE_TZ)
+
+
+def parse_slots(raw):
+    """'2:00, 8:00,14:00 20:00' | ['02:00', …] -> ('02:00','08:00',…), sorted,
+    de-duped. Raises ValueError on anything that isn't HH:MM."""
+    if not raw:
+        return tuple(SCHEDULE_SLOTS)
+    parts = raw.replace(",", " ").split() if isinstance(raw, str) else list(raw)
+    out = []
+    for p in parts:
+        hh, _, mm = str(p).strip().partition(":")
+        h, m = int(hh), int(mm or 0)
+        if not (0 <= h < 24 and 0 <= m < 60):
+            raise ValueError(f"{p!r} is not a time of day")
+        out.append(f"{h:02d}:{m:02d}")
+    if not out:
+        raise ValueError("no times given")
+    return tuple(sorted(set(out)))
+
+
+def _local_ts(day, hhmm, zone):
+    """The unix time of `hhmm` on local date `day`. On the spring-forward day
+    the 2:00 AM slot does not exist on the wall clock; zoneinfo maps it to the
+    same instant as 3:00 AM, which is what we want — this just round-trips so
+    the skip is deliberate rather than accidental."""
+    from datetime import datetime, timedelta, timezone
+    h, m = (int(x) for x in hhmm.split(":"))
+    naive = datetime(day.year, day.month, day.day, h, m)
+    dt = naive.replace(tzinfo=zone)
+    back = dt.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None)
+    if back != naive:                       # a gap: the clock jumped over this time
+        dt = (naive + timedelta(hours=1)).replace(tzinfo=zone)
+    return dt.timestamp()
+
+
+def _day_slots(day, slots, zone):
+    return sorted(_local_ts(day, s, zone) for s in slots)
+
+
+def next_slot(now=None, slots=SCHEDULE_SLOTS, tz=None):
+    """Unix time of the next slot strictly after `now`."""
+    from datetime import datetime, timedelta
+    now = now if now is not None else time.time()
+    zone = _zone(tz)
+    today = datetime.fromtimestamp(now, zone).date()
+    for off in (0, 1, 2):
+        for ts in _day_slots(today + timedelta(days=off), slots, zone):
+            if ts > now:
+                return ts
+    raise ValueError("no slot found")       # unreachable with a non-empty slot list
+
+
+def previous_slot(now=None, slots=SCHEDULE_SLOTS, tz=None):
+    """Unix time of the most recent slot at or before `now`."""
+    from datetime import datetime, timedelta
+    now = now if now is not None else time.time()
+    zone = _zone(tz)
+    today = datetime.fromtimestamp(now, zone).date()
+    best = None
+    for off in (0, -1, -2):
+        for ts in _day_slots(today + timedelta(days=off), slots, zone):
+            if ts <= now and (best is None or ts > best):
+                best = ts
+        if best is not None:
+            return best
+    return best
+
+
+def due_slot(now, last_fired=None, slots=SCHEDULE_SLOTS, tz=None, grace=FIRE_GRACE):
+    """The slot that is owed right now, or None. `last_fired` is the slot we
+    last acted on (fired OR rolled over), so a restart can't double-fire and a
+    slot that passed while the bot was down is dropped once the grace is gone."""
+    prev = previous_slot(now, slots, tz)
+    if prev is None:
+        return None
+    if now - prev > grace:
+        return None
+    if last_fired and float(last_fired) >= prev:
+        return None
+    return prev
+
+
+def warning_due(now, slot_ts, sent=(), offsets=WARN_OFFSETS):
+    """The largest un-sent warning offset that is due (T-15, then T-1), or None.
+    `sent` is the offsets already announced for THIS slot."""
+    left = slot_ts - now
+    if left < 0:
+        return None
+    for off in sorted(offsets, reverse=True):
+        if left <= off and off not in set(sent):
+            return off
+    return None
+
+
+def schedule_line(slot_ts, n_joined, need):
+    """The one-line status the lobby card and /race schedule both print."""
+    short = max(0, need - n_joined)
+    who = (f"**{n_joined}/{need}** in — needs **{short}** more or it waits for the next one"
+           if short else f"**{n_joined}/{need}** in — it's on")
+    return f"🕗 Next race <t:{int(slot_ts)}:F> (<t:{int(slot_ts)}:R>) · {who}"

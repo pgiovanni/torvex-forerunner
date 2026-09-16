@@ -32,12 +32,12 @@ from collections import defaultdict
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils import ban_race as engine  # noqa: E402
 from utils.quiet_removals import mark as quiet_mark  # noqa: E402
-from utils.security_config import get_config, set_config  # noqa: E402
+from utils.security_config import all_enabled, get_config, set_config  # noqa: E402
 
 log = logging.getLogger("ban_race")
 
@@ -57,6 +57,7 @@ MAX_PINGS = 60
 START_DELAY = 30        # seconds between the start ping and round 1 opening
 BUMP_AFTER = 6          # human messages in the race channel before the panel is re-posted at the bottom
 BUMP_COOLDOWN = 20      # seconds between two bumps of the same race
+SCHEDULE_CHECK_S = 20   # how often the scheduler looks at the clock
 
 MODE_CHOICES = [
     app_commands.Choice(name="ghost — no bans, eliminated players are just out (default)", value="ghost"),
@@ -354,7 +355,7 @@ def overkill_blocks():
     ]]
 
 
-def lobby_embed(race, rows, guild_name):
+def lobby_embed(race, rows, guild_name, slot_ts=None):
     s = race["settings"]
     e = discord.Embed(title="🔫 LAST TO SURVIVE", color=COLOR,
                       description=PITCH.format(lives=s["lives"]))
@@ -378,7 +379,15 @@ def lobby_embed(race, rows, guild_name):
     names = [p["name"] for p in rows]
     shown = ", ".join(names[:40]) + (f" … +{len(names) - 40}" if len(names) > 40 else "")
     e.add_field(name=f"Players ({len(rows)})", value=shown or "*nobody yet — hit Join*", inline=False)
-    e.set_footer(text=f"{guild_name} · starts automatically at {s['min_players']} players")
+    if slot_ts:
+        # scheduled server: the clock starts the race, and the lobby outlives it
+        e.add_field(name="Next race",
+                    value=engine.schedule_line(slot_ts, len(rows),
+                                               s.get("min_players", engine.MIN_PLAYERS)),
+                    inline=False)
+        e.set_footer(text=f"{guild_name} · the lobby never closes — your seat carries to the next race")
+    else:
+        e.set_footer(text=f"{guild_name} · starts automatically at {s['min_players']} players")
     return e
 
 
@@ -451,8 +460,10 @@ class BanRace(commands.Cog):
         self._resumed = False
         self._rng = random.Random()
         engine.init()
+        self._scheduler.start()
 
     def cog_unload(self):
+        self._scheduler.cancel()
         for t in self._tasks.values():
             t.cancel()
 
@@ -474,11 +485,241 @@ class BanRace(commands.Cog):
                 continue
             try:
                 msg = await channel.fetch_message(int(race["lobby_msg_id"]))
-                await msg.edit(embed=lobby_embed(race, engine.players(race["id"]), guild.name),
+                await msg.edit(embed=self._card(guild, race, engine.players(race["id"])),
                                view=lobby_view(race["id"]))
                 log.info("refreshed lobby embed for race %s", race["id"])
             except (discord.HTTPException, ValueError):
                 pass
+
+    # ── the schedule ──────────────────────────────────────────────────────────────────
+    # Paul 9/16: "instead of starting when everyone joins, it should be
+    # scheduled 4 times a day ... if there's only 2 people it should delay till
+    # the next round, minimum 3." So on a scheduled server the head-count stops
+    # being a trigger and becomes a gate, and one lobby stands open forever —
+    # people keep their seat from one race to the next.
+
+    def _schedule_cfg(self, guild_id):
+        """(slots, tz, cfg) when this guild runs on the clock, else None."""
+        cfg = get_config(guild_id)
+        if not cfg.get("race_schedule_enabled"):
+            return None
+        try:
+            slots = engine.parse_slots(cfg.get("race_schedule_slots"))
+        except (ValueError, TypeError):
+            slots = tuple(engine.SCHEDULE_SLOTS)      # junk in config: fall back, never kill the card
+        return slots, cfg.get("race_schedule_tz") or engine.SCHEDULE_TZ, cfg
+
+    def _scheduled(self, guild_id):
+        return self._schedule_cfg(guild_id) is not None
+
+    def _next_slot_ts(self, guild_id, now=None):
+        sc = self._schedule_cfg(guild_id)
+        if not sc:
+            return None
+        slots, tz, _ = sc
+        try:
+            return engine.next_slot(now or time.time(), slots, tz)
+        except Exception:                              # bad tz in config: show no slot, keep the card
+            log.exception("race schedule: next slot failed for guild %s", guild_id)
+            return None
+
+    def _card(self, guild, race, rows):
+        """The lobby embed — with the next scheduled start on it where the guild
+        races on the clock."""
+        return lobby_embed(race, rows, guild.name, slot_ts=self._next_slot_ts(guild.id))
+
+    async def _lobby_message(self, channel, race):
+        if not channel or not race.get("lobby_msg_id"):
+            return None
+        try:
+            return await channel.fetch_message(int(race["lobby_msg_id"]))
+        except (discord.HTTPException, ValueError):
+            return None
+
+    async def _open_lobby(self, guild, channel, host_id, settings):
+        """Lock the channel, mint the return invite, create the race, post its
+        card. Shared by /race start and the scheduler's standing lobby.
+        Returns (race, warnings); race is None when the engine refused."""
+        warn = []
+        racer_role_id = None
+        try:
+            role = await self._ensure_racer_role(guild)
+            racer_role_id = role.id
+            await self._lock_channel(channel, role)
+        except (discord.Forbidden, discord.HTTPException) as e:
+            warn.append(f"⚠️ Couldn't set up the Racer role / channel lock ({e.__class__.__name__}) — "
+                        f"I need Manage Roles and Manage Channels; anyone can talk there until then.")
+        invite_url = None
+        try:
+            inv = await channel.create_invite(max_age=INVITE_DAYS * 86400, max_uses=0, unique=True,
+                                              reason="Last to survive — return invite for the eliminated")
+            invite_url = inv.url
+        except discord.HTTPException:
+            pass
+        try:
+            race = engine.create_race(guild.id, channel.id, host_id,
+                                      settings=dict(settings, racer_role_id=racer_role_id))
+        except ValueError as e:
+            return None, [str(e)]
+        engine.update_race(race["id"], invite_url=invite_url)
+        race = engine.get_race(race["id"])
+        if not invite_url:
+            warn.append("⚠️ Couldn't mint a return invite (need Create Invite in that channel) — "
+                        "post one yourself before it starts.")
+        msg = await channel.send(embed=self._card(guild, race, []), view=lobby_view(race["id"]))
+        engine.update_race(race["id"], lobby_msg_id=str(msg.id))
+        return engine.get_race(race["id"]), warn
+
+    async def _carry_roster(self, guild, race, prev):
+        """The infinite lobby: whoever was in the last race is already in the
+        next one (Paul 9/16 — "keep the current roster", "make lobby infinite").
+        They hold Racer, so they can talk and can Leave whenever; the T-15 ping
+        is what stops someone being carried in while they're asleep."""
+        if not prev or prev["id"] == race["id"]:
+            return 0
+        lives = race["settings"]["lives"]
+        real = race["settings"]["mode"] == "real"
+        carried = 0
+        for p in engine.players(prev["id"]):
+            m = guild.get_member(int(p["user_id"]))
+            if m is None or m.bot:
+                continue
+            if real and not self._bannable(guild, m):
+                continue                   # hosts watch, they don't play
+            if engine.player(race["id"], p["user_id"]):
+                continue
+            engine.join(race["id"], p["user_id"], m.display_name, lives)
+            await self._set_racer(guild, race, p["user_id"], True)
+            carried += 1
+            await asyncio.sleep(0.3)
+        if carried:
+            log.info("race %s: carried %d players from race %s", race["id"], carried, prev["id"])
+        return carried
+
+    @tasks.loop(seconds=SCHEDULE_CHECK_S)
+    async def _scheduler(self):
+        for gid in all_enabled("race_schedule"):
+            try:
+                await self._tick(gid)
+            except Exception:
+                log.exception("race schedule: tick failed for guild %s", gid)
+
+    @_scheduler.before_loop
+    async def _before_scheduler(self):
+        await self.bot.wait_until_ready()
+
+    async def _tick(self, gid):
+        guild = self.bot.get_guild(int(gid))
+        sc = self._schedule_cfg(gid)
+        if guild is None or sc is None:
+            return
+        slots, tz, cfg = sc
+        now = time.time()
+        due = engine.due_slot(now, cfg.get("race_schedule_last_fired"), slots, tz)
+        race = engine.active_race(gid)
+
+        # A race in progress owns the channel — the slot is consumed, not queued.
+        if race and race["status"] == "running":
+            if due:
+                set_config(gid, race_schedule_last_fired=due)
+                channel = await self._channel_for(guild, race)
+                nxt = engine.next_slot(now, slots, tz)
+                if channel:
+                    await self._say(channel, f"⏭️ The <t:{int(due)}:t> race is skipped — this one is "
+                                             f"still running. Next: <t:{int(nxt)}:F> (<t:{int(nxt)}:R>).")
+            return
+
+        channel = self._configured_channel(guild)
+        if channel is None:
+            return
+
+        # The lobby is infinite: if none is open, open one and carry the roster
+        # of the race that just ended into it.
+        if race is None:
+            prev = engine.latest_race(gid)
+            host = int(cfg.get("race_schedule_host_id") or self.bot.user.id)
+            race, warn = await self._open_lobby(guild, channel, host, self._template(cfg))
+            if race is None:
+                return
+            carried = await self._carry_roster(guild, race, prev)
+            msg = await self._lobby_message(channel, race)
+            if msg:
+                try:
+                    await msg.edit(embed=self._card(guild, race, engine.players(race["id"])),
+                                   view=lobby_view(race["id"]))
+                except discord.HTTPException:
+                    pass
+            nxt = engine.next_slot(now, slots, tz)
+            opened = "Lobby's open again" if prev else "Lobby's open"
+            carried_txt = f" — {carried} of you carried over" if carried else ""
+            await self._say(channel, f"🔫 {opened}{carried_txt}. "
+                                     f"Next race <t:{int(nxt)}:F> (<t:{int(nxt)}:R>).")
+
+        rows = engine.players(race["id"])
+        need = race["settings"].get("min_players", engine.MIN_PLAYERS)
+        if due:
+            await self._fire_slot(guild, channel, race, rows, need, due, slots, tz, gid)
+            return
+
+        # T-15 and T-1 pings — the only warning a carried-over player gets.
+        nxt = engine.next_slot(now, slots, tz)
+        sent = cfg.get("race_schedule_warned") or []
+        if float(cfg.get("race_schedule_warn_slot") or 0) != nxt:
+            sent = []
+        off = engine.warning_due(now, nxt, sent)
+        if off is None:
+            return
+        set_config(gid, race_schedule_warn_slot=nxt, race_schedule_warned=list(sent) + [off])
+        short = max(0, need - len(rows))
+        when = "15 minutes" if off >= 900 else "1 minute"
+        body = (f"⏰ **{when}** to the <t:{int(nxt)}:t> race. "
+                + (f"**{len(rows)}/{need}** — it's ON." if not short
+                   else f"**{len(rows)}/{need}** — {short} more or it waits for the next slot."))
+        pings = " ".join(f"<@{p['user_id']}>" for p in rows[:MAX_PINGS])
+        if pings:
+            body += "\nIn: " + pings + "\nNot around? Hit **Leave** on the lobby."
+        await self._say(channel, body, mentions=MENTIONS)
+
+    async def _fire_slot(self, guild, channel, race, rows, need, due, slots, tz, gid):
+        """The slot is here: start the race, or roll it to the next one."""
+        set_config(gid, race_schedule_last_fired=due, race_schedule_warned=[], race_schedule_warn_slot=0)
+        lobby_msg = await self._lobby_message(channel, race)
+        if len(rows) >= need:
+            log.info("race %s: scheduled start (%d players)", race["id"], len(rows))
+            await self._begin(guild, channel, lobby_msg, race, rows)
+            return
+        nxt = engine.next_slot(time.time(), slots, tz)
+        log.info("guild %s: slot %s rolled over (%d/%d)", gid, int(due), len(rows), need)
+        await self._say(channel,
+                        f"🕗 Only **{len(rows)}/{need}** in, so the <t:{int(due)}:t> race waits. "
+                        f"Next: <t:{int(nxt)}:F> (<t:{int(nxt)}:R>) — you keep your seat, "
+                        f"nobody has to re-join.")
+        if lobby_msg:
+            try:
+                await lobby_msg.edit(embed=self._card(guild, race, rows), view=lobby_view(race["id"]))
+            except discord.HTTPException:
+                pass
+
+    def _template(self, cfg):
+        """Settings a scheduled race is built from (what /race schedule stored)."""
+        t = dict(cfg.get("race_schedule_settings") or {})
+        need = int(t.get("min_players") or engine.MIN_PLAYERS)
+        return {
+            "lives": engine.recommended_lives(need),
+            "lives_auto": True,
+            "round_secs": int(t.get("round_secs") or engine.DEFAULTS["round_secs"]),
+            "mode": t.get("mode") or engine.DEFAULTS["mode"],
+            "min_account_days": int(t.get("min_account_days", engine.DEFAULTS["min_account_days"])),
+            "min_players": need,
+            "sudden_death_at": engine.recommended_sudden_death(need),
+            "sudden_auto": True,
+        }
+
+    async def _say(self, channel, text, mentions=None):
+        try:
+            await channel.send(text, allowed_mentions=mentions or NO_MENTIONS)
+        except discord.HTTPException:
+            pass
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -883,7 +1124,8 @@ class BanRace(commands.Cog):
         race = engine.get_race(race_id)
         rows = engine.players(race_id)
         restored = await self._unban_all(guild, race)
-        await self._strip_all_racers(guild, race)
+        if not self._scheduled(guild.id):
+            await self._strip_all_racers(guild, race)   # scheduled: the lobby reopens, they keep their seat
         live, fallen = engine.standings(rows)
         killers = sorted(rows, key=lambda p: -p["kills"])[:3]
         if len(winners) == 1:
@@ -998,55 +1240,32 @@ class BanRace(commands.Cog):
                 "This server has no race channel yet — a mod picks one with `/race channel #channel`.",
                 ephemeral=True)
 
-        warn = []
-        racer_role_id = None
-        try:
-            role = await self._ensure_racer_role(guild)
-            racer_role_id = role.id
-            await self._lock_channel(channel, role)
-        except (discord.Forbidden, discord.HTTPException) as e:
-            warn.append(f"⚠️ Couldn't set up the Racer role / channel lock ({e.__class__.__name__}) — "
-                        f"I need Manage Roles and Manage Channels; anyone can talk there until then.")
-
-        invite_url = None
-        try:
-            inv = await channel.create_invite(max_age=INVITE_DAYS * 86400, max_uses=0, unique=True,
-                                              reason="Last to survive — return invite for the eliminated")
-            invite_url = inv.url
-        except discord.HTTPException:
-            pass
-
-        try:
-            # lives blank = auto: recommended for the lobby size, re-computed for the
-            # actual head-count the moment the race starts. An explicit value is the
-            # host's call and is never touched.
-            lives_auto = lives is None
-            race = engine.create_race(guild.id, channel.id, interaction.user.id, settings={
-                "lives": engine.recommended_lives(min_players) if lives_auto else lives,
-                "lives_auto": lives_auto,
-                "round_secs": int(round(round_minutes * 60)), "mode": mode_v,
-                "min_account_days": min_account_days, "min_players": min_players,
-                # a fixed 5 put a 6-player race in sudden death from round 2 (9/12);
-                # blank = sized to the field, re-done for the real head-count at start
-                "sudden_death_at": sudden_death_at or engine.recommended_sudden_death(min_players),
-                "sudden_auto": sudden_death_at is None,
-                "racer_role_id": racer_role_id})
-        except ValueError as e:
-            return await interaction.followup.send(str(e), ephemeral=True)
-        engine.update_race(race["id"], invite_url=invite_url)
-        race = engine.get_race(race["id"])
-        msg = await channel.send(embed=lobby_embed(race, [], guild.name), view=lobby_view(race["id"]))
-        engine.update_race(race["id"], lobby_msg_id=str(msg.id))
-        if not invite_url:
-            warn.append("⚠️ Couldn't mint a return invite (need Create Invite in that channel) — post one yourself before it starts.")
+        # lives blank = auto: recommended for the lobby size, re-computed for the
+        # actual head-count the moment the race starts. An explicit value is the
+        # host's call and is never touched.
+        lives_auto = lives is None
+        race, warn = await self._open_lobby(guild, channel, interaction.user.id, {
+            "lives": engine.recommended_lives(min_players) if lives_auto else lives,
+            "lives_auto": lives_auto,
+            "round_secs": int(round(round_minutes * 60)), "mode": mode_v,
+            "min_account_days": min_account_days, "min_players": min_players,
+            # a fixed 5 put a 6-player race in sudden death from round 2 (9/12);
+            # blank = sized to the field, re-done for the real head-count at start
+            "sudden_death_at": sudden_death_at or engine.recommended_sudden_death(min_players),
+            "sudden_auto": sudden_death_at is None})
+        if race is None:
+            return await interaction.followup.send(warn[0], ephemeral=True)
         note = ("\n" + "\n".join(warn)) if warn else ""
         lives_note = (f" Lives are on **auto** — {race['settings']['lives']} for {min_players} players, "
                       f"re-checked for whoever's actually in when it starts."
                       if lives_auto else
                       f" Lives fixed at **{lives}** (recommended for {min_players} players: "
                       f"{engine.recommended_lives(min_players)}).")
-        await interaction.followup.send(f"Lobby's open in {channel.mention}. Hit **Start the race** on it when "
-                                        f"enough people have joined.{lives_note}{note}", ephemeral=True)
+        slot = self._next_slot_ts(guild.id)
+        how = (f"It starts on the schedule — next slot <t:{int(slot)}:F> (<t:{int(slot)}:R>)."
+               if slot else "Hit **Start the race** on it when enough people have joined.")
+        await interaction.followup.send(f"Lobby's open in {channel.mention}. {how}{lives_note}{note}",
+                                        ephemeral=True)
 
     @race.command(name="stop", description="Stop the race (host or a mod). Unbans everyone it banned.")
     async def race_stop(self, interaction: discord.Interaction):
@@ -1129,17 +1348,19 @@ class BanRace(commands.Cog):
             except (discord.HTTPException, ValueError):
                 lobby_msg = None
         summary = "; ".join(changes)
-        if min_players is not None and len(rows) >= need and channel and lobby_msg:
+        if (min_players is not None and len(rows) >= need and channel and lobby_msg
+                and not self._scheduled(guild.id)):
             await self._begin(guild, channel, lobby_msg, race, rows)
             return await interaction.followup.send(
                 f"{summary} — the lobby already had {len(rows)} in, so it's starting now.", ephemeral=True)
         if lobby_msg:
             try:
-                await lobby_msg.edit(embed=lobby_embed(race, rows, guild.name), view=lobby_view(race["id"]))
+                await lobby_msg.edit(embed=self._card(guild, race, rows), view=lobby_view(race["id"]))
             except discord.HTTPException:
                 pass
-        await interaction.followup.send(
-            f"{summary}. {len(rows)} in so far — it starts at {need}.", ephemeral=True)
+        slot = self._next_slot_ts(guild.id)
+        when = (f" Next scheduled start <t:{int(slot)}:R>." if slot else f" It starts at {need}.")
+        await interaction.followup.send(f"{summary}. {len(rows)} in so far —{when}", ephemeral=True)
 
     @race.command(name="channel", description="Mods: set this server's race channel — where /race start opens lobbies.")
     @app_commands.describe(channel="The race channel (blank = show the current one)",
@@ -1168,6 +1389,146 @@ class BanRace(commands.Cog):
         await interaction.response.send_message(
             f"Race channel set to {channel.mention}. `/race start` opens lobbies there.{note}", ephemeral=True)
 
+    @race.command(name="schedule",
+                  description="Mods: run races on the clock (2am/8am/2pm/8pm ET) instead of when the lobby fills.")
+    @app_commands.describe(on="Turn the schedule on or off (blank = show it)",
+                           times="Start times, 24h, comma separated (default 02:00,08:00,14:00,20:00)",
+                           timezone="Zone those times are in (default America/New_York)",
+                           min_players="Needed at a slot or it waits for the next one (default 3)",
+                           mode="ghost = no bans (default); real = actual bans",
+                           round_minutes="Minutes per round for scheduled races (default 1.5)")
+    @app_commands.choices(mode=MODE_CHOICES)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def race_schedule(self, interaction: discord.Interaction,
+                            on: bool = None,
+                            times: str = None,
+                            timezone: str = None,
+                            min_players: app_commands.Range[int, 3, None] = None,
+                            mode: app_commands.Choice[str] = None,
+                            round_minutes: app_commands.Range[float, 0.5, 30.0] = None):
+        """The clock starts the race; the head-count only decides whether it can
+        (Paul 9/16). Below min_players the slot rolls to the next one and nobody
+        loses their seat — the lobby never closes."""
+        guild = interaction.guild
+        cfg = get_config(guild.id)
+        tmpl = dict(cfg.get("race_schedule_settings") or {})
+        nothing_asked = (on is None and times is None and timezone is None
+                         and min_players is None and mode is None and round_minutes is None)
+
+        slots = cfg.get("race_schedule_slots") or engine.SCHEDULE_SLOTS
+        if times is not None:
+            try:
+                slots = engine.parse_slots(times)
+            except (ValueError, TypeError):
+                return await interaction.response.send_message(
+                    "Times go in 24-hour `HH:MM`, comma separated — e.g. `02:00, 08:00, 14:00, 20:00`.",
+                    ephemeral=True)
+        tz = cfg.get("race_schedule_tz") or engine.SCHEDULE_TZ
+        if timezone is not None:
+            try:
+                engine._zone(timezone)
+            except Exception:
+                return await interaction.response.send_message(
+                    f"`{timezone}` isn't a zone I know — use an IANA name like `America/New_York`.",
+                    ephemeral=True)
+            tz = timezone
+        if min_players is not None:
+            tmpl["min_players"] = min_players
+        if mode is not None:
+            tmpl["mode"] = mode.value
+        if round_minutes is not None:
+            tmpl["round_secs"] = int(round(round_minutes * 60))
+        need = int(tmpl.get("min_players") or engine.MIN_PLAYERS)
+
+        if nothing_asked:
+            if not cfg.get("race_schedule_enabled"):
+                return await interaction.response.send_message(
+                    "Races here start when the lobby fills. `/race schedule on:True` puts them on the clock "
+                    "— **2am / 8am / 2pm / 8pm ET** by default.", ephemeral=True)
+            return await interaction.response.send_message(
+                embed=self._schedule_embed(guild, slots, tz, tmpl), ephemeral=True)
+
+        if on is False:
+            set_config(guild.id, race_schedule_enabled=False)
+            return await interaction.response.send_message(
+                "Schedule off. The open lobby stays where it is and starts the moment it holds "
+                f"**{need}** again — or the host hits **Start the race**.", ephemeral=True)
+
+        channel = self._configured_channel(guild)
+        if channel is None:
+            return await interaction.response.send_message(
+                "Set the race channel first — `/race channel #channel`.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+
+        set_config(guild.id, race_schedule_enabled=True, race_schedule_slots=list(slots),
+                   race_schedule_tz=tz, race_schedule_settings=tmpl,
+                   race_schedule_host_id=str(interaction.user.id))
+
+        # An open lobby is ADOPTED, never replaced: its roster is the roster
+        # (Paul 9/16 — "keep the current roster too if you can").
+        race = engine.active_race(guild.id)
+        adopted = ""
+        if race and race["status"] == "lobby":
+            s = race["settings"]
+            s["min_players"] = need
+            if mode is not None:
+                s["mode"] = tmpl["mode"]
+            if round_minutes is not None:
+                s["round_secs"] = tmpl["round_secs"]
+            if s.get("lives_auto"):
+                s["lives"] = engine.recommended_lives(need)
+            if s.get("sudden_auto"):
+                s["sudden_death_at"] = engine.recommended_sudden_death(need)
+            engine.update_race(race["id"], settings=s)
+            race = engine.get_race(race["id"])
+            rows = engine.players(race["id"])
+            msg = await self._lobby_message(channel, race)
+            if msg:
+                try:
+                    await msg.edit(embed=self._card(guild, race, rows), view=lobby_view(race["id"]))
+                except discord.HTTPException:
+                    pass
+            adopted = (f" The lobby already up keeps its **{len(rows)}** "
+                       f"player{'s' if len(rows) != 1 else ''} — nobody re-joins.")
+        elif race is None:
+            race, warn = await self._open_lobby(guild, channel, interaction.user.id,
+                                                self._template(dict(cfg, race_schedule_settings=tmpl)))
+            if race is None:
+                return await interaction.followup.send(warn[0], ephemeral=True)
+            carried = await self._carry_roster(guild, race, engine.latest_race(guild.id))
+            msg = await self._lobby_message(channel, race)
+            if msg:
+                try:
+                    await msg.edit(embed=self._card(guild, race, engine.players(race["id"])),
+                                   view=lobby_view(race["id"]))
+                except discord.HTTPException:
+                    pass
+            adopted = f" Opened the standing lobby in {channel.mention}" + (
+                f" and carried **{carried}** in from the last race." if carried else ".")
+
+        await interaction.followup.send(content="✅ Races now run on the clock." + adopted,
+                                        embed=self._schedule_embed(guild, slots, tz, tmpl), ephemeral=True)
+
+    def _schedule_embed(self, guild, slots, tz, tmpl):
+        """What the schedule is, plus the next four starts — as <t:> stamps, so
+        every player reads them in their own timezone."""
+        upcoming, ts = [], time.time()
+        for _ in range(4):
+            ts = engine.next_slot(ts, slots, tz)
+            upcoming.append(f"<t:{int(ts)}:F> — <t:{int(ts)}:R>")
+        need = int(tmpl.get("min_players") or engine.MIN_PLAYERS)
+        secs = int(tmpl.get("round_secs") or engine.DEFAULTS["round_secs"])
+        e = discord.Embed(title="🕗 Race schedule", colour=COLOR,
+                          description="The clock starts the race. Below the minimum it rolls to the next "
+                                      "slot and **everyone keeps their seat** — the lobby never closes.")
+        e.add_field(name="Times", value=", ".join(slots) + f"  ({tz})", inline=False)
+        e.add_field(name="Next four", value="\n".join(upcoming), inline=False)
+        e.add_field(name="Minimum", value=f"**{need}** players", inline=True)
+        e.add_field(name="Mode", value=tmpl.get("mode") or engine.DEFAULTS["mode"], inline=True)
+        e.add_field(name="Round", value=_fmt_round(secs), inline=True)
+        e.set_footer(text=f"{guild.name} · warnings go out 15 min and 1 min before each start")
+        return e
+
     @race.command(name="status", description="Standings for the race in progress.")
     async def race_status(self, interaction: discord.Interaction):
         race = engine.active_race(interaction.guild.id)
@@ -1176,7 +1537,7 @@ class BanRace(commands.Cog):
         rows = engine.players(race["id"])
         if race["status"] == "lobby":
             return await interaction.response.send_message(
-                embed=lobby_embed(race, rows, interaction.guild.name), ephemeral=True)
+                embed=self._card(interaction.guild, race, rows), ephemeral=True)
         await interaction.response.send_message(embed=standings_embed(race, rows), ephemeral=True)
 
     # Top-level and open to everyone (Paul 9/12: "last race stats or something,
@@ -1419,7 +1780,7 @@ class BanRace(commands.Cog):
     async def _refresh_lobby(self, interaction, race, closed=False):
         rows = engine.players(race["id"])
         try:
-            await interaction.message.edit(embed=lobby_embed(race, rows, interaction.guild.name),
+            await interaction.message.edit(embed=self._card(interaction.guild, race, rows),
                                            view=lobby_view(race["id"], closed=closed))
         except discord.HTTPException:
             pass
@@ -1440,13 +1801,18 @@ class BanRace(commands.Cog):
         need = s.get("min_players", engine.MIN_PLAYERS)
         lives_txt = ("lives get set when it starts — recommended for the head-count"
                      if s.get("lives_auto") else f"{s['lives']} lives")
+        slot = self._next_slot_ts(interaction.guild.id)
+        if slot:
+            tail = (f" ({len(rows)}/{need} — {need - len(rows)} more or it waits for the slot after.)"
+                    if len(rows) < need else f" ({len(rows)}/{need} — it's on.)")
+            tail += f" Starts <t:{int(slot)}:R>."
+        else:
+            tail = f" ({len(rows)}/{need} — it starts the moment the lobby fills.)" if len(rows) < need else ""
         await interaction.response.send_message(
-            f"You're in. {lives_txt}. Don't trust anyone. 🔫"
-            + (f" ({len(rows)}/{need} — it starts the moment the lobby fills.)" if len(rows) < need else ""),
-            ephemeral=True)
+            f"You're in. {lives_txt}. Don't trust anyone. 🔫" + tail, ephemeral=True)
         await self._set_racer(interaction.guild, race, m.id, True)
-        if len(rows) >= need:
-            # the lobby is full: no waiting on the host, it starts now
+        if len(rows) >= need and not slot:
+            # unscheduled server: a full lobby is the trigger, no waiting on the host
             await self._begin(interaction.guild, interaction.channel, interaction.message, race, rows)
         else:
             await self._refresh_lobby(interaction, race)
@@ -1494,10 +1860,13 @@ class BanRace(commands.Cog):
         engine.update_race(race["id"], status="running", started_at=time.time(), purge_round=purge)
         race = engine.get_race(race["id"])
         try:
-            await lobby_msg.edit(embed=lobby_embed(race, rows, guild.name),
-                                 view=lobby_view(race["id"], closed=True))
+            if lobby_msg:
+                await lobby_msg.edit(embed=self._card(guild, race, rows),
+                                     view=lobby_view(race["id"], closed=True))
         except discord.HTTPException:
             pass
+        if lobby_msg is None:
+            log.warning("race %s: started without a lobby card to close", race["id"])
         opens = int(time.time() + START_DELAY)
         await channel.send(
             content=" ".join(f"<@{p['user_id']}>" for p in rows[:MAX_PINGS]),
@@ -1658,7 +2027,7 @@ class BanRace(commands.Cog):
         except (discord.HTTPException, ValueError):
             return
         if race["status"] == "lobby":
-            embed = lobby_embed(race, engine.players(race["id"]), channel.guild.name)
+            embed = self._card(channel.guild, race, engine.players(race["id"]))
             view = lobby_view(race["id"])
         else:
             if not old.embeds:
