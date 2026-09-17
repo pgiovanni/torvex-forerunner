@@ -14,6 +14,43 @@ TORVEX_BOT_KEY = os.getenv("TORVEX_BOT_KEY", "")
 HEADERS = {"X-Bot-Key": TORVEX_BOT_KEY, "Content-Type": "application/json"}
 
 
+def parse_guild_allowlist(*values):
+    """Guild ids from the first env value that has any — commas or spaces.
+
+    Same shape as RECON_GUILDS / BACKUP_GUILDS / XP_TRANSFER_GUILDS: the
+    operator names their OWN servers in the environment, because this is
+    their call to make and not a toggle a guild admin finds on a dashboard.
+    """
+    for raw in values:
+        ids = {int(g) for g in (raw or "").replace(",", " ").split() if g.strip().isdigit()}
+        if ids:
+            return ids
+    return set()
+
+
+# Where /setup leave-server may be RUN from. Unset = the operator's own guild.
+BOT_ADMIN_GUILDS = parse_guild_allowlist(
+    os.environ.get("BOT_ADMIN_GUILDS"), os.environ.get("ALTGUARD_GUILD_ID"))
+
+
+def can_leave(target_id: int, invoked_in: int, operator_guilds: set) -> tuple[bool, str]:
+    """(ok, reason) — may this invocation make the bot leave `target_id`?
+
+    Order matters. An empty allowlist means NOBODY, not everybody, so a
+    misconfigured env fails closed. The home-guild guard sits last and
+    catches the operator too: no picking the wrong row and evicting the bot
+    from the server you are standing in, which nothing in Discord's UI can
+    undo for you.
+    """
+    if not operator_guilds or invoked_in not in operator_guilds:
+        return False, "operator"
+    if not target_id:
+        return False, "unknown"
+    if target_id in operator_guilds or target_id == invoked_in:
+        return False, "home"
+    return True, ""
+
+
 async def _api(method: str, path: str, **kwargs):
     url = f"{TORVEX_API_URL}{path}"
     try:
@@ -150,6 +187,83 @@ class Setup(commands.Cog):
             )
         except discord.HTTPException:
             pass
+
+    # ── Operator: pull the bot out of somebody else's server ──────────────
+    # A bot cannot be removed from Discord's own UI by anyone but an admin of
+    # the server it is in. When the operator has walked away from a server,
+    # the alternatives are to wait to be kicked — which leaves the bot, and
+    # its logging, sitting in a room they have left, on someone else's clock
+    # — or this. It leaves silently: no farewell post, nothing for anyone
+    # there to react to.
+    @setup.command(name="leave-server",
+                   description="Make the bot leave another server, quietly (operator only).")
+    @app_commands.describe(
+        server="Server to leave — start typing to pick it from the list.",
+        confirm="Tick to confirm. The bot leaves immediately.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def leave_server(self, interaction: discord.Interaction, server: str, confirm: bool):
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Must be used in a server.", ephemeral=True)
+            return
+
+        target_id = int(server) if str(server).isdigit() else 0
+        ok, reason = can_leave(target_id, interaction.guild.id, BOT_ADMIN_GUILDS)
+        if not ok:
+            msg = {
+                "operator": "❌ That one is operator-only — run it from your own server.",
+                "unknown": "❌ Pick a server from the list (or paste its id).",
+                "home": "❌ That's one of your own servers. Not leaving that one.",
+            }[reason]
+            await interaction.response.send_message(msg, ephemeral=True)
+            return
+
+        guild = self.bot.get_guild(target_id)
+        if guild is None:
+            await interaction.response.send_message(
+                f"❌ Not in a server with id `{target_id}` — nothing to leave.", ephemeral=True)
+            return
+
+        if not confirm:
+            # Say what it costs BEFORE doing it: getting back in needs somebody
+            # with Manage Server over there, which is exactly the person the
+            # operator is usually walking away from.
+            await interaction.response.send_message(
+                f"⚠️ **{guild.name}** ({guild.member_count} members) — run it again with "
+                f"`confirm: True` to leave. Re-adding the bot later needs someone with "
+                f"**Manage Server** there to invite it back.", ephemeral=True)
+            return
+
+        name, count = guild.name, guild.member_count
+        try:
+            await guild.leave()
+        except discord.HTTPException as e:
+            await interaction.response.send_message(
+                f"❌ Couldn't leave **{name}** — {e}", ephemeral=True)
+            return
+
+        # on_guild_remove writes the ledger row; no announcement anywhere.
+        await interaction.response.send_message(
+            f"✅ Left **{name}** (`{target_id}`, {count} members). Quietly — nothing was posted there.",
+            ephemeral=True)
+
+    @leave_server.autocomplete("server")
+    async def leave_server_autocomplete(self, interaction: discord.Interaction, current: str):
+        # Only ever offered to someone who could actually run it, and the
+        # operator's own servers are left out of the list entirely rather than
+        # shown and then refused.
+        if not interaction.guild or interaction.guild.id not in BOT_ADMIN_GUILDS:
+            return []
+        q = (current or "").lower()
+        out = []
+        for g in sorted(self.bot.guilds, key=lambda x: x.name.lower()):
+            if g.id in BOT_ADMIN_GUILDS:
+                continue
+            if q and q not in g.name.lower() and q not in str(g.id):
+                continue
+            out.append(app_commands.Choice(name=f"{g.name} ({g.member_count})"[:100], value=str(g.id)))
+            if len(out) == 25:
+                break
+        return out
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
