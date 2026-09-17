@@ -293,6 +293,74 @@ async def s_expired_window_does_nothing():
         an.get_config = lambda gid: dict(CFG)
 
 
+async def s_manage_roles_grant_reverted_not_quarantined():
+    """Paul 9/17 ("same with any moderator"): a mod handing out a role that
+    carries Manage Roles is handing out the ability to hand out roles. Undo it,
+    log it — but do NOT quarantine the moderator: promoting someone is not a
+    nuke."""
+    ex = Member(130); cog, g = fresh(ex)          # a moderator, not the owner
+    base = Role(1320, pos=5)
+    target = Member(131, roles=[base]); target.guild = g; g.add(target)
+    mod_role = Role(1321, pos=8, perms=discord.Permissions(manage_roles=True).value)
+    before = types.SimpleNamespace(roles=[base], guild=g, id=target.id)
+    target.roles = [base, mod_role]
+    await cog.on_member_update(before, target)
+    return target.remove_roles.called and not ex.edit.called
+
+
+async def s_manage_roles_grant_by_owner_allowed():
+    owner = Member(OWNER); cog, g = fresh(owner)
+    base = Role(1330, pos=5)
+    target = Member(132, roles=[base]); target.guild = g; g.add(target)
+    mod_role = Role(1331, pos=8, perms=discord.Permissions(manage_roles=True).value)
+    before = types.SimpleNamespace(roles=[base], guild=g, id=target.id)
+    target.roles = [base, mod_role]
+    await cog.on_member_update(before, target)
+    return not target.remove_roles.called and not owner.edit.called
+
+
+async def s_admin_grant_still_quarantines():
+    """The harder tier must not be softened by the new one."""
+    ex = Member(133); cog, g = fresh(ex)
+    base = Role(1340, pos=5)
+    target = Member(134, roles=[base]); target.guild = g; g.add(target)
+    admin_role = Role(1341, pos=8,
+                      perms=discord.Permissions(administrator=True, manage_roles=True).value)
+    before = types.SimpleNamespace(roles=[base], guild=g, id=target.id)
+    target.roles = [base, admin_role]
+    await cog.on_member_update(before, target)
+    return target.remove_roles.called and ex.edit.called
+
+
+async def s_cosmetic_grant_is_ignored():
+    ex = Member(135); cog, g = fresh(ex)
+    base = Role(1350, pos=5)
+    target = Member(136, roles=[base]); target.guild = g; g.add(target)
+    fun = Role(1351, pos=8, perms=0)               # "movie freak", "Cat Lover"
+    before = types.SimpleNamespace(roles=[base], guild=g, id=target.id)
+    target.roles = [base, fun]
+    await cog.on_member_update(before, target)
+    return not target.remove_roles.called and not ex.edit.called
+
+
+async def s_role_born_with_nuke_perms_is_stripped():
+    """A role EDITED into nuke perms was already reverted; one created carrying
+    them was not — same escalation, so same answer."""
+    ex = Member(137); cog, g = fresh(ex)
+    role = Role(1360, pos=8, perms=discord.Permissions(manage_roles=True).value)
+    role.guild = g; role.edit = AsyncMock()
+    await cog.on_guild_role_create(role)
+    return role.edit.called
+
+
+async def s_cosmetic_role_creation_is_ignored():
+    ex = Member(138); cog, g = fresh(ex)
+    role = Role(1370, pos=8, perms=0)
+    role.guild = g; role.edit = AsyncMock()
+    await cog.on_guild_role_create(role)
+    return not role.edit.called
+
+
 SCENARIOS = [
     ("mass channel-delete -> strip+quarantine", s_mass_channel_delete),
     ("below threshold (2 deletes) -> no action", s_below_threshold),
@@ -316,6 +384,12 @@ SCENARIOS = [
     ("window is someone else's -> still stripped", s_window_is_scoped_to_one_person),
     ("window open -> channel-delete STILL trips", s_window_never_raises_destructive),
     ("expired window -> normal limits apply", s_expired_window_does_nothing),
+    ("Manage-Roles grant by mod -> revert, NO quarantine", s_manage_roles_grant_reverted_not_quarantined),
+    ("Manage-Roles grant by owner -> allowed", s_manage_roles_grant_by_owner_allowed),
+    ("admin grant still -> revert + strip", s_admin_grant_still_quarantines),
+    ("cosmetic role grant -> no action", s_cosmetic_grant_is_ignored),
+    ("role CREATED with nuke perms -> perms stripped", s_role_born_with_nuke_perms_is_stripped),
+    ("cosmetic role created -> no action", s_cosmetic_role_creation_is_ignored),
 ]
 
 
