@@ -226,6 +226,17 @@ DEFAULTS = {
     # picked on the dashboard; the cooldown is server-wide (whoever pinged
     # last); the channel list confines it (empty = anywhere).
     "deadchat_enabled": 0,
+    # Last to survive runs on a clock by DEFAULT (Paul 9/16: "just make this
+    # default configuration"). It still does nothing until a guild sets
+    # race_channel_id — that's the real opt-in. Times are local to the zone.
+    "race_schedule_enabled": 1,
+    "race_schedule_slots": ["02:00", "08:00", "14:00", "20:00"],
+    "race_schedule_tz": "America/New_York",
+    "race_schedule_min_players": 3,
+    "race_schedule_mode": "ghost",
+    "race_schedule_round_secs": 90,
+    "race_schedule_min_account_days": 7,
+    "race_channel_id": None,
     "deadchat_role_id": None,
     "deadchat_cooldown_min": 30,
     "deadchat_channels": [],
