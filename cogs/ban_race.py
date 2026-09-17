@@ -611,32 +611,6 @@ class BanRace(commands.Cog):
         engine.update_race(race["id"], lobby_msg_id=str(msg.id))
         return engine.get_race(race["id"]), warn
 
-    async def _carry_roster(self, guild, race, prev):
-        """The infinite lobby: whoever was in the last race is already in the
-        next one (Paul 9/16 — "keep the current roster", "make lobby infinite").
-        They hold Racer, so they can talk and can Leave whenever; the T-15 ping
-        is what stops someone being carried in while they're asleep."""
-        if not prev or prev["id"] == race["id"]:
-            return 0
-        lives = race["settings"]["lives"]
-        real = race["settings"]["mode"] == "real"
-        carried = 0
-        for p in engine.players(prev["id"]):
-            m = guild.get_member(int(p["user_id"]))
-            if m is None or m.bot:
-                continue
-            if real and not self._bannable(guild, m):
-                continue                   # hosts watch, they don't play
-            if engine.player(race["id"], p["user_id"]):
-                continue
-            engine.join(race["id"], p["user_id"], m.display_name, lives)
-            await self._set_racer(guild, race, p["user_id"], True)
-            carried += 1
-            await asyncio.sleep(0.3)
-        if carried:
-            log.info("race %s: carried %d players from race %s", race["id"], carried, prev["id"])
-        return carried
-
     @tasks.loop(seconds=SCHEDULE_CHECK_S)
     async def _scheduler(self):
         # Every guild, because the schedule is on by default now; _tick drops
@@ -680,12 +654,10 @@ class BanRace(commands.Cog):
         # The lobby is infinite: if none is open, open one and carry the roster
         # of the race that just ended into it.
         if race is None:
-            prev = engine.latest_race(gid)
             race, warn = await self._open_lobby(guild, channel, self.bot.user.id,
                                                 self._template(cfg))
             if race is None:
                 return
-            carried = await self._carry_roster(guild, race, prev)
             msg = await self._lobby_message(channel, race)
             if msg:
                 try:
@@ -694,10 +666,9 @@ class BanRace(commands.Cog):
                 except discord.HTTPException:
                     pass
             nxt = engine.next_slot(now, slots, tz)
-            opened = "Lobby's open again" if prev else "Lobby's open"
-            carried_txt = f" — {carried} of you carried over" if carried else ""
-            await self._say(channel, f"🔫 {opened}{carried_txt}. "
-                                     f"Next race <t:{int(nxt)}:F> (<t:{int(nxt)}:R>).")
+            await self._say(channel, "🔫 **Lobby's open and the queue is empty** — "
+                                     "every race starts from scratch, so hit **Join** to be in "
+                                     f"the next one.\nNext race <t:{int(nxt)}:F> (<t:{int(nxt)}:R>).")
 
         if race["status"] == "lobby":
             race = await self._sync_lobby(guild, channel, race, cfg)
@@ -1218,8 +1189,9 @@ class BanRace(commands.Cog):
         race = engine.get_race(race_id)
         rows = engine.players(race_id)
         restored = await self._unban_all(guild, race)
-        if not self._scheduled(guild.id):
-            await self._strip_all_racers(guild, race)   # scheduled: the lobby reopens, they keep their seat
+        # The queue is cleared after every race (Paul 9/16), so nobody keeps the
+        # Racer role between them either — you rejoin, you get it back.
+        await self._strip_all_racers(guild, race)
         live, fallen = engine.standings(rows)
         killers = sorted(rows, key=lambda p: -p["kills"])[:3]
         if len(winners) == 1:
