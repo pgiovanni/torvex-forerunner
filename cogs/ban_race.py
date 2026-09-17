@@ -360,20 +360,16 @@ def overkill_blocks():
 
 
 def fmt_slots(slots, tz):
-    """'02:00' … -> '2:00 AM · 8:00 AM · 2:00 PM · 8:00 PM ET' — the schedule as
-    a player reads it, with the zone's current abbreviation."""
-    out = []
-    for s in slots:
-        h, _, mm = s.partition(":")
-        h = int(h)
-        suffix = "AM" if h < 12 else "PM"
-        out.append(f"{(h % 12) or 12}:{mm} {suffix}")
+    """The daily start times as Discord timestamps — '<t:...:t> · <t:...:t> …'.
+    Discord renders each one on the READER's clock, so a player in London sees
+    their own times instead of having to work out what "EDT" means
+    (Paul 9/16: "use timestamps for this ... instead of EDT"). Each stamp is
+    that slot's next occurrence, which is the same time of day every day."""
     try:
-        import datetime
-        label = datetime.datetime.now(engine._zone(tz)).strftime("%Z")
+        stamps = engine.next_of_each(time.time(), slots, tz)
     except Exception:
-        label = tz
-    return " · ".join(out) + f" {label}"
+        return ", ".join(slots) + f" ({tz})"
+    return " · ".join(f"<t:{int(ts)}:t>" for ts in stamps)
 
 
 def lobby_embed(race, rows, guild_name, schedule=None):

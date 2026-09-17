@@ -1074,6 +1074,21 @@ class ScheduleTests(unittest.TestCase):
         self.assertIsNone(E.warning_due(slot - 30, slot, sent=[900, 60]))
         self.assertIsNone(E.warning_due(slot + 5, slot))
 
+    def test_next_of_each_gives_one_stamp_per_slot(self):
+        # the card renders these as <t:...:t>, so each must be that slot's next
+        # occurrence — same time of day, today or tomorrow, never in the past
+        now = self.at("2026-09-16 18:28")
+        got = E.next_of_each(now, tz=self.TZ)
+        self.assertEqual([self.local(t) for t in got],
+                         ["2026-09-17 02:00", "2026-09-17 08:00",
+                          "2026-09-17 14:00", "2026-09-16 20:00"])
+        self.assertTrue(all(t > now for t in got))
+        # just after a slot, that slot rolls to tomorrow and the rest stay today
+        got = E.next_of_each(self.at("2026-09-16 08:01"), tz=self.TZ)
+        self.assertEqual([self.local(t) for t in got],
+                         ["2026-09-17 02:00", "2026-09-17 08:00",
+                          "2026-09-16 14:00", "2026-09-16 20:00"])
+
     def test_the_line_says_how_many_more_are_needed(self):
         slot = self.at("2026-09-16 20:00")
         self.assertIn("needs **1** more", E.schedule_line(slot, 2, 3))

@@ -1413,6 +1413,24 @@ def next_slot(now=None, slots=SCHEDULE_SLOTS, tz=None):
     raise ValueError("no slot found")       # unreachable with a non-empty slot list
 
 
+def next_of_each(now=None, slots=SCHEDULE_SLOTS, tz=None):
+    """The next occurrence of EVERY slot, in slot order — one timestamp per
+    start time. The card renders them as Discord <t:...:t> stamps so a player
+    reads the schedule on their own clock instead of decoding "EDT"
+    (Paul 9/16: "use timestamps for this ... instead of EDT")."""
+    from datetime import datetime, timedelta
+    now = now if now is not None else time.time()
+    zone = _zone(tz)
+    today = datetime.fromtimestamp(now, zone).date()
+    out = []
+    for s in slots:
+        ts = _local_ts(today, s, zone)
+        if ts <= now:
+            ts = _local_ts(today + timedelta(days=1), s, zone)
+        out.append(ts)
+    return out
+
+
 def previous_slot(now=None, slots=SCHEDULE_SLOTS, tz=None):
     """Unix time of the most recent slot at or before `now`."""
     from datetime import datetime, timedelta
