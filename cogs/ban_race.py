@@ -651,24 +651,15 @@ class BanRace(commands.Cog):
         if channel is None:
             return
 
-        # The lobby is infinite: if none is open, open one and carry the roster
-        # of the race that just ended into it.
+        # The lobby is infinite: if none is open, open one. It opens with an
+        # empty queue (Paul 9/16 — every race starts from scratch), and the
+        # card IS the announcement: no chat line beside it (Paul 9/17, "just
+        # send the same card with a cleared queue").
         if race is None:
             race, warn = await self._open_lobby(guild, channel, self.bot.user.id,
                                                 self._template(cfg))
             if race is None:
                 return
-            msg = await self._lobby_message(channel, race)
-            if msg:
-                try:
-                    await msg.edit(embed=self._card(guild, race, engine.players(race["id"])),
-                                   view=lobby_view(race["id"]))
-                except discord.HTTPException:
-                    pass
-            nxt = engine.next_slot(now, slots, tz)
-            await self._say(channel, "🔫 **Lobby's open and the queue is empty** — "
-                                     "every race starts from scratch, so hit **Join** to be in "
-                                     f"the next one.\nNext race <t:{int(nxt)}:F> (<t:{int(nxt)}:R>).")
 
         if race["status"] == "lobby":
             race = await self._sync_lobby(guild, channel, race, cfg)
