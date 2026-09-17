@@ -483,13 +483,15 @@ class Rounds(unittest.TestCase):
     def test_recommended_lives_scale_with_players(self):
         # Paul 9/12: "scale lives with the amount of people playing — recommended, not forced"
         # Paul 9/15: "default life count should be 5 and scaled from there instead of 3"
+        # Paul 9/16: "there should be no upper limit to it ... the parameters
+        # scale the same" — the ladder keeps climbing instead of flattening at 12
         self.assertEqual([E.recommended_lives(n) for n in (0, 3, 5, 6, 10, 15, 20, 32, 100)],
-                         [5, 5, 5, 5, 6, 7, 9, 12, 12])
+                         [5, 5, 5, 5, 6, 7, 9, 12, 29])
         # nobody ever drops below the base, and the ladder only ever climbs
         ladder = [E.recommended_lives(n) for n in range(0, 200)]
         self.assertEqual(min(ladder), E.BASE_LIVES)
-        self.assertEqual(max(ladder), E.MAX_RECOMMENDED_LIVES)
         self.assertEqual(ladder, sorted(ladder))
+        self.assertGreater(E.recommended_lives(400), E.recommended_lives(200))
         self.assertEqual(E.DEFAULTS["lives"], E.BASE_LIVES)
         # explicit lives survive create_race untouched; auto is a flag the cog acts on at start
         r = E.create_race(9191, 3, 9, settings={"lives": 5, "lives_auto": False, "min_players": 15})
@@ -793,8 +795,10 @@ class Tracking(unittest.TestCase):
 
     def test_sudden_death_scales_with_the_field(self):
         # 9/12: a fixed 5 meant a 6-player race hit sudden death in round 2
+        # 9/16: uncapped too — the last quarter of a 40-player field is 10,
+        # not 5, so a big race doesn't spend half of itself in sudden death
         self.assertEqual([E.recommended_sudden_death(n) for n in (3, 6, 8, 9, 12, 15, 16, 20, 40)],
-                         [2, 2, 2, 3, 3, 4, 4, 5, 5])
+                         [2, 2, 2, 3, 3, 4, 4, 5, 10])
         self.assertEqual(E.recommended_sudden_death(0), 2)
 
 
@@ -946,6 +950,50 @@ class Overkill(unittest.TestCase):
         rows[0]["overkill"] = 6
         E.save_players(race["id"], rows)
         self.assertEqual(E.player(race["id"], 1)["overkill"], 6)
+
+
+class LateJoin(unittest.TestCase):
+    """Paul 9/16: "anyone can join at anytime" + "give them a handicap based on
+    how many rounds there are"."""
+
+    def test_the_handicap_is_one_life_per_round_already_played(self):
+        self.assertEqual([E.late_join_lives(5, r) for r in (0, 1, 2, 3, 4, 5, 9)],
+                         [5, 4, 3, 2, 1, 1, 1])
+        self.assertEqual(E.late_join_lives(12, 3), 9)
+        self.assertEqual(E.late_join_lives(1, 0), 1)
+        self.assertEqual(E.late_join_lives(5, -2), 5)     # nonsense input can't hand out extra
+
+    def test_the_round_they_walk_in_on_cannot_punish_them(self):
+        # no shot cast, everyone silent: the AFK penalty and the storm both
+        # skip the newcomer, and hit the player who was already here
+        race = E.create_race("g-late", "c", "h")
+        E.join(race["id"], 1, "veteran", 5)
+        E.join(race["id"], 2, "veteran2", 5)
+        E.join(race["id"], 3, "newcomer", 2, joined_round=4, shots=1)
+        rows = E.players(race["id"])
+        r = resolve(rows, [], round_no=4, rng=random.Random(1), storm=True, afk=True, max_lives=5)
+        by = {p["name"]: p for p in rows}
+        self.assertEqual(by["newcomer"]["lives"], 2, r["lines"])
+        self.assertLess(by["veteran"]["lives"], 5)
+        self.assertLess(by["veteran2"]["lives"], 5)
+
+    def test_from_the_next_round_they_are_a_player_like_any_other(self):
+        race = E.create_race("g-late2", "c", "h")
+        E.join(race["id"], 1, "veteran", 5)
+        E.join(race["id"], 2, "newcomer", 2, joined_round=4, shots=1)
+        rows = E.players(race["id"])
+        r = resolve(rows, [], round_no=5, rng=random.Random(1), afk=True, max_lives=5)
+        by = {p["name"]: p for p in rows}
+        self.assertEqual(by["newcomer"]["lives"], 1, r["lines"])   # AFK now costs them
+
+    def test_the_late_row_round_trips(self):
+        race = E.create_race("g-late3", "c", "h")
+        E.join(race["id"], 7, "newcomer", 3, joined_round=2, shots=1)
+        p = E.player(race["id"], 7)
+        self.assertEqual((p["joined_round"], p["shots"], p["lives"]), (2, 1, 3))
+        # a normal join is not a late one
+        E.join(race["id"], 8, "regular", 5)
+        self.assertIsNone(E.player(race["id"], 8)["joined_round"])
 
 
 class ScheduleTests(unittest.TestCase):

@@ -131,6 +131,10 @@ def round_view(race_id, closed=False):
                                  custom_id=_cid("standings", race_id), disabled=closed))
     v.add_item(discord.ui.Button(label="Close round now", emoji="⏭️", style=discord.ButtonStyle.secondary,
                                  custom_id=_cid("close", race_id), disabled=closed))
+    # Paul 9/16: "anyone can join at anytime" — the lobby card is long gone by
+    # now, so the way in during a race is here.
+    v.add_item(discord.ui.Button(label="Join", emoji="🚪", style=discord.ButtonStyle.success,
+                                 custom_id=_cid("join", race_id), disabled=closed))
     return v
 
 
@@ -355,7 +359,24 @@ def overkill_blocks():
     ]]
 
 
-def lobby_embed(race, rows, guild_name, slot_ts=None):
+def fmt_slots(slots, tz):
+    """'02:00' … -> '2:00 AM · 8:00 AM · 2:00 PM · 8:00 PM ET' — the schedule as
+    a player reads it, with the zone's current abbreviation."""
+    out = []
+    for s in slots:
+        h, _, mm = s.partition(":")
+        h = int(h)
+        suffix = "AM" if h < 12 else "PM"
+        out.append(f"{(h % 12) or 12}:{mm} {suffix}")
+    try:
+        import datetime
+        label = datetime.datetime.now(engine._zone(tz)).strftime("%Z")
+    except Exception:
+        label = tz
+    return " · ".join(out) + f" {label}"
+
+
+def lobby_embed(race, rows, guild_name, schedule=None):
     s = race["settings"]
     e = discord.Embed(title="🔫 LAST TO SURVIVE", color=COLOR,
                       description=PITCH.format(lives=s["lives"]))
@@ -376,14 +397,23 @@ def lobby_embed(race, rows, guild_name, slot_ts=None):
     e.add_field(name="Lives", value=lives_line(s, len(rows)), inline=False)
     # No power-up catalogue here (Paul 9/13: "way too much") — the item blurbs
     # live on the drops themselves and behind the Power-ups button.
+    # The whole roster, never a "+12 more" — there's no cap on who plays
+    # (Paul 9/16), so the list spills into (cont.) fields instead of truncating.
     names = [p["name"] for p in rows]
-    shown = ", ".join(names[:40]) + (f" … +{len(names) - 40}" if len(names) > 40 else "")
-    e.add_field(name=f"Players ({len(rows)})", value=shown or "*nobody yet — hit Join*", inline=False)
-    if slot_ts:
-        # scheduled server: the clock starts the race, and the lobby outlives it
-        e.add_field(name="Next race",
-                    value=engine.schedule_line(slot_ts, len(rows),
-                                               s.get("min_players", engine.MIN_PLAYERS)),
+    add_chunked(e, f"Players ({len(rows)})",
+                [[", ".join(names)]] if names else [["*nobody yet — hit Join*"]])
+    if schedule:
+        need = s.get("min_players", engine.MIN_PLAYERS)
+        nxt = int(schedule["next"])
+        e.add_field(name="🕗 Next race",
+                    value=(f"**<t:{nxt}:F>** — <t:{nxt}:R>\n"
+                           f"Races run **{fmt_slots(schedule['slots'], schedule['tz'])}**, every day. "
+                           f"The clock starts it, not the head-count.\n"
+                           f"• **Join whenever** — no cap, no cut-off, and the lobby never closes.\n"
+                           f"• Turn up while a race is on and you drop straight into the next round, "
+                           f"**one life lighter for every round already played**.\n"
+                           f"• Fewer than **{need}** here when a slot comes and it waits for the next one "
+                           f"— you keep your seat, nobody re-joins."),
                     inline=False)
         e.set_footer(text=f"{guild_name} · the lobby never closes — your seat carries to the next race")
     else:
@@ -524,9 +554,17 @@ class BanRace(commands.Cog):
             return None
 
     def _card(self, guild, race, rows):
-        """The lobby embed — with the next scheduled start on it where the guild
-        races on the clock."""
-        return lobby_embed(race, rows, guild.name, slot_ts=self._next_slot_ts(guild.id))
+        """The lobby embed — explaining the schedule where the guild races on
+        the clock, rather than counting up to a threshold."""
+        sc = self._schedule_cfg(guild.id)
+        sched = None
+        if sc:
+            slots, tz, _ = sc
+            try:
+                sched = {"next": engine.next_slot(time.time(), slots, tz), "slots": slots, "tz": tz}
+            except Exception:
+                log.exception("race schedule: next slot failed for guild %s", guild.id)
+        return lobby_embed(race, rows, guild.name, schedule=sched)
 
     async def _lobby_message(self, channel, race):
         if not channel or not race.get("lobby_msg_id"):
@@ -1786,6 +1824,8 @@ class BanRace(commands.Cog):
             pass
 
     async def _btn_join(self, interaction, race, _):
+        if race["status"] == "running":
+            return await self._late_join(interaction, race)
         if race["status"] != "lobby":
             return await interaction.response.send_message("The lobby's closed.", ephemeral=True)
         s = race["settings"]
@@ -1816,6 +1856,37 @@ class BanRace(commands.Cog):
             await self._begin(interaction.guild, interaction.channel, interaction.message, race, rows)
         else:
             await self._refresh_lobby(interaction, race)
+
+    async def _late_join(self, interaction, race):
+        """Walking in on a race in progress. Paul 9/16: "anyone can join at
+        anytime" + "give them a handicap based on how many rounds there are" —
+        so entry costs a life per round already finished, and the round they
+        arrive in doesn't count them AFK or feed them to the storm."""
+        s = race["settings"]
+        m = interaction.user
+        if engine.player(race["id"], m.id):
+            return await interaction.response.send_message(
+                "You're already in this one — check **Standings**.", ephemeral=True)
+        err = engine.join_error(m.created_at.timestamp(), time.time(), s["min_account_days"],
+                                is_bot=m.bot, bannable=self._bannable(interaction.guild, m), mode=s["mode"])
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
+        rnd = int(race["round_no"] or 1)
+        played = max(0, rnd - 1)
+        lives = engine.late_join_lives(s["lives"], played)
+        engine.join(race["id"], m.id, m.display_name, lives, joined_round=rnd, shots=1)
+        await self._set_racer(interaction.guild, race, m.id, True)
+        word = "life" if lives == 1 else "lives"
+        await interaction.response.send_message(
+            f"You're in, mid-race — **{lives}** {word}"
+            + (f" (one off for each of the **{played}** rounds you missed)." if played else ".")
+            + " You've got this round's shot, and the round you walked in on can't count you AFK. 🔫",
+            ephemeral=True)
+        channel = await self._channel_for(interaction.guild, race) or interaction.channel
+        await self._say(channel,
+                        f"🚪 {m.mention} walked into round **{rnd}** with **{lives}** {word}"
+                        + (f" — handicapped for the {played} rounds already run." if played else "."),
+                        mentions=MENTIONS)
 
     async def _btn_leave(self, interaction, race, _):
         if race["status"] != "lobby":

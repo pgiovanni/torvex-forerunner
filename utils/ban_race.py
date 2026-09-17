@@ -317,6 +317,7 @@ def init(db=None):
             ("players", (("patch", "INTEGER NOT NULL DEFAULT 0"),
                          ("medkit", "INTEGER NOT NULL DEFAULT 0"),
                          ("skip_round", "INTEGER"),
+                         ("joined_round", "INTEGER"),
                          ("revived", "INTEGER NOT NULL DEFAULT 0"),
                          ("revive_small", "INTEGER NOT NULL DEFAULT 0"),
                          ("revive_medium", "INTEGER NOT NULL DEFAULT 0"),
@@ -478,10 +479,15 @@ def update_race(race_id, db=None, **fields):
         c.execute(f"UPDATE races SET {cols} WHERE id=?", (*fields.values(), race_id))
 
 
-def join(race_id, user_id, name, lives, now=None, db=None):
+def join(race_id, user_id, name, lives, now=None, db=None, joined_round=None, shots=0):
+    """`joined_round` marks a late entry: the round they walked in on, which
+    buys them that one round's exemption from the AFK penalty and the storm
+    (they weren't here to be quiet). `shots` hands them this round's shot so
+    they can fight immediately instead of watching."""
     with _conn(db) as c:
-        c.execute("INSERT OR IGNORE INTO players (race_id, user_id, name, lives, joined_at)"
-                  " VALUES (?,?,?,?,?)", (race_id, str(user_id), name, lives, now or time.time()))
+        c.execute("INSERT OR IGNORE INTO players (race_id, user_id, name, lives, joined_at,"
+                  " joined_round, shots) VALUES (?,?,?,?,?,?,?)",
+                  (race_id, str(user_id), name, lives, now or time.time(), joined_round, shots))
 
 
 def leave(race_id, user_id, db=None):
@@ -803,11 +809,11 @@ def recommended_lives(n_players):
     A host who sets `lives:` explicitly always wins over this (up to 50).
     There is NO cap on players."""
     return max(BASE_LIVES,
-               min(MAX_RECOMMENDED_LIVES, BASE_LIVES - 1 + max(0, n_players) // 4))
+               BASE_LIVES - 1 + max(0, n_players) // 4)
 
 
 BASE_LIVES = 5            # floor + the number a small lobby plays with
-MAX_RECOMMENDED_LIVES = 12
+MAX_RECOMMENDED_LIVES = None   # no ceiling (Paul 9/16) — kept as a name so nothing importing it breaks
 
 
 def recommended_sudden_death(n_players):
@@ -815,8 +821,21 @@ def recommended_sudden_death(n_players):
     rounds). A fixed 5 meant a 6-player race was in sudden death from its
     second round (Paul 9/12: "sudden-deathing every single round, that's not
     normal"). About a quarter of the starters, never below 2, never above 5:
-      6 → 2 · 8 → 2 · 12 → 3 · 15 → 4 · 20+ → 5"""
-    return max(2, min(5, -(-max(0, n_players) // 4)))
+      6 → 2 · 8 → 2 · 12 → 3 · 15 → 4 · 20 → 5 · 40 → 10
+
+    No ceiling (Paul 9/16: "no upper limit to it ... the parameters scale the
+    same") — a 60-player race reaching its last 15 is the same fraction of the
+    field as a 12-player race reaching its last 3."""
+    return max(2, -(-max(0, n_players) // 4))
+
+
+def late_join_lives(max_lives, rounds_played):
+    """Lives someone dropping into a race already in progress starts with
+    (Paul 9/16: "anyone can join at anytime" — "give them a handicap based on
+    how many rounds there are"). One life less per round already finished, and
+    never less than one: at 5 lives that's round 2 → 4, round 4 → 2, round 6+
+    → 1. Arriving late is allowed, arriving late and fresh is not."""
+    return max(1, int(max_lives) - max(0, int(rounds_played)))
 
 
 def pick_purge_round(rng, n_players):
@@ -1058,7 +1077,9 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
     voted = {s["shooter_id"] for s in shot_rows if s["kind"] in ("shot", "overload", "nuke")}
 
     def is_afk(p):
-        return p["user_id"] not in voted and p.get("skip_round") != round_no
+        # a late entry is not AFK for the round it walked in on, same as a revive
+        return (p["user_id"] not in voted and p.get("skip_round") != round_no
+                and p.get("joined_round") != round_no)
 
     rewards = []   # (shooter, victim) — paid AFTER every shot has landed
     # overkill: damage past the victim's last life, and who put it there. A
@@ -1248,7 +1269,8 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
     # the storm: fewest-chat-messages survivor bleeds one life, shields don't help;
     # it skips anyone the AFK penalty already hit this round
     if storm and len(alive(rows)) >= 3:
-        cands = [p for p in alive(rows) if p["user_id"] not in afk_hit] or alive(rows)
+        cands = [p for p in alive(rows)
+                 if p["user_id"] not in afk_hit and p.get("joined_round") != round_no] or alive(rows)
         low = min(msgs.get(p["user_id"], 0) for p in cands)
         pool = [p for p in cands if msgs.get(p["user_id"], 0) == low]
         v = rng.choice(pool)
