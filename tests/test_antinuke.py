@@ -42,6 +42,7 @@ class Role:
     def __init__(self, rid, pos=1, managed=False, default=False, perms=0):
         self.id = rid; self.position = pos; self.managed = managed; self._d = default
         self.name = "role%d" % rid; self.permissions = types.SimpleNamespace(value=perms)
+        self.edit = AsyncMock(); self.members = []   # antinuke disarms roles + counts wearers
 
     def is_default(self): return self._d
     def __ge__(self, o): return self.position >= o.position
@@ -305,7 +306,8 @@ async def s_manage_roles_grant_reverted_not_quarantined():
     before = types.SimpleNamespace(roles=[base], guild=g, id=target.id)
     target.roles = [base, mod_role]
     await cog.on_member_update(before, target)
-    return target.remove_roles.called and not ex.edit.called
+    # role taken back AND disarmed, but the moderator is left alone
+    return target.remove_roles.called and mod_role.edit.called and not ex.edit.called
 
 
 async def s_manage_roles_grant_by_owner_allowed():
@@ -330,6 +332,21 @@ async def s_admin_grant_still_quarantines():
     target.roles = [base, admin_role]
     await cog.on_member_update(before, target)
     return target.remove_roles.called and ex.edit.called
+
+
+async def s_established_staff_role_is_not_disarmed():
+    """Paul 9/17 wanted "strip perms and remove role from member". If the role
+    is @Mod and four other people wear it, stripping its perms would disarm all
+    of them — so the grant is undone and the role keeps its teeth."""
+    ex = Member(139); cog, g = fresh(ex)
+    base = Role(1380, pos=5)
+    target = Member(140, roles=[base]); target.guild = g; g.add(target)
+    staff = Role(1381, pos=8, perms=discord.Permissions(manage_roles=True).value)
+    staff.members = [Member(900 + i) for i in range(4)]     # already worn by four mods
+    before = types.SimpleNamespace(roles=[base], guild=g, id=target.id)
+    target.roles = [base, staff]
+    await cog.on_member_update(before, target)
+    return target.remove_roles.called and not staff.edit.called
 
 
 async def s_cosmetic_grant_is_ignored():
@@ -384,9 +401,10 @@ SCENARIOS = [
     ("window is someone else's -> still stripped", s_window_is_scoped_to_one_person),
     ("window open -> channel-delete STILL trips", s_window_never_raises_destructive),
     ("expired window -> normal limits apply", s_expired_window_does_nothing),
-    ("Manage-Roles grant by mod -> revert, NO quarantine", s_manage_roles_grant_reverted_not_quarantined),
     ("Manage-Roles grant by owner -> allowed", s_manage_roles_grant_by_owner_allowed),
     ("admin grant still -> revert + strip", s_admin_grant_still_quarantines),
+    ("Manage-Roles grant -> role taken back AND disarmed", s_manage_roles_grant_reverted_not_quarantined),
+    ("established staff role -> taken back, NOT disarmed", s_established_staff_role_is_not_disarmed),
     ("cosmetic role grant -> no action", s_cosmetic_grant_is_ignored),
     ("role CREATED with nuke perms -> perms stripped", s_role_born_with_nuke_perms_is_stripped),
     ("cosmetic role created -> no action", s_cosmetic_role_creation_is_ignored),

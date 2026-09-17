@@ -120,14 +120,17 @@ _NUKE_PERMS = discord.Permissions(
 # handing out a "helper" role with kick perms shouldn't nuke, but admin must.
 _ADMIN_LOCK_PERMS = discord.Permissions(administrator=True, manage_guild=True).value
 
-# Manage Roles is the self-perpetuating one: whoever holds it can hand out every
-# role beneath them — including the role that grants it. Paul 9/17, after a mod
-# spent half an hour making roles and handing them round: "same with any
-# moderator". So GRANTING a role carrying Manage Roles is owner-and-bot-only
-# too, but the response is proportionate: revert the grant and say so in the mod
-# log. Promoting someone is a normal thing for staff to get wrong — it is not
-# the keys to the kingdom, and it should not quarantine a moderator.
-_GRANT_LOCK_PERMS = discord.Permissions(manage_roles=True).value
+# Handing a member a role that carries real permissions is how an escalation
+# actually happens — the mod keeps Manage Roles (Paul 9/17: "give them manage
+# roles back"), the ROLE is what gets disarmed: "strip perms and remove role
+# from member". Both, every time, for any of _NUKE_PERMS.
+#
+# One guard on the strip, and only one: a role other people are already wearing
+# is the server's own staff role, not a throwaway made to smuggle power. Pulling
+# Manage Roles off @Mod because someone handed @Mod to a friend would disarm
+# every moderator at once, so an established role keeps its permissions and only
+# the grant is undone — which stops the escalation just as dead.
+_GRANT_LOCK_PERMS = _NUKE_PERMS
 
 
 # Vectors a bot is allowed to burst on: granting and removing member roles is
@@ -749,33 +752,50 @@ class AntiNuke(commands.Cog):
             return
         dangerous = [r for r in added_roles
                      if (getattr(r.permissions, "value", 0) & _ADMIN_LOCK_PERMS)]
-        granters = [r for r in added_roles
-                    if (getattr(r.permissions, "value", 0) & _GRANT_LOCK_PERMS)
-                    and r not in dangerous]
-        if not dangerous and not granters:
+        flagged = [r for r in added_roles
+                   if (getattr(r.permissions, "value", 0) & _GRANT_LOCK_PERMS)]
+        if not flagged:
             return
         ex = await self._executor(guild, "member_role", member.id)
         if ex is None or ex.id == self.bot.user.id or ex.id == guild.owner_id:
             return  # owner + bot are the ONLY authorized granters
-        revert = dangerous + granters
-        reverted = False
+        reverted, stripped, kept = False, [], []
         if self._enforce(cfg):
             try:
-                await member.remove_roles(*revert,
-                    reason="AntiNuke: unauthorized privileged-role grant reverted")
+                await member.remove_roles(*flagged,
+                    reason="AntiNuke: privileged role granted by a non-owner — taken back")
                 reverted = True
-            except discord.Forbidden:
+            except (discord.Forbidden, discord.HTTPException):
                 pass
-        names = ", ".join("@" + r.name for r in revert)
-        tail = " — reverted" if reverted else (" (revert FAILED)" if self._enforce(cfg) else "")
+            for r in flagged:
+                others = [m for m in getattr(r, "members", []) or [] if m.id != member.id]
+                if others:
+                    kept.append((r, len(others)))   # the server's own staff role: leave it armed
+                    continue
+                try:
+                    await r.edit(permissions=discord.Permissions(
+                                     getattr(r.permissions, "value", 0) & ~_NUKE_PERMS),
+                                 reason="AntiNuke: permissions stripped from a handed-out role")
+                    stripped.append(r)
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+        names = ", ".join("@" + r.name for r in flagged)
+        bits = []
+        bits.append("role taken back" if reverted else
+                    ("take-back FAILED" if self._enforce(cfg) else "detected only"))
+        if stripped:
+            bits.append("permissions stripped from " + ", ".join("@" + r.name for r in stripped))
+        for r, cnt in kept:
+            bits.append(f"@{r.name} left armed — **{cnt}** other member(s) wear it, "
+                        f"so stripping it would disarm them too")
+        tail = " — " + "; ".join(bits)
         if dangerous:
             return await self._respond_strip(guild, ex,
                 f"granted admin role(s) {names} to {member}{tail}", cfg)
-        # Manage Roles only: undo it, name it, leave the moderator alone.
-        await self._alert(guild, ex, "🔓 Role-granting power handed out",
-                          f"gave {member} {names}, which carries **Manage Roles** — "
-                          f"only the owner may hand out the ability to hand out roles{tail}",
-                          "grant reverted" if reverted else None, "", reverted, cfg)
+        await self._alert(guild, ex, "🔓 Role with permissions handed out",
+                          f"gave {member} {names}, which carries real permissions — "
+                          f"only the owner may hand out power{tail}",
+                          "; ".join(bits), "", reverted or bool(stripped), cfg)
 
     @commands.Cog.listener()
     async def on_guild_role_update(self, before, after):
@@ -973,8 +993,9 @@ class AntiNuke(commands.Cog):
                 f"• @everyone spam: {EVERYONE_RATE[0]} / {EVERYONE_RATE[1]}s → timeout (pinged or just typed)\n"
                 f"{flood}\n-# one announcement / tagging a few people is FINE")
         wl = ", ".join(f"`{w}`" for w in (cfg.get("whitelist") or [])) or "(owner + bot only)"
-        lock = ("✅ ON — only owner + this bot may grant **admin / Manage Server** "
-                "(strip + quarantine) or **Manage Roles** (revert + alert)"
+        lock = ("✅ ON — only owner + this bot may hand out a role carrying perms; "
+                "anyone else's grant is taken back and the role is disarmed "
+                "(admin / Manage Server also strips the granter)"
                 if cfg.get("antinuke_admin_lockdown", 1) else "⚠️ OFF")
         embed = discord.Embed(title="🛡️ AntiNuke", color=0x5B8CFF, description=f"**Mode:** {mode}")
         embed.add_field(name="Destructive (audit-log)", value=acts, inline=False)
@@ -985,7 +1006,8 @@ class AntiNuke(commands.Cog):
             "• role edited to grant nuke perms → **revert + strip** (instant)\n"
             "• role CREATED with nuke perms → **perms stripped** (instant)\n"
             "• admin role granted to a member by non-owner → **revert + strip** (instant)\n"
-            "• Manage-Roles role granted by non-owner → **revert + alert** (instant)\n"
+            "• any role with real perms granted by non-owner → **role taken back + its "
+            "perms stripped** (a role others already wear keeps them)\n"
             "• bot added by non-trusted user → **kick the bot** (instant)"), inline=False)
         embed.add_field(name="Whitelist (rate-limits waived)", value=f"owner, this bot, bots, {wl}", inline=False)
         win = cfg.get("antinuke_window")
