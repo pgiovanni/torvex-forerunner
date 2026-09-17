@@ -12,6 +12,7 @@ part that matters — and asserts on the real enforcement calls (member.edit =
 strip+quarantine, member.timeout, member.kick, guild.unban).
 """
 import asyncio
+import datetime
 import os
 import sys
 import types
@@ -43,6 +44,8 @@ class Role:
         self.id = rid; self.position = pos; self.managed = managed; self._d = default
         self.name = "role%d" % rid; self.permissions = types.SimpleNamespace(value=perms)
         self.edit = AsyncMock(); self.members = []   # antinuke disarms roles + counts wearers
+        # antinuke only disarms a NEW role; default new, tests override for old ones
+        self.created_at = datetime.datetime.now(datetime.timezone.utc)
 
     def is_default(self): return self._d
     def __ge__(self, o): return self.position >= o.position
@@ -335,18 +338,44 @@ async def s_admin_grant_still_quarantines():
 
 
 async def s_established_staff_role_is_not_disarmed():
-    """Paul 9/17 wanted "strip perms and remove role from member". If the role
-    is @Mod and four other people wear it, stripping its perms would disarm all
-    of them — so the grant is undone and the role keeps its teeth."""
+    """Paul 9/17: "only remove perms if it's a new role. don't remove mod
+    perms." @Mod has been there for months — the grant is undone, the role is
+    left exactly as it was."""
     ex = Member(139); cog, g = fresh(ex)
     base = Role(1380, pos=5)
     target = Member(140, roles=[base]); target.guild = g; g.add(target)
     staff = Role(1381, pos=8, perms=discord.Permissions(manage_roles=True).value)
-    staff.members = [Member(900 + i) for i in range(4)]     # already worn by four mods
+    staff.created_at = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=120)
     before = types.SimpleNamespace(roles=[base], guild=g, id=target.id)
     target.roles = [base, staff]
     await cog.on_member_update(before, target)
     return target.remove_roles.called and not staff.edit.called
+
+
+async def s_worn_role_is_not_disarmed_even_if_new():
+    """Belt and braces: a role made today that others already wear is somebody's
+    real role, so it keeps its perms too."""
+    ex = Member(141); cog, g = fresh(ex)
+    base = Role(1390, pos=5)
+    target = Member(142, roles=[base]); target.guild = g; g.add(target)
+    worn = Role(1391, pos=8, perms=discord.Permissions(manage_roles=True).value)
+    worn.members = [Member(900 + i) for i in range(3)]
+    before = types.SimpleNamespace(roles=[base], guild=g, id=target.id)
+    target.roles = [base, worn]
+    await cog.on_member_update(before, target)
+    return target.remove_roles.called and not worn.edit.called
+
+
+async def s_role_of_unknown_age_is_not_disarmed():
+    ex = Member(143); cog, g = fresh(ex)
+    base = Role(1395, pos=5)
+    target = Member(144, roles=[base]); target.guild = g; g.add(target)
+    odd = Role(1396, pos=8, perms=discord.Permissions(manage_roles=True).value)
+    odd.created_at = None                      # can't tell -> leave it alone
+    before = types.SimpleNamespace(roles=[base], guild=g, id=target.id)
+    target.roles = [base, odd]
+    await cog.on_member_update(before, target)
+    return target.remove_roles.called and not odd.edit.called
 
 
 async def s_cosmetic_grant_is_ignored():
@@ -405,6 +434,8 @@ SCENARIOS = [
     ("admin grant still -> revert + strip", s_admin_grant_still_quarantines),
     ("Manage-Roles grant -> role taken back AND disarmed", s_manage_roles_grant_reverted_not_quarantined),
     ("established staff role -> taken back, NOT disarmed", s_established_staff_role_is_not_disarmed),
+    ("new role others wear -> taken back, NOT disarmed", s_worn_role_is_not_disarmed_even_if_new),
+    ("role of unknown age -> taken back, NOT disarmed", s_role_of_unknown_age_is_not_disarmed),
     ("cosmetic role grant -> no action", s_cosmetic_grant_is_ignored),
     ("role CREATED with nuke perms -> perms stripped", s_role_born_with_nuke_perms_is_stripped),
     ("cosmetic role created -> no action", s_cosmetic_role_creation_is_ignored),

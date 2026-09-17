@@ -125,12 +125,13 @@ _ADMIN_LOCK_PERMS = discord.Permissions(administrator=True, manage_guild=True).v
 # roles back"), the ROLE is what gets disarmed: "strip perms and remove role
 # from member". Both, every time, for any of _NUKE_PERMS.
 #
-# One guard on the strip, and only one: a role other people are already wearing
-# is the server's own staff role, not a throwaway made to smuggle power. Pulling
-# Manage Roles off @Mod because someone handed @Mod to a friend would disarm
-# every moderator at once, so an established role keeps its permissions and only
-# the grant is undone — which stops the escalation just as dead.
+# Only a NEW role is ever disarmed (Paul 9/17: "only remove perms if it's a new
+# role. don't remove mod perms"). The escalation shape is make-a-role-then-hand-
+# it-over, minutes apart; @Mod has been there for months and stripping it would
+# disarm every moderator at once. An established role is taken back off the
+# member and left exactly as it was — which stops that escalation just as dead.
 _GRANT_LOCK_PERMS = _NUKE_PERMS
+ROLE_NEW_SECS = 24 * 3600    # younger than this = made for this, fair to disarm
 
 
 # Vectors a bot is allowed to burst on: granting and removing member roles is
@@ -768,9 +769,9 @@ class AntiNuke(commands.Cog):
             except (discord.Forbidden, discord.HTTPException):
                 pass
             for r in flagged:
-                others = [m for m in getattr(r, "members", []) or [] if m.id != member.id]
-                if others:
-                    kept.append((r, len(others)))   # the server's own staff role: leave it armed
+                why = self._keep_armed(r, member)
+                if why:
+                    kept.append((r, why))          # an established role: leave it exactly as it is
                     continue
                 try:
                     await r.edit(permissions=discord.Permissions(
@@ -785,9 +786,8 @@ class AntiNuke(commands.Cog):
                     ("take-back FAILED" if self._enforce(cfg) else "detected only"))
         if stripped:
             bits.append("permissions stripped from " + ", ".join("@" + r.name for r in stripped))
-        for r, cnt in kept:
-            bits.append(f"@{r.name} left armed — **{cnt}** other member(s) wear it, "
-                        f"so stripping it would disarm them too")
+        for r, why in kept:
+            bits.append(f"@{r.name} left untouched ({why})")
         tail = " — " + "; ".join(bits)
         if dangerous:
             return await self._respond_strip(guild, ex,
@@ -796,6 +796,28 @@ class AntiNuke(commands.Cog):
                           f"gave {member} {names}, which carries real permissions — "
                           f"only the owner may hand out power{tail}",
                           "; ".join(bits), "", reverted or bool(stripped), cfg)
+
+    @staticmethod
+    def _keep_armed(role, member):
+        """Why this role must NOT be disarmed, or None if it's fair game.
+
+        Paul 9/17: "only remove perms if it's a new role. don't remove mod
+        perms." A role made minutes ago to smuggle permissions is fair game; an
+        established staff role is not, and neither is one other people wear. If
+        the age can't be read at all we keep it — the failure has to land on
+        the side of leaving the server's own roles alone."""
+        made = getattr(role, "created_at", None)
+        try:
+            age = time.time() - made.timestamp()
+        except Exception:
+            return "age unknown"
+        if age > ROLE_NEW_SECS:
+            days = int(age // 86400)
+            return f"{days}d old, not a role made for this"
+        others = [m for m in getattr(role, "members", []) or [] if m.id != member.id]
+        if others:
+            return f"{len(others)} other member(s) wear it"
+        return None
 
     @commands.Cog.listener()
     async def on_guild_role_update(self, before, after):
@@ -994,8 +1016,8 @@ class AntiNuke(commands.Cog):
                 f"{flood}\n-# one announcement / tagging a few people is FINE")
         wl = ", ".join(f"`{w}`" for w in (cfg.get("whitelist") or [])) or "(owner + bot only)"
         lock = ("✅ ON — only owner + this bot may hand out a role carrying perms; "
-                "anyone else's grant is taken back and the role is disarmed "
-                "(admin / Manage Server also strips the granter)"
+                "anyone else's grant is taken back, and a role made for the occasion "
+                "is disarmed (admin / Manage Server also strips the granter)"
                 if cfg.get("antinuke_admin_lockdown", 1) else "⚠️ OFF")
         embed = discord.Embed(title="🛡️ AntiNuke", color=0x5B8CFF, description=f"**Mode:** {mode}")
         embed.add_field(name="Destructive (audit-log)", value=acts, inline=False)
@@ -1006,8 +1028,9 @@ class AntiNuke(commands.Cog):
             "• role edited to grant nuke perms → **revert + strip** (instant)\n"
             "• role CREATED with nuke perms → **perms stripped** (instant)\n"
             "• admin role granted to a member by non-owner → **revert + strip** (instant)\n"
-            "• any role with real perms granted by non-owner → **role taken back + its "
-            "perms stripped** (a role others already wear keeps them)\n"
+            "• any role with real perms granted by non-owner → **role taken back**, and "
+            "if it was made in the last 24h its perms are stripped too (an established "
+            "role like @Mod is never touched)\n"
             "• bot added by non-trusted user → **kick the bot** (instant)"), inline=False)
         embed.add_field(name="Whitelist (rate-limits waived)", value=f"owner, this bot, bots, {wl}", inline=False)
         win = cfg.get("antinuke_window")
