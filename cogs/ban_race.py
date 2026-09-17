@@ -699,6 +699,8 @@ class BanRace(commands.Cog):
             await self._say(channel, f"🔫 {opened}{carried_txt}. "
                                      f"Next race <t:{int(nxt)}:F> (<t:{int(nxt)}:R>).")
 
+        if race["status"] == "lobby":
+            race = await self._sync_lobby(guild, channel, race, cfg)
         rows = engine.players(race["id"])
         need = race["settings"].get("min_players", engine.MIN_PLAYERS)
         if due:
@@ -743,6 +745,45 @@ class BanRace(commands.Cog):
                 await lobby_msg.edit(embed=self._card(guild, race, rows), view=lobby_view(race["id"]))
             except discord.HTTPException:
                 pass
+
+    async def _sync_lobby(self, guild, channel, race, cfg):
+        """On a scheduled guild the dashboard is the source of truth: the
+        standing lobby follows the card. Race 11 sat at a threshold of 5
+        because it was opened by hand long before the card existed — Paul
+        9/16, pointing at the panel: "change this to three".
+
+        Threshold and round length are both harmless to change before a race
+        starts. Mode is deliberately NOT synced: everyone in the lobby was
+        vetted under the mode they joined in, so a ghost→real switch applies to
+        the next lobby, not to people already sitting in this one."""
+        t = self._template(cfg)
+        s = dict(race["settings"])
+        changed = []
+        for key, label in (("min_players", "minimum"), ("round_secs", "round length")):
+            try:
+                cur = int(s.get(key))
+            except (TypeError, ValueError):
+                cur = None
+            if cur != int(t[key]):
+                s[key] = int(t[key])
+                changed.append(f"{label} {cur} → {t[key]}")
+        if not changed:
+            return race
+        if s.get("lives_auto"):
+            s["lives"] = engine.recommended_lives(s["min_players"])
+        if s.get("sudden_auto"):
+            s["sudden_death_at"] = engine.recommended_sudden_death(s["min_players"])
+        engine.update_race(race["id"], settings=s)
+        race = engine.get_race(race["id"])
+        log.info("race %s: lobby synced to the dashboard (%s)", race["id"], "; ".join(changed))
+        msg = await self._lobby_message(channel, race)
+        if msg:
+            try:
+                await msg.edit(embed=self._card(guild, race, engine.players(race["id"])),
+                               view=lobby_view(race["id"]))
+            except discord.HTTPException:
+                pass
+        return race
 
     def _template(self, cfg):
         """Settings a scheduled race is built from — the dashboard's Last to
