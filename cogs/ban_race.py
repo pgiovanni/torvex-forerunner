@@ -895,7 +895,8 @@ class BanRace(commands.Cog):
             mv = engine.retarget(race_id, rn, shooter_id, target_id)
             if mv:
                 was = engine.player(race_id, mv["prev_target_id"]) if mv.get("prev_target_id") else None
-                which = f"shot {mv['seq']}" if mv.get("seq") else "your shot"
+                what = "Overload" if mv.get("kind") == "overload" else "shot"
+                which = f"{what} {mv['seq']}" if mv.get("seq") else f"your {what.lower()}"
                 return (f"🔁 Re-aimed {which} at **{t['name']}**"
                         f"{' (was ' + was['name'] + ')' if was else ''}. "
                         f"Still resolves <t:{int(race['round_ends_at'])}:R>.")
@@ -916,7 +917,11 @@ class BanRace(commands.Cog):
                      if p["shots"] > 0 else "That's all your shots this round.")
                     + self._slate(race_id, rn, shooter_id))
         if kind == "overload":
-            return (f"💥 {tag}Overload armed at **{t['name']}** — you burn 1, they take 2. Lands {when}."
+            return (f"💥 {tag}Overload armed at **{t['name']}** — you burn 1, they take 2. Lands {when}. "
+                    + (f"**{p['shots']}** shot(s) still banked."
+                       if p["shots"] > 0 else
+                       "An Overload IS your shot for the round, doubled — that's all of them. "
+                       "Hit **Vote** → **Change shot** to re-aim it.")
                     + self._slate(race_id, rn, shooter_id))
         if kind in engine.REVIVES:
             emoji, label, _ = engine.REVIVES[kind]

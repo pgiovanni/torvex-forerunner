@@ -730,6 +730,11 @@ class Tracking(unittest.TestCase):
         mv2 = E.retarget(rid, 1, 1, 2)                   # back again: original aim still 2
         self.assertEqual((mv2["was"], mv2["prev_target_id"]), ("3", "2"))
         self.assertIsNone(E.retarget(rid, 1, 2, 1))     # nothing cast
+        # An overload spends the round's only shot, so /vote's plain re-aim (no
+        # seq) has to find it — otherwise overloading leaves nothing to move.
+        E.cast(rid, 1, 2, 1, "overload")
+        mv_ov = E.retarget(rid, 1, 2, 3)
+        self.assertEqual((mv_ov["seq"], mv_ov["kind"], mv_ov["was"]), (1, "overload", "1"))
         sh = E.shots(rid, 1)[0]
         self.assertEqual((sh["target_id"], sh["prev_target_id"]), ("2", "2"))
         # change a SPECIFIC shot by number (the "Change shot N" buttons), overloads too
@@ -925,6 +930,14 @@ class Overkill(unittest.TestCase):
         self.assertEqual(a["shield"], 0)
         self.assertEqual(a.get("overkill", 0), 0)
         self.assertEqual(a["kills"], 0)
+
+    def test_the_card_says_an_afk_pile_on_pays_nothing(self):
+        a, b, v = P(1), P(2), P(3, lives=1)
+        r = resolve([a, b, v], [S(1, 3), S(2, 3)], afk=True)
+        pile = [ln for ln in r["lines"] if "already down" in ln]
+        self.assertTrue(pile)
+        self.assertIn("pays nothing", pile[0])
+        self.assertEqual(a.get("overkill", 0) + b.get("overkill", 0), 0)
 
     def test_a_shot_at_last_round_s_corpse_is_still_wasted(self):
         a, v = P(1), P(2, lives=0, alive=0, died_round=1)

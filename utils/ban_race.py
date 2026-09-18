@@ -570,8 +570,13 @@ def retarget(race_id, round_no, shooter_id, target_id, db=None, seq=None):
                           " ORDER BY id DESC LIMIT 1",
                           (race_id, round_no, str(shooter_id), seq)).fetchone()
         else:
+            # An overload IS the shot you have this round, so it has to be
+            # re-aimable the same way. Looking only at kind='shot' left a player
+            # who overloaded their single shot with nothing to move and the
+            # reply "you're out of shots and have nothing to re-aim".
             r = c.execute("SELECT id, seq, kind, target_id, prev_target_id FROM shots WHERE race_id=?"
-                          " AND round_no=? AND shooter_id=? AND kind='shot' ORDER BY id DESC LIMIT 1",
+                          " AND round_no=? AND shooter_id=? AND kind IN ('shot','overload')"
+                          " ORDER BY id DESC LIMIT 1",
                           (race_id, round_no, str(shooter_id))).fetchone()
         if not r:
             return None
@@ -1220,8 +1225,12 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
                 continue
             if victim.get("died_round") == round_no:
                 pile(tid, sid, dmg)
+                # An AFK victim pays nothing — not the kill, not the overkill.
+                # The line used to read "Overkill +2" either way, which is why
+                # a pile-on on a sleeper looked like it had banked something.
+                dud = " — but they were AFK, so it pays nothing" if is_afk(target) else ""
                 lines.append(f"💀 {via_cap(name)} lands on {m(tid)} — already down. "
-                             f"**Overkill +{dmg}.**")
+                             f"**Overkill +{dmg}**{dud}.")
                 record(s, "overkill")
                 continue
             lines.append(f"💨 {via_cap(name)} at {m(tid)} — already gone. Wasted.")
