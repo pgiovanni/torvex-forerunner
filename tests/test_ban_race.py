@@ -936,7 +936,7 @@ class Overkill(unittest.TestCase):
         r = resolve([a, b, v], [S(1, 3), S(2, 3)], afk=True)
         pile = [ln for ln in r["lines"] if "already down" in ln]
         self.assertTrue(pile)
-        self.assertIn("pays nothing", pile[0])
+        self.assertIn("no reward given, player AFK", pile[0])
         self.assertEqual(a.get("overkill", 0) + b.get("overkill", 0), 0)
 
     def test_a_shot_at_last_round_s_corpse_is_still_wasted(self):

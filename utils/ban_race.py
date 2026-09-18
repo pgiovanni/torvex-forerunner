@@ -1228,7 +1228,7 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
                 # An AFK victim pays nothing — not the kill, not the overkill.
                 # The line used to read "Overkill +2" either way, which is why
                 # a pile-on on a sleeper looked like it had banked something.
-                dud = " — but they were AFK, so it pays nothing" if is_afk(target) else ""
+                dud = " — *no reward given, player AFK*" if is_afk(target) else ""
                 lines.append(f"💀 {via_cap(name)} lands on {m(tid)} — already down. "
                              f"**Overkill +{dmg}**{dud}.")
                 record(s, "overkill")
