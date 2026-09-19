@@ -38,8 +38,14 @@ log = logging.getLogger("role_menu")
 # Relocatable like security_config: the web dashboard edits panels, and it runs
 # as its own user that deliberately cannot read the bot directory. Env wins; the
 # in-repo path stays as the fallback so an un-migrated deployment still works.
-DB_PATH = os.environ.get("TORVEX_ROLEMENUS_DB") or os.path.abspath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "role_menus.db"))
+# Shared dir first, in-repo second: a one-off `venv/bin/python` does NOT
+# inherit the service env, and with the in-repo path first such a script
+# silently writes a SHADOW db next to the bot that nothing reads
+# (2026-09-19 — see utils/security_config.py).
+SHARED_DB = "/var/lib/torvex/role_menus.db"
+DB_PATH = os.environ.get("TORVEX_ROLEMENUS_DB") or (
+    SHARED_DB if os.path.isdir(os.path.dirname(SHARED_DB)) else os.path.abspath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "role_menus.db")))
 
 # How the dashboard hands work back to us. It only ever writes rows — every
 # Discord call still happens here, through the same _render() the commands use,

@@ -48,8 +48,14 @@ log = logging.getLogger("stats")
 # where the dashboard user can read it (/var/lib/torvex, group torvexcfg) —
 # the role_menus.db arrangement. Unset = the old in-repo path. cogs/activity.py
 # (voice_sessions) reads the same variable; keep them in step.
-DB_PATH = os.environ.get("TORVEX_STATS_DB") or os.path.abspath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "stats.db"))
+# Shared dir first, in-repo second: a one-off `venv/bin/python` does NOT
+# inherit the service env, and with the in-repo path first such a script
+# silently writes a SHADOW db next to the bot that nothing reads
+# (2026-09-19 — see utils/security_config.py).
+SHARED_DB = "/var/lib/torvex/stats.db"
+DB_PATH = os.environ.get("TORVEX_STATS_DB") or (
+    SHARED_DB if os.path.isdir(os.path.dirname(SHARED_DB)) else os.path.abspath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "stats.db")))
 FLUSH_SECONDS = 60
 
 # Backfill crawl tuning. 100 is Discord's per-request maximum for channel

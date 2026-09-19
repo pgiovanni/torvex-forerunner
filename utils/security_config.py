@@ -18,10 +18,19 @@ import time
 import sqlite3
 
 # Relocatable so the web dashboard (separate user/service) can share this file
-# without being granted write access to the bot directory. Falls back to the
-# in-repo path when the env var is unset.
-DB_PATH = os.environ.get("TORVEX_SECURITY_DB") or os.path.abspath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "security_config.db"))
+# without being granted write access to the bot directory.
+#
+# The fallback prefers the shared directory over the in-repo path, and that
+# order matters more than it looks. The env var comes from the bot's .env, which
+# a one-off `venv/bin/python` run by hand does NOT inherit — with the in-repo
+# path first, such a script silently wrote a SHADOW database next to the bot,
+# read its own writes back correctly, and the running bot never saw a thing
+# (2026-09-19, cost a full round-trip of "configured" settings that were not).
+# On a box with no /var/lib/torvex (a dev checkout) the in-repo path still wins.
+SHARED_DB = "/var/lib/torvex/security_config.db"
+DB_PATH = os.environ.get("TORVEX_SECURITY_DB") or (
+    SHARED_DB if os.path.isdir(os.path.dirname(SHARED_DB)) else os.path.abspath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "security_config.db")))
 
 # Default config — everything OFF / safe. A guild only departs from these once an
 # admin explicitly enables a feature.
