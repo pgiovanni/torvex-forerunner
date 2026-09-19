@@ -31,17 +31,21 @@ SYNC_PROGRESS_EVERY = 100   # members between progress edits of the ephemeral re
 SYNC_TOKEN_LIFE = 14 * 60   # interaction tokens die at 15 min; stop editing before then
 
 
-def sync_targets(members, role, *, skip_pending=False, is_held=None):
-    """Who `/welcome sync` grants `role` to. Pure, so it's testable.
+def sync_targets(members, role, *, skip_pending=False, is_held=None, include_bots=False):
+    """Who a back-fill grants `role` to — `/welcome sync` and `/give members`.
+    Pure, so it's testable.
 
-    Everyone currently in the server who is human, doesn't already wear the
-    role, isn't still in Discord onboarding (when the panel says to wait for
-    it) and isn't held by the verification gate — a held member gets the
-    join roles from the gate's release path, same as at join time.
+    Everyone currently in the server who doesn't already wear the role, isn't
+    still in Discord onboarding (when the panel says to wait for it) and isn't
+    held by the verification gate — a held member is mid-screening, and handing
+    it a role now is how a gate gets walked around. Bots are skipped unless
+    asked for: "everyone" means the people, nine times out of ten.
     """
     out = []
     for m in members:
-        if getattr(m, "bot", False) or role in m.roles:
+        if role in m.roles:
+            continue
+        if getattr(m, "bot", False) and not include_bots:
             continue
         if skip_pending and getattr(m, "pending", False):
             continue
@@ -49,6 +53,45 @@ def sync_targets(members, role, *, skip_pending=False, is_held=None):
             continue
         out.append(m)
     return out
+
+
+# A role carrying any of these is power, not decoration — handing it to the
+# whole server is a different act from handing out a colour, so it needs
+# `confirm`. Same shape as the table /security audit reports on.
+POWER_PERMS = (
+    ("administrator", "Administrator"),
+    ("manage_guild", "Manage Server"),
+    ("manage_roles", "Manage Roles"),
+    ("manage_channels", "Manage Channels"),
+    ("manage_webhooks", "Manage Webhooks"),
+    ("ban_members", "Ban Members"),
+    ("kick_members", "Kick Members"),
+    ("moderate_members", "Timeout Members"),
+    ("manage_messages", "Manage Messages"),
+    ("mention_everyone", "Mention Everyone/Here"),
+)
+
+
+def role_powers(role):
+    """Human labels for the dangerous permissions a role carries."""
+    perms = role.permissions
+    return [label for attr, label in POWER_PERMS if getattr(perms, attr, False)]
+
+
+def grant_error(role, me):
+    """Why this role can't be handed out at all, or None. Pure."""
+    if role.is_default():
+        return ("@everyone is already on everyone — there's nothing to give. Give a real role, "
+                "or change @everyone's permissions in Server Settings.")
+    if role.managed:
+        return (f"**{role.name}** is managed by Discord (a bot, a booster or an integration role) — "
+                "only Discord can hand it out.")
+    if me is None or not me.guild_permissions.manage_roles:
+        return "I don't have **Manage Roles** here."
+    if role >= me.top_role:
+        return (f"**{role.name}** is at or above my top role, so Discord won't let me grant it. "
+                "Drag my role above it in Server Settings → Roles.")
+    return None
 
 
 def render(template: str, member: discord.Member) -> str:
@@ -175,6 +218,66 @@ class Automation(commands.Cog):
         name="welcome", description="Join roles + welcome messages (Admin only)",
         default_permissions=discord.Permissions(administrator=True))
 
+    give = app_commands.Group(
+        name="give", description="Hand something to the whole server at once (Admin only)",
+        default_permissions=discord.Permissions(administrator=True))
+
+    @give.command(name="members",
+                  description="Give a role to every member who doesn't already have it.")
+    @app_commands.describe(
+        role="The role to hand out",
+        confirm="Required only when the role carries permissions — tick it to say you mean it",
+        include_bots="Give it to bots too (off by default: \"everyone\" usually means the people)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def give_members(self, interaction: discord.Interaction, role: discord.Role,
+                           confirm: bool = False, include_bots: bool = False):
+        """Back-fill ANY role across the whole membership.
+
+        `/welcome sync` deliberately refuses anything that isn't already a join
+        role, so that it can never become a way to hand out permissions. This
+        is the general version Paul asked for, and it pays for that generality
+        with an explicit `confirm` the moment the role carries real power
+        (9/19). Everything else is the same machinery: gate-held members are
+        skipped, writes are paced by Discord at roughly one a second, and the
+        run outlives the reply by DM.
+        """
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild = interaction.guild
+        me = guild.me
+        err = grant_error(role, me)
+        if err:
+            return await interaction.followup.send(f"❌ {err}", ephemeral=True)
+        powers = role_powers(role)
+        if powers and not confirm:
+            return await interaction.followup.send(
+                f"⚠️ **{role.name}** carries **{', '.join(powers)}**. Giving it to every member "
+                f"hands that to every member, including anyone who joins a raid tomorrow.\n"
+                f"If you mean it, run it again with `confirm:True`.", ephemeral=True)
+        if guild.id in self._syncing:
+            return await interaction.followup.send(
+                "A role back-fill is already running in this server — let it finish first.",
+                ephemeral=True)
+        if guild.member_count and len(guild.members) < guild.member_count * 0.9:
+            try:
+                await guild.chunk()
+            except Exception:
+                pass
+        targets = sync_targets(guild.members, role, is_held=self._held,
+                               include_bots=include_bots)
+        if not targets:
+            return await interaction.followup.send(
+                f"Everyone already has {role.mention} — nothing to do.", ephemeral=True)
+        eta = len(targets)          # Discord paces role writes at roughly one a second
+        await interaction.followup.send(
+            f"⏳ Giving {role.mention} to **{len(targets)}** member(s) — about "
+            f"{eta // 60}m {eta % 60}s. I'll update this message as it goes"
+            + (" and DM you the result if it outlives this reply." if eta > SYNC_TOKEN_LIFE else ".")
+            + ("\n⚠️ It carries " + ", ".join(powers) + "." if powers else ""),
+            ephemeral=True)
+        self._syncing.add(guild.id)
+        self.bot.loop.create_task(
+            self._sync_run(interaction, role, targets, reason=f"/give members by {interaction.user}"))
+
     @group.command(name="status", description="Show this server's join & welcome settings.")
     @app_commands.checks.has_permissions(administrator=True)
     async def status(self, interaction: discord.Interaction):
@@ -269,8 +372,9 @@ class Automation(commands.Cog):
         self._syncing.add(guild.id)
         self.bot.loop.create_task(self._sync_run(interaction, role, targets))
 
-    async def _sync_run(self, interaction, role, targets):
+    async def _sync_run(self, interaction, role, targets, reason=None):
         guild = interaction.guild
+        reason = reason or f"Join & Welcome: sync by {interaction.user}"
         started = time.monotonic()
         ok, gone, failed = 0, 0, []
 
@@ -292,7 +396,7 @@ class Automation(commands.Cog):
         try:
             for i, m in enumerate(targets, 1):
                 try:
-                    await m.add_roles(role, reason=f"Join & Welcome: sync by {interaction.user}")
+                    await m.add_roles(role, reason=reason)
                     ok += 1
                 except discord.NotFound:
                     gone += 1                       # left mid-run

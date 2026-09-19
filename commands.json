@@ -688,12 +688,14 @@
       "required_permissions": []
     }
   ],
-  "shelved_note": "Commands listed in 'shelved' stay in the code but are removed from the slash tree at startup (Discord caps a bot at 100 top-level commands). Move a name out of this list to bring it back; picked 9/11 from command_log usage (zero uses since logging began 8/29). 9/12: roster-snapshot shelved for /deadchat (zero uses; the server_backup cog snapshots the roster on its own loop anyway). 9/12 pm: roster-missing shelved for /lastrace (zero uses; sibling of roster-snapshot).",
+  "shelved_note": "Commands listed in 'shelved' stay in the code but are removed from the slash tree at startup (Discord caps a bot at 100 top-level commands). Move a name out of this list to bring it back; picked 9/11 from command_log usage (zero uses since logging began 8/29). 9/12: roster-snapshot shelved for /deadchat (zero uses; the server_backup cog snapshots the roster on its own loop anyway). 9/12 pm: roster-missing shelved for /lastrace (zero uses; sibling of roster-snapshot). 9/19: recent-leaves shelved for /give members (zero uses; every leave/kick/ban already posts a mod-log card and /member-activity covers the same window) and stats-status shelved too (zero uses; its three numbers are on the dashboard Stats pages and in /activity — the stats COG stays, it is the counter behind both).",
   "shelved": [
     "add-bot",
     "backup_emojis",
     "structure-status",
     "roster-snapshot",
-    "roster-missing"
+    "roster-missing",
+    "recent-leaves",
+    "stats-status"
   ]
 }

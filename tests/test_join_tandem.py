@@ -120,6 +120,58 @@ check("sync: gate-held members left to the release path",
       ids(auto.sync_targets(members, R, is_held=lambda uid: uid in (1, 6))), [4, 5])
 check("sync: nothing to do is an empty list, not an error",
       auto.sync_targets([_M(2, [R]), _M(3, bot=True)], R), [])
+check("give: include_bots reaches the bots too",
+      ids(auto.sync_targets(members, R, include_bots=True)), [1, 3, 4, 5, 6])
+
+
+# ── /give members: what it refuses, and what it makes you confirm ───────────
+class _Perms:
+    def __init__(self, **kw):
+        self._on = kw
+
+    def __getattr__(self, name):
+        return self._on.get(name, False)
+
+
+class _GRole:
+    def __init__(self, name="Verified", pos=1, managed=False, default=False, **perms):
+        self.name, self._pos, self.managed = name, pos, managed
+        self._default, self.permissions = default, _Perms(**perms)
+
+    def is_default(self):
+        return self._default
+
+    def __ge__(self, other):
+        return self._pos >= other._pos
+
+
+class _Me:
+    def __init__(self, pos=5, manage_roles=True):
+        self.top_role = _GRole(pos=pos)
+        self.guild_permissions = _Perms(manage_roles=manage_roles)
+
+
+def why(role, me=None):
+    return auto.grant_error(role, me if me is not None else _Me())
+
+
+check("give: @everyone is refused, it's already on everyone",
+      "@everyone" in (why(_GRole(default=True)) or ""), True)
+check("give: a managed role can't be handed out by anyone but Discord",
+      "managed by Discord" in (why(_GRole(managed=True)) or ""), True)
+check("give: a role at or above the bot is refused before any writes",
+      "top role" in (why(_GRole(pos=9)) or ""), True)
+check("give: no Manage Roles, no back-fill",
+      why(_GRole(), _Me(manage_roles=False)), "I don't have **Manage Roles** here.")
+check("give: an ordinary role passes every check",
+      why(_GRole()), None)
+check("give: a plain role needs no confirmation",
+      auto.role_powers(_GRole()), [])
+check("give: power is named so the warning can say what it hands out",
+      auto.role_powers(_GRole(ban_members=True, manage_guild=True)),
+      ["Manage Server", "Ban Members"])
+check("give: administrator is the loudest of them",
+      auto.role_powers(_GRole(administrator=True)), ["Administrator"])
 
 if _fails:
     print(f"FAIL {len(_fails)}/{_total}")
