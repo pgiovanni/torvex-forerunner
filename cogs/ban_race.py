@@ -505,6 +505,7 @@ class BanRace(commands.Cog):
         self._last_bump = {}              # race_id -> time of the last re-post
         self._chan_cache = {}             # guild_id -> (expires, race dict | None) for on_message's channel check
         self._drops = {}                  # nonce -> {kind, race_id, claimed}
+        self._lobby_sig = {}              # race_id -> the schedule last drawn on its card
         self._resumed = False
         self._rng = random.Random()
         engine.init()
@@ -684,7 +685,7 @@ class BanRace(commands.Cog):
                 return
 
         if race["status"] == "lobby":
-            race = await self._sync_lobby(guild, channel, race, cfg)
+            race = await self._sync_lobby(guild, channel, race, cfg, slots, tz)
         rows = engine.players(race["id"])
         need = race["settings"].get("min_players", engine.MIN_PLAYERS)
         if due:
@@ -730,7 +731,7 @@ class BanRace(commands.Cog):
             except discord.HTTPException:
                 pass
 
-    async def _sync_lobby(self, guild, channel, race, cfg):
+    async def _sync_lobby(self, guild, channel, race, cfg, slots=None, tz=None):
         """On a scheduled guild the dashboard is the source of truth: the
         standing lobby follows the card. Race 11 sat at a threshold of 5
         because it was opened by hand long before the card existed — Paul
@@ -751,15 +752,26 @@ class BanRace(commands.Cog):
             if cur != int(t[key]):
                 s[key] = int(t[key])
                 changed.append(f"{label} {cur} → {t[key]}")
-        if not changed:
+        # The card prints the start times too, and those live in config, not in
+        # the race's settings — so change the schedule on the dashboard and the
+        # standing lobby would go on advertising the old times until something
+        # else redrew it. Remember what was last drawn and redraw when it moves
+        # (Paul 9/16, pointing at a stale number on the panel: "make sure the
+        # code follows it"). An empty memo after a restart redraws once, which
+        # is also a free safety net for a deploy mid-lobby.
+        sig = (tuple(slots or ()), tz)
+        redraw = self._lobby_sig.get(race["id"]) != sig
+        self._lobby_sig[race["id"]] = sig
+        if not changed and not redraw:
             return race
-        if s.get("lives_auto"):
-            s["lives"] = engine.recommended_lives(s["min_players"])
-        if s.get("sudden_auto"):
-            s["sudden_death_at"] = engine.recommended_sudden_death(s["min_players"])
-        engine.update_race(race["id"], settings=s)
-        race = engine.get_race(race["id"])
-        log.info("race %s: lobby synced to the dashboard (%s)", race["id"], "; ".join(changed))
+        if changed:
+            if s.get("lives_auto"):
+                s["lives"] = engine.recommended_lives(s["min_players"])
+            if s.get("sudden_auto"):
+                s["sudden_death_at"] = engine.recommended_sudden_death(s["min_players"])
+            engine.update_race(race["id"], settings=s)
+            race = engine.get_race(race["id"])
+            log.info("race %s: lobby synced to the dashboard (%s)", race["id"], "; ".join(changed))
         msg = await self._lobby_message(channel, race)
         if msg:
             try:
@@ -1207,6 +1219,7 @@ class BanRace(commands.Cog):
     async def _finish(self, race_id, guild, channel, winners):
         engine.update_race(race_id, status="finished", finished_at=time.time(), winner_ids=winners)
         self._running.pop(guild.id, None)
+        self._lobby_sig.pop(race_id, None)
         race = engine.get_race(race_id)
         rows = engine.players(race_id)
         restored = await self._unban_all(guild, race)
