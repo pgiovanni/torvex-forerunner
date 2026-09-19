@@ -2022,17 +2022,6 @@
    "dm_allowed": true
   },
   {
-   "path": "invite",
-   "description": "Get your personal tracked invite link.",
-   "params": [],
-   "signature": "/invite",
-   "root": "invite",
-   "cog": "invites",
-   "permissions": [],
-   "cooldown_seconds": null,
-   "dm_allowed": false
-  },
-  {
    "path": "invite-intel",
    "description": "Full join dossier: invite source + device/verdict fused by uid (mod).",
    "params": [

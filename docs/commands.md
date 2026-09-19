@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **233 commands** (99 top-level, the rest subcommands) across 41 cogs
+- **232 commands** (98 top-level, the rest subcommands) across 41 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -29,7 +29,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Server setup** — `/give`, `/picount`, `/rolemenu`, `/server-info`, `/setup`, `/steal-emoji`, `/suggest`, `/welcome`
 
-**Members & invites** — `/activity`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/invite`, `/levelroles`, `/mentions`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/store`, `/tracked-invite`
+**Members & invites** — `/activity`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/levelroles`, `/mentions`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/store`, `/tracked-invite`
 
 **Games & fun** — `/8ball`, `/challenge`, `/chess`, `/connect4_bot`, `/connect4`, `/gear`, `/gift`, `/lastrace`, `/link`, `/market`, `/peepo`, `/powerup`, `/race`, `/roast`, `/rpg`, `/tictactoe_bot`, `/tictactoe`, `/trade`, `/unlink`, `/vote`, `/wordle`
 
@@ -1942,18 +1942,6 @@ Server overview — members (humans vs bots), channels, roles, features.
 ### Invites
 
 <sub>`cogs/invites.py`</sub>
-
-#### `/invite`
-
-Get your personal tracked invite link.
-
-```
-/invite
-```
-
-**Access:** Everyone &nbsp;·&nbsp; Server only
-
-*No parameters.*
 
 #### `/invite-intel`
 
