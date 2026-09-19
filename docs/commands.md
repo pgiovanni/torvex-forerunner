@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **234 commands** (100 top-level, the rest subcommands) across 42 cogs
+- **233 commands** (99 top-level, the rest subcommands) across 41 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -23,13 +23,13 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 ## Index
 
-**Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/honeypot`, `/member-activity`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recent-leaves`, `/recon-status`, `/recon-unblock`, `/security-ai`, `/security`, `/simpleverify`, `/structure-restore`, `/unquarantine`, `/verify`
+**Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/honeypot`, `/member-activity`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recon-status`, `/recon-unblock`, `/security-ai`, `/security`, `/simpleverify`, `/structure-restore`, `/unquarantine`, `/verify`
 
 **Moderation** — `/ban`, `/clear-warning`, `/clear-warnings`, `/conduct-forget`, `/evidence`, `/kick`, `/lock`, `/msglog`, `/note`, `/prune-messages`, `/quiet-kick`, `/timeout`, `/unban`, `/unlock`, `/untimeout`, `/warn`, `/warnings`
 
-**Server setup** — `/picount`, `/rolemenu`, `/server-info`, `/setup`, `/steal-emoji`, `/suggest`, `/welcome`
+**Server setup** — `/give`, `/picount`, `/rolemenu`, `/server-info`, `/setup`, `/steal-emoji`, `/suggest`, `/welcome`
 
-**Members & invites** — `/activity`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/invite`, `/levelroles`, `/mentions`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/stats-status`, `/store`, `/tracked-invite`
+**Members & invites** — `/activity`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/invite`, `/levelroles`, `/mentions`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/store`, `/tracked-invite`
 
 **Games & fun** — `/8ball`, `/challenge`, `/chess`, `/connect4_bot`, `/connect4`, `/gear`, `/gift`, `/lastrace`, `/link`, `/market`, `/peepo`, `/powerup`, `/race`, `/roast`, `/rpg`, `/tictactoe_bot`, `/tictactoe`, `/trade`, `/unlink`, `/vote`, `/wordle`
 
@@ -902,20 +902,6 @@ Full join/leave/kick/ban log between snapshots (admin)
 |---|---|:--:|---|
 | `hours` | integer | No | how far back to look (default 24) |
 
-#### `/recent-leaves`
-
-Recent departures — leaves, kicks, bans, with who did them (admin)
-
-```
-/recent-leaves [hours]
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `hours` | integer | No | how far back to look (default 24) |
-
 #### `/structure-restore`
 
 Recreate roles/channels deleted since the last backup (admin)
@@ -1662,6 +1648,22 @@ Channel for new member welcome messages.
 
 <sub>`cogs/automation.py`</sub>
 
+#### `/give members`
+
+Give a role to every member who doesn't already have it.
+
+```
+/give members <role> [confirm] [include_bots]
+```
+
+**Access:** Requires **Administrator**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `role` | role | Yes | The role to hand out |
+| `confirm` | boolean | No | Required only when the role carries permissions — tick it to say you mean it |
+| `include_bots` | boolean | No | Give it to bots too (off by default: "everyone" usually means the people) |
+
 #### `/welcome enable`
 
 Turn join roles + welcome messages on or off.
@@ -2342,22 +2344,6 @@ Voice-time leaderboard (tracked since the cog deployed).
 |---|---|:--:|---|
 | `days` | integer | No | Window in days (default 30) *(range 2–3650)* |
 | `top` | integer | No | How many (default 10) *(range 3–20)* |
-
-### Stats
-
-<sub>`cogs/stats.py`</sub>
-
-#### `/stats-status`
-
-Activity-tracking status — totals, date range, top channels (admin)
-
-```
-/stats-status
-```
-
-**Access:** Requires **Administrator** — ⚠️ visibility gate only, overridable in Server Settings → Integrations &nbsp;·&nbsp; Server only
-
-*No parameters.*
 
 ### Mentions
 

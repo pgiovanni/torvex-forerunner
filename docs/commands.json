@@ -857,6 +857,38 @@
    "dm_allowed": true
   },
   {
+   "path": "give members",
+   "description": "Give a role to every member who doesn't already have it.",
+   "params": [
+    {
+     "name": "role",
+     "type": "role",
+     "required": true,
+     "description": "The role to hand out"
+    },
+    {
+     "name": "confirm",
+     "type": "boolean",
+     "required": false,
+     "description": "Required only when the role carries permissions — tick it to say you mean it"
+    },
+    {
+     "name": "include_bots",
+     "type": "boolean",
+     "required": false,
+     "description": "Give it to bots too (off by default: \"everyone\" usually means the people)"
+    }
+   ],
+   "signature": "/give members <role> [confirm] [include_bots]",
+   "root": "give",
+   "cog": "automation",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
    "path": "welcome enable",
    "description": "Turn join roles + welcome messages on or off.",
    "params": [
@@ -4635,26 +4667,6 @@
    "dm_allowed": false
   },
   {
-   "path": "recent-leaves",
-   "description": "Recent departures — leaves, kicks, bans, with who did them (admin)",
-   "params": [
-    {
-     "name": "hours",
-     "type": "integer",
-     "required": false,
-     "description": "how far back to look (default 24)"
-    }
-   ],
-   "signature": "/recent-leaves [hours]",
-   "root": "recent-leaves",
-   "cog": "server_backup",
-   "permissions": [
-    "Administrator"
-   ],
-   "cooldown_seconds": null,
-   "dm_allowed": false
-  },
-  {
    "path": "structure-restore",
    "description": "Recreate roles/channels deleted since the last backup (admin)",
    "params": [
@@ -4985,19 +4997,6 @@
    ],
    "cooldown_seconds": null,
    "dm_allowed": true
-  },
-  {
-   "path": "stats-status",
-   "description": "Activity-tracking status — totals, date range, top channels (admin)",
-   "params": [],
-   "signature": "/stats-status",
-   "root": "stats-status",
-   "cog": "stats",
-   "permissions": [
-    "Administrator"
-   ],
-   "cooldown_seconds": null,
-   "dm_allowed": false
   },
   {
    "path": "suggest",
@@ -5422,6 +5421,14 @@
   },
   "automation enable": {
    "cog": "auto_rules",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "give members": {
+   "cog": "automation",
    "visibility_permissions": [],
    "runtime_permissions": [
     "administrator"
