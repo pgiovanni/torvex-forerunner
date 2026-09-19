@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **232 commands** (100 top-level, the rest subcommands) across 42 cogs
+- **234 commands** (100 top-level, the rest subcommands) across 42 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -1547,6 +1547,21 @@ View a member's conduct record — or your own.
 
 <sub>`cogs/setup.py`</sub>
 
+#### `/setup leave-server`
+
+Make the bot leave another server, quietly (operator only).
+
+```
+/setup leave-server <server> <confirm>
+```
+
+**Access:** Requires **Administrator**
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `server` | string | Yes | Server to leave — start typing to pick it from the list. *(autocomplete)* |
+| `confirm` | boolean | Yes | Tick to confirm. The bot leaves immediately. |
+
 #### `/setup loot-channel`
 
 Channel for crate opens, rare drops, and boss kill announcements.
@@ -2079,6 +2094,23 @@ Sweep all members: give each their highest Level N+ role, strip the rest
 
 *No parameters.*
 
+#### `/levelroles transfer`
+
+Move one account's server XP, level & messages onto another account
+
+```
+/levelroles transfer <from> <to> [bucks] [preview]
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `from` | user | Yes | account to take the XP FROM (it ends at level 0) |
+| `to` | user | Yes | account to give the XP TO |
+| `bucks` | boolean | No | also move this server's 💵 Server Bucks balance |
+| `preview` | boolean | No | show what would move without writing anything |
+
 ### Economy & levels
 
 <sub>`cogs/economy.py`</sub>
@@ -2466,7 +2498,7 @@ Last to survive stats — all-time leaderboard, or one race round by round.
 
 #### `/powerup`
 
-Last to survive: your power-ups — or aim an Overload / Transfuse.
+Last to survive: your power-ups — or aim an Overload / a heal.
 
 ```
 /powerup [use] [player]
@@ -2476,7 +2508,7 @@ Last to survive: your power-ups — or aim an Overload / Transfuse.
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `use` | string | No | Which power-up to use (leave empty to see what you hold) *(one of: `Overload — take 1 damage to deal 2 (needs a player)`, `Transfuse — give someone 1 life, lose 1 (needs a player)`, `Patch — heal yourself 1`, `Medkit — heal yourself 2, skip this round's vote`, `Small revive — bring someone back with 1 life (needs a player)`, `Medium revive — bring someone back with 2 lives (needs a player)`, `Full revive — bring someone back at full lives (needs a player)`, `Extra revive — bring someone back one life ABOVE max (needs a player)`)* |
+| `use` | string | No | Which power-up to use (leave empty to see what you hold) *(one of: `Overload — take 1 damage to deal 2 (needs a player)`, `Transfuse — heal someone else 1, lose 1 yourself (needs a player)`, `Blood bag — heal someone else 1, costs you nothing (needs a player)`, `Paramedic — heal someone else 2 (needs a player)`, `Field hospital — heal someone else 3 (needs a player)`, `Patch — heal yourself 1`, `Medkit — heal yourself 2, skip this round's vote`, `Small revive — bring someone back with 1 life (needs a player)`, `Medium revive — bring someone back with 2 lives (needs a player)`, `Full revive — bring someone back at full lives (needs a player)`, `Extra revive — bring someone back one life ABOVE max (needs a player)`)* |
 | `player` | user | No | Who it's aimed at |
 
 #### `/race channel`

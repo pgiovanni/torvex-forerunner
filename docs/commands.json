@@ -945,7 +945,7 @@
   },
   {
    "path": "powerup",
-   "description": "Last to survive: your power-ups — or aim an Overload / Transfuse.",
+   "description": "Last to survive: your power-ups — or aim an Overload / a heal.",
    "params": [
     {
      "name": "use",
@@ -954,7 +954,10 @@
      "description": "Which power-up to use (leave empty to see what you hold)",
      "choices": [
       "Overload — take 1 damage to deal 2 (needs a player)",
-      "Transfuse — give someone 1 life, lose 1 (needs a player)",
+      "Transfuse — heal someone else 1, lose 1 yourself (needs a player)",
+      "Blood bag — heal someone else 1, costs you nothing (needs a player)",
+      "Paramedic — heal someone else 2 (needs a player)",
+      "Field hospital — heal someone else 3 (needs a player)",
       "Patch — heal yourself 1",
       "Medkit — heal yourself 2, skip this round's vote",
       "Small revive — bring someone back with 1 life (needs a player)",
@@ -2186,6 +2189,44 @@
    "description": "Sweep all members: give each their highest Level N+ role, strip the rest",
    "params": [],
    "signature": "/levelroles sync",
+   "root": "levelroles",
+   "cog": "level_roles",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "levelroles transfer",
+   "description": "Move one account's server XP, level & messages onto another account",
+   "params": [
+    {
+     "name": "from",
+     "type": "user",
+     "required": true,
+     "description": "account to take the XP FROM (it ends at level 0)"
+    },
+    {
+     "name": "to",
+     "type": "user",
+     "required": true,
+     "description": "account to give the XP TO"
+    },
+    {
+     "name": "bucks",
+     "type": "boolean",
+     "required": false,
+     "description": "also move this server's 💵 Server Bucks balance"
+    },
+    {
+     "name": "preview",
+     "type": "boolean",
+     "required": false,
+     "description": "show what would move without writing anything"
+    }
+   ],
+   "signature": "/levelroles transfer <from> <to> [bucks] [preview]",
    "root": "levelroles",
    "cog": "level_roles",
    "permissions": [
@@ -4645,6 +4686,31 @@
    "dm_allowed": false
   },
   {
+   "path": "setup leave-server",
+   "description": "Make the bot leave another server, quietly (operator only).",
+   "params": [
+    {
+     "name": "server",
+     "type": "string",
+     "required": true,
+     "description": "Server to leave — start typing to pick it from the list.",
+     "autocomplete": true
+    },
+    {
+     "name": "confirm",
+     "type": "boolean",
+     "required": true,
+     "description": "Tick to confirm. The bot leaves immediately."
+    }
+   ],
+   "signature": "/setup leave-server <server> <confirm>",
+   "root": "setup",
+   "cog": "setup",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
    "path": "setup loot-channel",
    "description": "Channel for crate opens, rare drops, and boss kill announcements.",
    "params": [
@@ -5796,6 +5862,14 @@
    ],
    "server_owner_only": false
   },
+  "levelroles transfer": {
+   "cog": "level_roles",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
   "levelroles list": {
    "cog": "level_roles",
    "visibility_permissions": [],
@@ -6741,6 +6815,14 @@
    "server_owner_only": false
   },
   "setup mod-log": {
+   "cog": "setup",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "setup leave-server": {
    "cog": "setup",
    "visibility_permissions": [],
    "runtime_permissions": [
