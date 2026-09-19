@@ -5,7 +5,7 @@
     /race channel <#channel>  Manage Server: the server's race channel (a setting —
                               the bot never creates channels)
     /vote <player>            fire this round's shot — private until the round closes
-    /powerup [use] [target]   inventory, or aim an Overload / Transfuse
+    /powerup [use] [target]   inventory, or aim an Overload / a heal
 
 Everything else is buttons on the lobby and round messages, plus power-up
 drops that appear in the channel mid-round (first click takes it). Buttons
@@ -65,7 +65,10 @@ MODE_CHOICES = [
 ]
 USE_CHOICES = [
     app_commands.Choice(name="Overload — take 1 damage to deal 2 (needs a player)", value="overload"),
-    app_commands.Choice(name="Transfuse — give someone 1 life, lose 1 (needs a player)", value="transfuse"),
+    app_commands.Choice(name="Transfuse — heal someone else 1, lose 1 yourself (needs a player)", value="transfuse"),
+    app_commands.Choice(name="Blood bag — heal someone else 1, costs you nothing (needs a player)", value="bloodbag"),
+    app_commands.Choice(name="Paramedic — heal someone else 2 (needs a player)", value="paramedic"),
+    app_commands.Choice(name="Field hospital — heal someone else 3 (needs a player)", value="fieldhosp"),
     app_commands.Choice(name="Patch — heal yourself 1", value="patch"),
     app_commands.Choice(name="Medkit — heal yourself 2, skip this round's vote", value="medkit"),
     app_commands.Choice(name="Small revive — bring someone back with 1 life (needs a player)", value="revive_small"),
@@ -162,8 +165,11 @@ class _TargetSelect(discord.ui.View):
                     for p in engine.alive(rows) if p["user_id"] != str(me)][:25]
         if not opts:
             opts = [discord.SelectOption(label="(nobody to pick)", value="0")]
-        label = label or {"shot": "Who are you going for?", "overload": "Overload — who takes 2?",
-                          "transfuse": "Transfuse — who gets your life?"}.get(kind) \
+        if not label and kind in engine.HEALS:
+            _, heal_label, gives, _ = engine.HEALS[kind]
+            label = f"{heal_label} — who gets +{gives} {'life' if gives == 1 else 'lives'}?"
+        label = label or {"shot": "Who are you going for?",
+                          "overload": "Overload — who takes 2?"}.get(kind) \
             or f"{engine.REVIVES[kind][1]} — who comes back?"
         sel = discord.ui.Select(placeholder=label, options=opts, min_values=1, max_values=1)
         sel.callback = self._pick
@@ -217,11 +223,14 @@ class _PowerupView(discord.ui.View):
                                   style=discord.ButtonStyle.danger)
             b.callback = self._mk("overload")
             self.add_item(b)
-        if p["transfuse"] > 0:
-            b = discord.ui.Button(label=f"Use Transfuse ×{p['transfuse']}", emoji="💉",
-                                  style=discord.ButtonStyle.primary)
-            b.callback = self._mk("transfuse")
-            self.add_item(b)
+        # the heal-an-ally ladder, in tier order — every one of them aims at
+        # somebody else, so they all open the target picker
+        for kind, (emoji, label, gives, _cost) in engine.HEALS.items():
+            if p.get(kind, 0) > 0:
+                b = discord.ui.Button(label=f"Use {label} ×{p[kind]} (heal an ally {gives})"[:80], emoji=emoji,
+                                      style=discord.ButtonStyle.primary)
+                b.callback = self._mk(kind)
+                self.add_item(b)
         for kind, (emoji, label, _) in engine.REVIVES.items():
             if p.get(kind, 0) > 0:
                 b = discord.ui.Button(label=f"Use {label} ×{p[kind]}", emoji=emoji,
@@ -302,14 +311,27 @@ def add_chunked(e, name, blocks, inline=False):
         e.add_field(name=name if i == 0 else f"{name} (cont.)", value=value, inline=inline)
 
 
+# one line per drop tier, next to its header in the guides
+TIER_NOTE = {
+    "common": "they bite back — drop often",
+    "uncommon": "the middle rung — drop now and then",
+    "rare": "no strings — drop rarely",
+}
+
+
 def powerup_blocks():
     """Every power-up with its benefit and its cost, ONE BLOCK PER DROP TIER —
     the same text the drop shows, so nobody grabs something they don't
     understand. A block keeps a tier's header with its items when fields split."""
-    blocks = []
+    blocks = [[
+        "🩺 **Healing someone else is its own ladder** — 💉 Transfuse (1, costs you 1) → 🩸 Blood bag (1, free) "
+        "→ 🚑 Paramedic (2) → ⛑️ Field hospital (3, sudden death). The rarer the drop, the more you can give. "
+        "They're aimed at ANOTHER player, they land when the round closes, and they are never your vote. "
+        "🩹 Patch and 🏥 Medkit are the two that heal YOU, instantly.",
+    ]]
     for tier, (t_emoji, t_label, _) in engine.TIERS.items():
         kinds = [k for k, t in engine.POWERUP_TIER.items() if t == tier]
-        note = "they bite back — drop often" if tier == "common" else "no strings — drop rarely"
+        note = TIER_NOTE.get(tier, "")
         block = [f"{t_emoji} **{t_label.upper()}** · {note}"]
         for k in kinds:
             emoji, name, blurb = engine.POWERUPS[k]
@@ -902,8 +924,8 @@ class BanRace(commands.Cog):
                         f"Still resolves <t:{int(race['round_ends_at'])}:R>.")
             return "You're out of shots this round and have nothing to re-aim. Grab a drop."
         engine.spend(p, kind)
-        engine.update_player(race_id, shooter_id, shots=p["shots"], overload=p["overload"],
-                             transfuse=p["transfuse"], **{k: p.get(k, 0) for k in engine.REVIVE_COLS})
+        engine.update_player(race_id, shooter_id, shots=p["shots"],
+                             **{k: p.get(k, 0) for k in engine.ITEM_COLS})
         # purge rounds hand everyone three; anything past the allowance was paid
         # for by a drop, a bounty or Arsenal — the story labels those "(extra)"
         allowance = 3 if rn == race.get("purge_round") else 1
@@ -928,7 +950,10 @@ class BanRace(commands.Cog):
             back = engine.revive_lives(kind, race["settings"]["lives"])
             return (f"{emoji} {label} set for **{t['name']}** — they come back with **{back}** "
                     f"{'life' if back == 1 else 'lives'} when the round closes {when}. It doesn't count as your shot.")
-        return f"💉 Transfuse set for **{t['name']}** — they gain 1, you lose 1. Lands {when}."
+        emoji, label, gives, costs = engine.HEALS[kind]
+        return (f"{emoji} **{label}** set for **{t['name']}** — they gain **{gives}**"
+                + (", you lose 1" if costs else ", it costs you nothing")
+                + f". Lands {when}. It is NOT your shot — you still owe one this round.")
 
     def _slate(self, race_id, rn, shooter_id):
         """Every shot the player has placed this round, so a reply can never
@@ -1610,7 +1635,7 @@ class BanRace(commands.Cog):
         text = await self._do_cast(interaction.guild, race["id"], interaction.user.id, player.id, "shot")
         await interaction.response.send_message(text, ephemeral=True)
 
-    @app_commands.command(name="powerup", description="Last to survive: your power-ups — or aim an Overload / Transfuse.")
+    @app_commands.command(name="powerup", description="Last to survive: your power-ups — or aim an Overload / a heal.")
     @app_commands.describe(use="Which power-up to use (leave empty to see what you hold)",
                            player="Who it's aimed at")
     @app_commands.choices(use=USE_CHOICES)
@@ -1642,13 +1667,15 @@ class BanRace(commands.Cog):
         e.add_field(name="Shots this round", value=str(p["shots"]), inline=True)
         e.add_field(name="Shield", value=f"🛡️ ×{p['shield']}", inline=True)
         e.add_field(name="Overload", value=f"💥 ×{p['overload']}", inline=True)
-        e.add_field(name="Transfuse", value=f"💉 ×{p['transfuse']}", inline=True)
-        e.add_field(name="Patch / Medkit", value=f"🩹 ×{p.get('patch', 0)} · 🏥 ×{p.get('medkit', 0)}", inline=True)
+        e.add_field(name="Heal an ALLY", inline=True,
+                    value=" ".join(f"{em}×{p.get(k, 0)}" for k, (em, _, _, _) in engine.HEALS.items()))
+        e.add_field(name="Heal YOURSELF", value=f"🩹 ×{p.get('patch', 0)} · 🏥 ×{p.get('medkit', 0)}", inline=True)
         e.add_field(name="Revives", value=" ".join(f"{em}×{p.get(k, 0)}" for k, (em, _, _) in engine.REVIVES.items()),
                     inline=True)
         e.add_field(name="Kills", value=str(p["kills"]), inline=True)
-        e.set_footer(text="Shields and extra shots work on their own. Overload, Transfuse and revives need a target. "
-                          "Patch and Medkit heal you. Everything stays with you until the race ends.")
+        e.set_footer(text="Shields and extra shots work on their own. Overload, the ally heals "
+                          "(💉🩸🚑⛑️) and revives need a target. Patch and Medkit are the only ones that heal "
+                          "YOU, and they're instant. Everything stays with you until the race ends.")
         add_chunked(e, "What they do", powerup_blocks())
         add_chunked(e, "Super drops (sudden death)", super_blocks())
         add_chunked(e, "Overkill", overkill_blocks())
@@ -1915,16 +1942,14 @@ class BanRace(commands.Cog):
             else:
                 line = engine.grant_super(p, d["kind"], st["shot_cap"], st["lives"])
                 engine.update_player(race["id"], p["user_id"], shots=p["shots"], lives=p["lives"],
-                                     **{k: p.get(k, 0) for k in engine.REVIVE_COLS})
+                                     **{k: p.get(k, 0) for k in engine.ITEM_COLS})
                 engine.log(race["id"], race["round_no"], line, kind="grab", user_id=p["user_id"])
             title, color = f"🌟 {emoji} {name} — taken", COLOR_SUPER
         else:
             emoji, name, _ = engine.POWERUPS[d["kind"]]
             line = engine.grant(p, d["kind"], st["shot_cap"])
             engine.update_player(race["id"], p["user_id"], shots=p["shots"], shield=p["shield"],
-                                 overload=p["overload"], transfuse=p["transfuse"],
-                                 patch=p.get("patch", 0), medkit=p.get("medkit", 0),
-                                 **{k: p.get(k, 0) for k in engine.REVIVE_COLS})
+                                 **{k: p.get(k, 0) for k in engine.ITEM_COLS})
             engine.log(race["id"], race["round_no"], line, kind="grab", user_id=p["user_id"])
             title, color = f"⚡ {emoji} {name} — taken", COLOR_DROP
         await interaction.response.send_message(f"{emoji} **{name}** is yours.", ephemeral=True)

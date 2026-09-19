@@ -33,7 +33,8 @@ def P(uid, lives=3, **kw):
     d = dict(user_id=str(uid), name=f"p{uid}", lives=lives, shots=1, shield=0, overload=0,
              transfuse=0, kills=0, bounty=0, alive=1, died_round=None, banned=0,
              patch=0, medkit=0, skip_round=None, revived=0,
-             revive_small=0, revive_medium=0, revive_full=0, revive_extra=0)
+             revive_small=0, revive_medium=0, revive_full=0, revive_extra=0,
+             bloodbag=0, paramedic=0, fieldhosp=0)
     d.update(kw)
     return d
 
@@ -237,6 +238,80 @@ class Heals(unittest.TestCase):
         self.assertEqual((p["patch"], p["medkit"]), (1, 1))
 
 
+class HealOthers(unittest.TestCase):
+    """The heal-an-ally ladder (Paul 9/18): transfuse 1 at the cost of 1,
+    then ever better drops — uncommon 1 free, rare 2, super 3."""
+
+    def test_the_ladder_climbs_with_the_drop_tier(self):
+        self.assertEqual([E.heal_amount(k)[0] for k in ("transfuse", "bloodbag", "paramedic", "fieldhosp")],
+                         [1, 1, 2, 3])
+        # only the common one costs the giver anything
+        self.assertEqual([E.heal_amount(k)[1] for k in E.HEALS], [1, 0, 0, 0])
+        self.assertEqual(E.POWERUP_TIER["transfuse"], "common")
+        self.assertEqual(E.POWERUP_TIER["bloodbag"], "uncommon")
+        self.assertEqual(E.POWERUP_TIER["paramedic"], "rare")
+        self.assertNotIn("fieldhosp", E.POWERUP_TIER)          # super: sudden death only
+        self.assertIn("fieldhosp", E.SUPER_WEIGHTS)
+        # every rung says out loud that it heals someone else, not you
+        for kind in E.HEALS:
+            self.assertIn("ANOTHER player", E.blurb(kind))
+
+    def test_free_heals_cost_the_giver_nothing_and_cap_at_max(self):
+        for kind, gives in (("bloodbag", 1), ("paramedic", 2), ("fieldhosp", 3)):
+            a, b = P(1, lives=3, **{kind: 1}), P(2, lives=1)
+            resolve([a, b], [S(1, 2, kind)], max_lives=3)
+            self.assertEqual(a["lives"], 3)                    # the giver never pays
+            self.assertEqual(b["lives"], min(3, 1 + gives))    # capped at max
+
+    def test_transfuse_still_pays_a_life(self):
+        a, b = P(1, lives=3, transfuse=1), P(2, lives=1)
+        out = resolve([a, b], [S(1, 2, "transfuse")], max_lives=3)
+        self.assertEqual((a["lives"], b["lives"]), (2, 2))
+        self.assertIn("down to 2", " ".join(out["lines"]))
+
+    def test_a_heal_is_never_used_on_yourself(self):
+        for kind in E.HEALS:
+            p = P(1, **{kind: 1})
+            err = E.cast_error(p, p, kind)
+            self.assertIn("someone ELSE", err)
+            self.assertIn("Patch", err)                        # points at the self-heals instead
+
+    def test_a_heal_you_do_not_hold_is_refused(self):
+        for kind, (_, label, _, _) in E.HEALS.items():
+            self.assertIn(label, E.cast_error(P(1), P(2), kind))
+        self.assertIsNone(E.cast_error(P(1, paramedic=1), P(2), "paramedic"))
+        # ... and the lone costed rung is still refused on your last life
+        self.assertIn("only have one", E.cast_error(P(1, lives=1, transfuse=1), P(2), "transfuse"))
+        self.assertIsNone(E.cast_error(P(1, lives=1, bloodbag=1), P(2), "bloodbag"))
+
+    def test_a_heal_lands_at_close_so_it_can_arrive_too_late(self):
+        a, b, c = P(1, paramedic=1), P(2, lives=1), P(3)
+        out = resolve([a, b, c], [S(3, 2), S(1, 2, "paramedic")], afk=False)
+        self.assertFalse(b["alive"])                           # c's shot got there first
+        self.assertIn("too late", " ".join(out["lines"]))
+        self.assertEqual(a["paramedic"], 1)                    # spend() happens at cast, not here
+
+    def test_healing_is_not_a_vote(self):
+        a, b = P(1, lives=3, fieldhosp=1), P(2, lives=1)
+        resolve([a, b], [S(1, 2, "fieldhosp")], afk=True, max_lives=3)
+        self.assertEqual(a["lives"], 2)                        # healed an ally, still AFK
+        self.assertEqual(b["lives"], 2)                        # 1 → 3 (capped), then their own AFK life
+
+    def test_drops_hand_them_out_and_the_super_waits_in_the_kit(self):
+        p = P(1)
+        for kind in ("bloodbag", "paramedic"):
+            line = E.grant(p, kind, 3)
+            self.assertEqual(p[kind], 1)
+            self.assertIn("heal someone else", line)
+        line = E.grant_super(p, "fieldhosp", 3, 3)
+        self.assertEqual(p["fieldhosp"], 1)
+        self.assertIn("kit", line)
+        E.grant(p, "transfuse", 3)
+        for kind in E.HEALS:                                   # casting one spends it
+            E.spend(p, kind)
+        self.assertEqual([p[k] for k in E.HEALS], [0, 0, 0, 0])
+
+
 class Drops(unittest.TestCase):
     def test_drops_scale_with_alive_players_never_zero_never_overlapping(self):
         # 0.5 per player: 10 alive -> 5, 3 alive -> 2 (round), 2 alive -> 1, 1 alive -> still 1
@@ -281,9 +356,14 @@ class Drops(unittest.TestCase):
         self.assertEqual(set(E.POWERUP_TIER), set(E.POWERUPS))
         self.assertEqual(set(E.DROP_WEIGHTS), set(E.POWERUPS))
         common = [k for k, t in E.POWERUP_TIER.items() if t == "common"]
+        uncommon = [k for k, t in E.POWERUP_TIER.items() if t == "uncommon"]
         rare = [k for k, t in E.POWERUP_TIER.items() if t == "rare"]
         self.assertEqual(sorted(common), ["medkit", "overload", "revive_small", "transfuse"])
-        self.assertEqual(sorted(rare), ["patch", "revive_medium", "shield", "shot"])
+        self.assertEqual(sorted(uncommon), ["bloodbag"])
+        self.assertEqual(sorted(rare), ["paramedic", "patch", "revive_medium", "shield", "shot"])
+        # common > uncommon > rare, always
+        self.assertGreater(E.TIERS["common"][2], E.TIERS["uncommon"][2])
+        self.assertGreater(E.TIERS["uncommon"][2], E.TIERS["rare"][2])
         # the two big revives are supers; the extra one is golden-apple rare
         self.assertEqual(E.SUPER_WEIGHTS["revive_full"], 3)
         self.assertEqual(E.SUPER_WEIGHTS["revive_extra"], 1)
@@ -295,7 +375,8 @@ class Drops(unittest.TestCase):
         import collections
         rng = random.Random(7)
         n = collections.Counter(E.roll_drop(rng) for _ in range(6000))
-        self.assertGreater(sum(n[k] for k in common), 0.65 * 6000)
+        self.assertGreater(sum(n[k] for k in common), 0.60 * 6000)
+        self.assertGreater(sum(n[k] for k in common), 2 * sum(n[k] for k in rare))
 
     def test_super_effects(self):
         p = P(1, lives=1, shots=0)

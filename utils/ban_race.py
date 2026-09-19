@@ -44,9 +44,13 @@ Round model (all resolution is SIMULTANEOUS at round close):
     bounty. Shooting someone who isn't playing is free, so it pays nothing.
 
 Power-ups (dropped in the channel, first click takes it):
-  shield / shot / overload (take 1 to deal 2) / transfuse (give 1, lose 1) /
-  patch (heal 1) / medkit (heal 2, forfeit this round's vote — can't be used
-  after voting, and the AFK penalty doesn't apply that round).
+  shield / shot / overload (take 1 to deal 2) / patch (heal 1) / medkit
+  (heal 2, forfeit this round's vote — can't be used after voting, and the AFK
+  penalty doesn't apply that round).
+Healing SOMEONE ELSE is its own ladder, and it works nothing like the two
+self-heals above — it is aimed at another player and lands when the round
+closes: transfuse (common, +1 to them, −1 to you) / blood bag (uncommon, +1,
+free) / paramedic (rare, +2) / field hospital (super, +3).
 
 Everything is scoped by guild through the race row, and a guild can only have
 one race in lobby or running at a time.
@@ -94,8 +98,15 @@ POWERUPS = {
                   "✅ Your shot deals 2 instead of 1 — a full-health kill in two rounds, or a finisher now. "
                   "❌ Burns 1 of YOUR lives the moment it fires (it can kill you) and rides on a banked shot."),
     "transfuse": ("💉", "Transfuse",
-                  "✅ Give someone 1 life — keep an ally in. "
-                  "❌ You lose 1; refused on your last life; it does NOT count as your vote, so you still owe a shot."),
+                  "✅ Heals ANOTHER player 1 — keep an ally in. "
+                  "❌ You lose 1 of yours; refused on your last life; lands at round close, and it does NOT "
+                  "count as your vote, so you still owe a shot."),
+    "bloodbag":  ("🩸", "Blood bag",
+                  "✅ Heals ANOTHER player 1 and costs you nothing — the clean version of a Transfuse. "
+                  "❌ Never heals you; can't take them above max; lands at round close and is NOT your vote."),
+    "paramedic": ("🚑", "Paramedic",
+                  "✅ Heals ANOTHER player **2** — pulls an ally straight out of the fire. "
+                  "❌ Never heals you; can't take them above max; lands at round close and is NOT your vote."),
     "patch":     ("🩹", "Patch",
                   "✅ Heal 1, instantly, no strings. "
                   "❌ Can't go above max lives — wasted at full health."),
@@ -123,6 +134,32 @@ REVIVES = {
 }
 REVIVE_COLS = tuple(REVIVES)
 
+# Healing SOMEONE ELSE — the ladder (Paul 9/18: "there needs to be a heal
+# others item … we need ever increasing drops to heal others. transfuse heal 1
+# lose one … uncommon heal one, rare: heal 2, super are heal 3").
+# kind -> (emoji, label, lives given, lives it costs the giver).
+#
+# They are deliberately unmistakable for the SELF heals (🩹 Patch, 🏥 Medkit,
+# 💖 Full heal), which are instant and only ever touch your own bar:
+#   * you AIM them at another player (never at yourself — the engine refuses),
+#   * they land when the ROUND CLOSES, with the shots, so the target can die
+#     first ("too late") — a self-heal never misses,
+#   * they are not your vote: healing alone still takes the AFK penalty,
+#   * the whole family is blood-red 💉🩸🚑⛑️ against the self heals' 🩹🏥💖.
+HEALS = {
+    "transfuse": ("💉", "Transfuse",      1, 1),   # common   — the original: they gain 1, you lose 1
+    "bloodbag":  ("🩸", "Blood bag",      1, 0),   # uncommon — 1, free
+    "paramedic": ("🚑", "Paramedic",      2, 0),   # rare     — 2
+    "fieldhosp": ("⛑️", "Field hospital", 3, 0),   # super    — 3, sudden death only
+}
+HEAL_COLS = tuple(HEALS)
+
+
+def heal_amount(kind):
+    """(lives given to the target, lives it costs the giver)."""
+    _, _, gives, costs = HEALS[kind]
+    return gives, costs
+
 
 def revive_lives(kind, max_lives):
     """Lives a revived player comes back with."""
@@ -141,21 +178,31 @@ def blurb(kind):
     if kind in POWERUPS:
         return POWERUPS[kind][2]
     return SUPER[kind][2]
+
+
+def item_face(kind):
+    """(emoji, label) for anything a player can hold — regular drop or super."""
+    table = POWERUPS if kind in POWERUPS else SUPER
+    emoji, label, _ = table[kind][:3]
+    return emoji, label
 # Drop tiers (Paul 9/12): "the ones that have a pitfall should be more common;
 # the ones that don't have pitfalls are rares." A pitfall is a COST you pay
 # (a life, your vote) — not a mere limit like "one shield at a time".
-#   common — bites back: Overload (burns a life), Transfuse (costs a life),
-#            Medkit (costs the vote)
-#   rare   — no strings: Shield, Extra shot, Patch
+#   common   — bites back: Overload (burns a life), Transfuse (costs a life),
+#              Medkit (costs the vote)
+#   uncommon — the middle rung of the heal-an-ally ladder (Paul 9/18)
+#   rare     — no strings: Shield, Extra shot, Patch
 # Weights live on the tier, so re-tiering a power-up is a one-word edit.
 TIERS = {
-    "common": ("⚪", "Common", 3),
-    "rare":   ("🟡", "Rare",   1),
+    "common":   ("⚪", "Common",   3),
+    "uncommon": ("🟢", "Uncommon", 2),
+    "rare":     ("🟡", "Rare",     1),
 }
 POWERUP_TIER = {
     "overload": "common", "transfuse": "common", "medkit": "common",
     "shield": "rare", "shot": "rare", "patch": "rare",
     "revive_small": "common", "revive_medium": "rare",
+    "bloodbag": "uncommon", "paramedic": "rare",
 }
 # Within a tier a kind can be rarer still. Extra shots also arrive from
 # bounties, purge rounds and Arsenal, so the drop itself is halved (Paul 9/12:
@@ -195,16 +242,19 @@ def overkill_reward(over):
     return None
 
 
-USABLE = ("overload", "transfuse",             # the ones a player has to aim
+USABLE = ("overload",                                       # the ones a player has to aim
+          "transfuse", "bloodbag", "paramedic", "fieldhosp",  # (heals aim at the living)
           "revive_small", "revive_medium", "revive_full", "revive_extra")   # (revives aim at the dead)
 SELF_USE = ("patch", "medkit")       # used on yourself, instantly
 ITEM_COLS = ("overload", "transfuse", "patch", "medkit",
+             "bloodbag", "paramedic", "fieldhosp",
              "revive_small", "revive_medium", "revive_full", "revive_extra")
 # Power-ups STAY with a player until the race ends (Paul 9/13, final: "unused
 # power ups should stay until RACE end not round close"). Only shots reset each
 # round. resolve_round(expire_items=True) still exists for a mode that wants
 # use-it-or-lose-it; nothing sets it today.
 EXPIRING = ("shield", "overload", "transfuse", "patch", "medkit",
+            "bloodbag", "paramedic", "fieldhosp",
             "revive_small", "revive_medium", "revive_full", "revive_extra")
 
 # SUPER drops: sudden death only, one per round on top of the regular ones,
@@ -229,11 +279,16 @@ SUPER = {
     "revive_extra": ("🪄", "Extra revive",
                      "✅ Goes to your kit: bring an eliminated player back with one life ABOVE max. "
                      "❌ SUPER RARE — as rare as the golden apple; nobody comes back twice."),
+    "fieldhosp": ("⛑️", "Field hospital",
+                  "✅ Goes to your kit: heals ANOTHER player **3** lives when the round closes — the top of "
+                  "the heal-an-ally ladder. "
+                  "❌ Never heals you, can't take them above max, and it isn't your vote — you still owe a shot."),
 }
 GOLDAPPLE_OVER = 2          # how far above max lives a golden apple can take you
 # Golden apple is LEGENDARY — one super drop in ten (Paul: "SUPER rare, only at
 # the sudden death finale"; supers only ever fall in sudden death).
-SUPER_WEIGHTS = {"nuke": 3, "fullheal": 3, "arsenal": 3, "goldapple": 1, "revive_full": 3, "revive_extra": 1}
+SUPER_WEIGHTS = {"nuke": 3, "fullheal": 3, "arsenal": 3, "goldapple": 1, "revive_full": 3,
+                 "revive_extra": 1, "fieldhosp": 3}
 
 ACTIVE = ("lobby", "running")
 
@@ -294,7 +349,7 @@ def init(db=None):
                 round_no   INTEGER NOT NULL,
                 shooter_id TEXT NOT NULL,
                 target_id  TEXT NOT NULL,
-                kind       TEXT NOT NULL,             -- shot|overload|transfuse|nuke
+                kind       TEXT NOT NULL,             -- shot|overload|nuke|a heal|a revive
                 ts         REAL NOT NULL,
                 seq        INTEGER,                   -- shot 1, shot 2 … per shooter per round (banked shots only)
                 extra      INTEGER NOT NULL DEFAULT 0, -- 1 = beyond the round's allowance (a drop/reward paid for it)
@@ -323,7 +378,10 @@ def init(db=None):
                          ("revive_medium", "INTEGER NOT NULL DEFAULT 0"),
                          ("revive_full", "INTEGER NOT NULL DEFAULT 0"),
                          ("revive_extra", "INTEGER NOT NULL DEFAULT 0"),
-                         ("overkill", "INTEGER NOT NULL DEFAULT 0"))),
+                         ("overkill", "INTEGER NOT NULL DEFAULT 0"),
+                         ("bloodbag", "INTEGER NOT NULL DEFAULT 0"),
+                         ("paramedic", "INTEGER NOT NULL DEFAULT 0"),
+                         ("fieldhosp", "INTEGER NOT NULL DEFAULT 0"))),
             ("shots", (("seq", "INTEGER"),
                        ("extra", "INTEGER NOT NULL DEFAULT 0"),
                        ("result", "TEXT"),
@@ -516,13 +574,14 @@ def save_players(race_id, rows, db=None):
                 "UPDATE players SET lives=?, shots=?, shield=?, overload=?, transfuse=?, kills=?,"
                 " bounty=?, alive=?, died_round=?, banned=?, patch=?, medkit=?, skip_round=?,"
                 " revived=?, revive_small=?, revive_medium=?, revive_full=?, revive_extra=?,"
-                " overkill=?"
+                " overkill=?, bloodbag=?, paramedic=?, fieldhosp=?"
                 " WHERE race_id=? AND user_id=?",
                 (p["lives"], p["shots"], p["shield"], p["overload"], p["transfuse"], p["kills"],
                  p["bounty"], p["alive"], p["died_round"], p["banned"], p.get("patch", 0),
                  p.get("medkit", 0), p.get("skip_round"), p.get("revived", 0),
                  p.get("revive_small", 0), p.get("revive_medium", 0), p.get("revive_full", 0),
                  p.get("revive_extra", 0), p.get("overkill", 0) or 0,
+                 p.get("bloodbag", 0), p.get("paramedic", 0), p.get("fieldhosp", 0),
                  race_id, str(p["user_id"])))
 
 
@@ -652,9 +711,12 @@ def powerup_digest(race_id, user_id, db=None):
             name = _bold_name(r["text"])
             if name:
                 bump(used, name)
-        for r in c.execute("SELECT kind, COUNT(*) n FROM shots WHERE race_id=? AND shooter_id=?"
-                           " AND kind IN ('overload','transfuse','nuke') GROUP BY kind", (race_id, uid)):
-            bump(used, {"overload": "Overload", "transfuse": "Transfuse", "nuke": "Nuke"}[r["kind"]], r["n"])
+        cast_names = {"overload": "Overload", "nuke": "Nuke"}
+        cast_names.update({k: v[1] for k, v in HEALS.items()})     # Transfuse, Blood bag, Paramedic, Field hospital
+        holes = ",".join("?" * len(cast_names))
+        for r in c.execute(f"SELECT kind, COUNT(*) n FROM shots WHERE race_id=? AND shooter_id=?"
+                           f" AND kind IN ({holes}) GROUP BY kind", (race_id, uid, *cast_names)):
+            bump(used, cast_names[r["kind"]], r["n"])
         n = c.execute("SELECT COUNT(*) FROM shots WHERE race_id=? AND shooter_id=? AND extra=1",
                       (race_id, uid)).fetchone()[0]
         if n:
@@ -731,9 +793,11 @@ def player_shots(race_id, user_id, db=None):
 
 CAST_VERB = {"shot": "🎯 fired at", "overload": "💥 overloaded at", "transfuse": "💉 transfused",
              "nuke": "🧨 armed a NUKE"}
+# every other heal reads the same way: "🚑 Paramedic → @them"
+CAST_VERB.update({k: f"{HEALS[k][0]} {HEALS[k][1]} →" for k in HEALS if k not in CAST_VERB})
 RESULT_TAG = {"hit": " → hit", "kill": " → **KILL**", "shielded": " → eaten by a shield",
               "backfire": " → backfired", "wasted": " → wasted (already gone)", "self": " → hit themselves",
-              "transfused": " → done", "late": " → too late", "nuke": " → went off"}
+              "transfused": " → done", "healed": " → healed", "late": " → too late", "nuke": " → went off"}
 
 
 def timeline(user_id, shot_rows, log_rows):
@@ -912,6 +976,11 @@ def grant_super(p, kind, shot_cap, max_lives):
         p[kind] = p.get(kind, 0) + 1
         emoji, label, _ = REVIVES[kind]
         return f"{emoji} {m(p['user_id'])} grabbed a **{label}** — it's in their kit."
+    if kind in HEALS:                         # the super heal needs a target, so it waits in the kit too
+        p[kind] = p.get(kind, 0) + 1
+        emoji, label, gives, _ = HEALS[kind]
+        return (f"{emoji} {m(p['user_id'])} grabbed a **{label}** — it's in their kit: "
+                f"heal someone else {gives}.")
     raise ValueError(kind)
 
 
@@ -934,6 +1003,10 @@ def grant(p, kind, shot_cap):
     if kind == "transfuse":
         p["transfuse"] += 1
         return f"💉 {m(p['user_id'])} grabbed **Transfuse** — give 1, lose 1."
+    if kind in HEALS:
+        p[kind] = p.get(kind, 0) + 1
+        emoji, label, gives, _ = HEALS[kind]
+        return f"{emoji} {m(p['user_id'])} grabbed a **{label}** — heal someone else {gives}."
     if kind == "patch":
         p["patch"] = p.get("patch", 0) + 1
         return f"🩹 {m(p['user_id'])} grabbed a **Patch** — heal 1."
@@ -995,10 +1068,12 @@ def cast_error(p, target, kind="shot", round_no=None):
         return "You used a Medkit this round — no shooting until the next one."
     if target is None or not target["alive"]:
         return "That player isn't in the race (or is already gone)."
-    if target["user_id"] == p["user_id"] and kind != "transfuse":
-        return "Shooting yourself is what backfire is for."
     if target["user_id"] == p["user_id"]:
-        return "Transfuse gives a life to someone ELSE."
+        if kind not in HEALS:
+            return "Shooting yourself is what backfire is for."
+        # the whole point of the ladder: these heal OTHER people. 🩹 Patch and
+        # 🏥 Medkit are the ones that heal you.
+        return (f"{HEALS[kind][1]} heals someone ELSE — use a 🩹 Patch or a 🏥 Medkit on yourself.")
     if kind == "shot" and p["shots"] <= 0:
         return None  # caller may re-aim; it decides
     if kind == "overload":
@@ -1006,11 +1081,12 @@ def cast_error(p, target, kind="shot", round_no=None):
             return "You don't hold an Overload."
         if p["shots"] <= 0:
             return "Overload rides on a shot and you're out of shots this round."
-    if kind == "transfuse":
-        if p["transfuse"] <= 0:
-            return "You don't hold a Transfuse."
-        if p["lives"] <= 1:
-            return "Transfuse costs a life and you only have one."
+    if kind in HEALS:
+        label, costs = HEALS[kind][1], HEALS[kind][3]
+        if p.get(kind, 0) <= 0:
+            return f"You don't hold a {label}."
+        if costs and p["lives"] <= costs:
+            return f"{label} costs a life and you only have one."
     return None
 
 
@@ -1021,8 +1097,8 @@ def spend(p, kind):
     elif kind == "overload":
         p["shots"] -= 1
         p["overload"] -= 1
-    elif kind == "transfuse":
-        p["transfuse"] -= 1
+    elif kind in HEALS:
+        p[kind] = p.get(kind, 0) - 1
     elif kind in REVIVES:
         p[kind] = p.get(kind, 0) - 1
 
@@ -1184,21 +1260,24 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
             record(s, "nuke")
             continue
 
-        if kind == "transfuse":
+        if kind in HEALS:
+            emoji, label, gives, costs = HEALS[kind]
             if not target["alive"]:
-                lines.append(f"💉 {m(sid)} tried to transfuse {m(tid)} — too late, they're gone.")
+                lines.append(f"{emoji} {m(sid)} tried to heal {m(tid)} — too late, they're gone.")
                 record(s, "late")
                 continue
-            if shooter["lives"] <= 0:
-                lines.append(f"💉 {m(sid)} had nothing left to give {m(tid)}.")
+            if costs and shooter["lives"] <= 0:
+                lines.append(f"{emoji} {m(sid)} had nothing left to give {m(tid)}.")
                 record(s, "late")
                 continue
-            record(s, "transfused")
-            shooter["lives"] -= 1
-            target["lives"] = max(target["lives"], min(max_lives, target["lives"] + 1))
-            lines.append(f"💉 {m(sid)} **transfused** {m(tid)} — {m(tid)} up to {target['lives']}, "
-                         f"{m(sid)} down to {shooter['lives']}.")
-            if shooter["lives"] == 0 and shooter["alive"]:
+            record(s, "transfused" if kind == "transfuse" else "healed")
+            shooter["lives"] -= costs
+            # never LOWERS anyone (a golden-appled player sits above max)
+            target["lives"] = max(target["lives"], min(max_lives, target["lives"] + gives))
+            paid = f", {m(sid)} down to {shooter['lives']}" if costs else ""
+            lines.append(f"{emoji} {m(sid)} used a **{label}** on {m(tid)} — "
+                         f"{m(tid)} up to {target['lives']}{paid}.")
+            if costs and shooter["lives"] == 0 and shooter["alive"]:
                 _die(shooter, round_no, lines, f"⛔ {m(sid)} gave their last life away. **Eliminated.**")
                 dead.append(sid)
             continue
@@ -1249,7 +1328,7 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
             for col in EXPIRING:
                 n = p.get(col, 0) or 0
                 if n:
-                    bits.append(POWERUPS[col][0] + (f"×{n}" if n > 1 else ""))
+                    bits.append(item_face(col)[0] + (f"×{n}" if n > 1 else ""))
                     p[col] = 0
             if bits:
                 gone.append(f"{m(p['user_id'])} {' '.join(bits)}")
@@ -1307,8 +1386,7 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
         back = revive_lives(s["kind"], max_lives)
         emoji, label, _ = REVIVES[s["kind"]]
         target.update(alive=1, lives=back, died_round=None, revived=1, shots=0, shield=0,
-                      overload=0, transfuse=0, patch=0, medkit=0, bounty=0,
-                      revive_small=0, revive_medium=0, revive_full=0, revive_extra=0)
+                      bounty=0, **{col: 0 for col in ITEM_COLS})
         revived.append(target["user_id"])
         record(s, "revived")
         lines.append(f"{emoji} {m(shooter['user_id'])} used a **{label}** — {m(target['user_id'])} is back "
