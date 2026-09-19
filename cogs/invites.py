@@ -4,8 +4,11 @@ Goal: make the bot the SOLE source of invites, so attribution is deterministic
 (the bot knows exactly which code it handed to whom) and every join is sourced.
 
 Two kinds of tracked invite:
-  * PER-MEMBER  — `/invite` mints a unique permanent link owned by the runner →
-    exact "who invited whom".
+  * PER-MEMBER  — `/invite` minted a unique permanent link owned by the runner →
+    exact "who invited whom". SHELVED 9/19 (Paul: "we need to remove the /invite
+    command"); the code and every link it ever minted still work, and attribution
+    still credits them — only the command is off the tree. Unshelve it in
+    commands.json to bring it back.
   * PER-SOURCE  — `/tracked-invite label:<x>` mints a labeled permanent link for a
     public source (Disboard / Reddit / a website) → joins attribute to the source,
     not an individual.
@@ -493,7 +496,8 @@ class Invites(commands.Cog):
         await interaction.followup.send(
             f"🔒 **Invite lockdown applied.** `@everyone` can no longer create invites "
             f"({swept} channel overwrites corrected), {purged} untracked invites purged "
-            f"(kept {len(bot_codes)} tracked + {len(INVITE_KEEP)} pinned). Members invite via `/invite` now.\n"
+            f"(kept {len(bot_codes)} tracked + {len(INVITE_KEEP)} pinned). Mint invites for members "
+            f"with `/tracked-invite` — the per-member `/invite` was retired 9/19.\n"
             f"⚠️ Admin/Administrator roles still bypass this, and the vanity URL (if any) is unaffected.",
             ephemeral=True)
 
@@ -544,8 +548,8 @@ class Invites(commands.Cog):
                 pass
         await interaction.followup.send(
             f"🔓 **Invite lockdown reversed.** `@everyone` can create invites again "
-            f"({cleared} channel denies cleared). Native joins are tracked via cache-diff; "
-            f"`/invite` still works for deterministic personal links.",
+            f"({cleared} channel denies cleared). Native joins are still tracked via cache-diff, "
+            f"and `/tracked-invite` mints a labelled link when you want a deterministic one.",
             ephemeral=True)
 
     @commands.Cog.listener()
