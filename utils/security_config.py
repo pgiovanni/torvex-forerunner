@@ -230,7 +230,8 @@ DEFAULTS = {
     # default configuration"). It still does nothing until a guild sets
     # race_channel_id — that's the real opt-in. Times are local to the zone.
     "race_schedule_enabled": 1,
-    "race_schedule_slots": ["02:00", "08:00", "14:00", "20:00"],
+    # every 4 hours, six a day (Paul 9/18 — was 02/08/14/20)
+    "race_schedule_slots": ["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"],
     "race_schedule_tz": "America/New_York",
     "race_schedule_min_players": 3,
     "race_schedule_mode": "ghost",

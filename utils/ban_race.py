@@ -1436,10 +1436,13 @@ def standings(rows):
 # should delay till the next round, minimum 3".
 #
 # Everything below is pure arithmetic over a wall clock — the cog owns the
-# Discord side. Times are LOCAL to `tz` (America/New_York, so the slots stay at
-# 2/8/2/8 on Paul's clock through a DST change rather than sliding an hour).
+# Discord side. Times are LOCAL to `tz` (America/New_York, so a slot keeps its
+# wall-clock time on Paul's clock through a DST change rather than sliding an
+# hour).
 
-SCHEDULE_SLOTS = ("02:00", "08:00", "14:00", "20:00")   # every 6 hours
+# Paul 9/18: "let's make games every 4 hours instead of 6" — six a day, on the
+# hour, keeping the 08:00 and 20:00 slots the old four already had.
+SCHEDULE_SLOTS = ("00:00", "04:00", "08:00", "12:00", "16:00", "20:00")   # every 4 hours
 SCHEDULE_TZ = "America/New_York"
 FIRE_GRACE = 600        # a slot missed to downtime still fires if we're back within 10 min
 WARN_OFFSETS = (900, 60)   # ping the lobby at T-15 min and T-1 min

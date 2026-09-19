@@ -1108,9 +1108,17 @@ class ScheduleTests(unittest.TestCase):
         from zoneinfo import ZoneInfo
         return datetime.fromtimestamp(ts, ZoneInfo(self.TZ)).strftime("%Y-%m-%d %H:%M")
 
-    def test_the_four_slots_parse(self):
-        self.assertEqual(E.parse_slots("2:00, 8:00 14:00,20:00"),
-                         ("02:00", "08:00", "14:00", "20:00"))
+    def test_the_default_is_a_race_every_four_hours(self):
+        # Paul 9/18: "let's make games every 4 hours instead of 6"
+        self.assertEqual(E.SCHEDULE_SLOTS,
+                         ("00:00", "04:00", "08:00", "12:00", "16:00", "20:00"))
+        mins = [int(s[:2]) * 60 + int(s[3:]) for s in E.SCHEDULE_SLOTS]
+        gaps = [(b - a) % (24 * 60) for a, b in zip(mins, mins[1:] + mins[:1])]
+        self.assertEqual(gaps, [240] * 6)      # evenly spaced, wrapping midnight
+
+    def test_the_slots_parse(self):
+        self.assertEqual(E.parse_slots("0:00, 4:00 8:00,12:00 16:00,20:00"),
+                         ("00:00", "04:00", "08:00", "12:00", "16:00", "20:00"))
         self.assertEqual(E.parse_slots(None), tuple(E.SCHEDULE_SLOTS))
         self.assertEqual(E.parse_slots(["20:00", "8:00", "20:00"]), ("08:00", "20:00"))
         for bad in ("25:00", "8:61", "lunch"):
@@ -1120,14 +1128,16 @@ class ScheduleTests(unittest.TestCase):
     def test_next_slot_walks_the_day(self):
         self.assertEqual(self.local(E.next_slot(self.at("2026-09-16 18:28"), tz=self.TZ)),
                          "2026-09-16 20:00")
-        self.assertEqual(self.local(E.next_slot(self.at("2026-09-16 14:00"), tz=self.TZ)),
+        self.assertEqual(self.local(E.next_slot(self.at("2026-09-16 16:00"), tz=self.TZ)),
                          "2026-09-16 20:00")   # exactly on a slot -> the NEXT one
         self.assertEqual(self.local(E.next_slot(self.at("2026-09-16 23:30"), tz=self.TZ)),
-                         "2026-09-17 02:00")   # over midnight
+                         "2026-09-17 00:00")   # over midnight
 
     def test_previous_slot_looks_back_over_midnight(self):
         self.assertEqual(self.local(E.previous_slot(self.at("2026-09-17 01:30"), tz=self.TZ)),
-                         "2026-09-16 20:00")
+                         "2026-09-17 00:00")
+        self.assertEqual(self.local(E.previous_slot(self.at("2026-09-17 00:00") - 60, tz=self.TZ)),
+                         "2026-09-16 20:00")   # just before midnight, yesterday's last slot
         self.assertEqual(self.local(E.previous_slot(self.at("2026-09-16 20:00"), tz=self.TZ)),
                          "2026-09-16 20:00")   # on the slot, it IS the slot
 
@@ -1138,12 +1148,15 @@ class ScheduleTests(unittest.TestCase):
             got = self.local(E.next_slot(self.at(f"{day} 19:00"), tz=self.TZ))
             self.assertEqual(got, f"{day} 20:00", day)
 
-    def test_spring_forward_does_not_lose_the_2am_slot(self):
-        # 2027-03-14 02:00 does not exist locally; the race still happens once,
-        # at the instant the clock reaches 03:00.
-        ts = E.next_slot(self.at("2027-03-14 01:30"), tz=self.TZ)
+    def test_spring_forward_does_not_lose_a_slot_inside_the_gap(self):
+        # 2027-03-14 02:00 does not exist locally. No DEFAULT slot sits in the
+        # gap any more, but a guild can still set one on the dashboard, so the
+        # arithmetic has to hold: the race happens once, the instant the clock
+        # reaches 03:00.
+        slots = ("02:00", "08:00")
+        ts = E.next_slot(self.at("2027-03-14 01:30"), slots, tz=self.TZ)
         self.assertEqual(self.local(ts), "2027-03-14 03:00")
-        self.assertEqual(self.local(E.next_slot(ts, tz=self.TZ)), "2027-03-14 08:00")
+        self.assertEqual(self.local(E.next_slot(ts, slots, tz=self.TZ)), "2027-03-14 08:00")
 
     def test_a_slot_is_owed_once_and_only_once(self):
         slot = self.at("2026-09-16 20:00")
@@ -1174,14 +1187,14 @@ class ScheduleTests(unittest.TestCase):
         now = self.at("2026-09-16 18:28")
         got = E.next_of_each(now, tz=self.TZ)
         self.assertEqual([self.local(t) for t in got],
-                         ["2026-09-17 02:00", "2026-09-17 08:00",
-                          "2026-09-17 14:00", "2026-09-16 20:00"])
+                         ["2026-09-17 00:00", "2026-09-17 04:00", "2026-09-17 08:00",
+                          "2026-09-17 12:00", "2026-09-17 16:00", "2026-09-16 20:00"])
         self.assertTrue(all(t > now for t in got))
         # just after a slot, that slot rolls to tomorrow and the rest stay today
         got = E.next_of_each(self.at("2026-09-16 08:01"), tz=self.TZ)
         self.assertEqual([self.local(t) for t in got],
-                         ["2026-09-17 02:00", "2026-09-17 08:00",
-                          "2026-09-16 14:00", "2026-09-16 20:00"])
+                         ["2026-09-17 00:00", "2026-09-17 04:00", "2026-09-17 08:00",
+                          "2026-09-16 12:00", "2026-09-16 16:00", "2026-09-16 20:00"])
 
     def test_the_line_says_how_many_more_are_needed(self):
         slot = self.at("2026-09-16 20:00")
