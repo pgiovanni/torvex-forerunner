@@ -219,6 +219,13 @@ DEFAULTS = {
     "autorole_skip_pending": 1,      # don't grant until Discord onboarding/rules are done
     "welcome_channel_id": None,      # None = welcome message off
     "welcome_message": "",           # {user} {mention} {server} {count} are substituted
+    "welcome_ping": 1,               # mention them in the content so they're notified
+    "welcome_embed": 0,              # render the welcome as an embed card
+    "welcome_embed_title": "",       # tokens work, but a mention here shows as raw <@id>
+    "welcome_embed_color": "#5865F2",
+    "welcome_embed_image": "",       # http(s) only — the big picture under the text
+    "welcome_embed_thumb": 1,        # joiner's avatar, top-right
+    "welcome_embed_footer": "",
     "goodbye_channel_id": None,
     "goodbye_message": "",
     # ── dead chat ping (cogs/deadchat.py) ─────────────────────────────────────

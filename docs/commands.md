@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **232 commands** (98 top-level, the rest subcommands) across 41 cogs
+- **233 commands** (98 top-level, the rest subcommands) across 41 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -1677,6 +1677,18 @@ Turn join roles + welcome messages on or off.
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `on` | boolean | Yes | … |
+
+#### `/welcome preview`
+
+See exactly what the welcome looks like, as a card only you can see.
+
+```
+/welcome preview
+```
+
+**Access:** Requires **Administrator**
+
+*No parameters.*
 
 #### `/welcome status`
 

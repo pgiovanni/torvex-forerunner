@@ -909,6 +909,19 @@
    "dm_allowed": true
   },
   {
+   "path": "welcome preview",
+   "description": "See exactly what the welcome looks like, as a card only you can see.",
+   "params": [],
+   "signature": "/welcome preview",
+   "root": "welcome",
+   "cog": "automation",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
    "path": "welcome status",
    "description": "Show this server's join & welcome settings.",
    "params": [],
@@ -5433,6 +5446,14 @@
    "server_owner_only": false
   },
   "welcome enable": {
+   "cog": "automation",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "welcome preview": {
    "cog": "automation",
    "visibility_permissions": [],
    "runtime_permissions": [

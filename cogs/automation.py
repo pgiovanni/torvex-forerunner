@@ -27,6 +27,10 @@ from utils.quiet_removals import is_quiet  # noqa: E402
 
 MAX_AUTOROLES = 10          # a runaway config shouldn't mean 50 role writes per join
 MAX_DELAY = 3600
+MAX_EMBED_TITLE = 256       # Discord's own caps — one overrun 400s the whole send
+MAX_EMBED_DESC = 4096
+MAX_EMBED_FOOTER = 2048
+EMBED_FALLBACK_COLOR = 0x5865F2
 SYNC_PROGRESS_EVERY = 100   # members between progress edits of the ephemeral reply
 SYNC_TOKEN_LIFE = 14 * 60   # interaction tokens die at 15 min; stop editing before then
 
@@ -106,6 +110,60 @@ def render(template: str, member: discord.Member) -> str:
             .replace("{count}", str(guild.member_count or 0)))[:2000]
 
 
+def parse_color(raw, fallback=EMBED_FALLBACK_COLOR):
+    """`#5865F2`, `5865f2`, `#f0c` → an int Discord accepts. Never raises: a typo
+    in a colour box must not cost a member their welcome."""
+    s = str(raw or "").strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(ch * 2 for ch in s)
+    try:
+        v = int(s, 16)
+    except ValueError:
+        return fallback
+    return v if 0 <= v <= 0xFFFFFF else fallback
+
+
+def safe_image_url(raw):
+    """Only http(s) reaches Discord. `attachment://` and `data:` either 400 the
+    whole send — losing the welcome entirely — or embed something we never fetched."""
+    s = str(raw or "").strip()
+    low = s.lower()
+    return s[:1024] if (low.startswith("http://") or low.startswith("https://")) else ""
+
+
+def build_welcome(cfg, member):
+    """`(content, embed|None)` for one join. Pure but for the member it reads.
+
+    The ping lives in the CONTENT, never in the embed. A mention inside an embed
+    notifies nobody, and inside a TITLE it does not even render — it shows the raw
+    `<@id>`, which is how most welcome embeds end up looking broken.
+    """
+    body = render((cfg.get("welcome_message") or "").strip(), member)
+    if not cfg.get("welcome_embed"):
+        # Plain mode: the template is the whole message, so its own {mention} is
+        # the ping. Prepending another one would say their name twice.
+        return (body, None)
+    title = render((cfg.get("welcome_embed_title") or "").strip(), member)[:MAX_EMBED_TITLE]
+    image = safe_image_url(cfg.get("welcome_embed_image"))
+    footer = render((cfg.get("welcome_embed_footer") or "").strip(), member)[:MAX_EMBED_FOOTER]
+    if not (title or body or image):
+        return ("", None)       # an empty embed is a bare coloured bar — post nothing
+    e = discord.Embed(colour=discord.Colour(parse_color(cfg.get("welcome_embed_color"))))
+    if title:
+        e.title = title
+    if body:
+        e.description = body[:MAX_EMBED_DESC]
+    if image:
+        e.set_image(url=image)
+    if footer:
+        e.set_footer(text=footer)
+    if cfg.get("welcome_embed_thumb", 1):
+        avatar = getattr(member, "display_avatar", None)
+        if getattr(avatar, "url", None):
+            e.set_thumbnail(url=avatar.url)
+    return (member.mention if cfg.get("welcome_ping", 1) else "", e)
+
+
 class Automation(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -175,16 +233,20 @@ class Automation(commands.Cog):
     # ─────────────────────────────────────────────────────────────── internals
     async def _welcome(self, member, cfg):
         ch = member.guild.get_channel(int(cfg.get("welcome_channel_id") or 0))
-        msg = (cfg.get("welcome_message") or "").strip()
-        if ch and msg:
-            await self._send(ch, render(msg, member))
+        if ch is None:
+            return
+        content, embed = build_welcome(cfg, member)
+        if not (content or embed):
+            return
+        await self._send(ch, content, embed)
 
-    async def _send(self, channel, content):
+    async def _send(self, channel, content, embed=None):
         try:
             # No pings beyond the joining member — a welcome template must never
             # become an @everyone vector for whoever can edit the config.
-            await channel.send(content, allowed_mentions=discord.AllowedMentions(
-                everyone=False, roles=False, users=True))
+            await channel.send(content or None, embed=embed,
+                               allowed_mentions=discord.AllowedMentions(
+                                   everyone=False, roles=False, users=True))
         except (discord.Forbidden, discord.HTTPException):
             pass
 
@@ -299,6 +361,9 @@ class Automation(commands.Cog):
         e.add_field(name="Wait for onboarding",
                     value="yes" if cfg.get("autorole_skip_pending") else "no", inline=True)
         e.add_field(name="Welcome", value=ch(cfg.get("welcome_channel_id")), inline=True)
+        e.add_field(name="Style",
+                    value=("embed card" if cfg.get("welcome_embed") else "plain text")
+                          + (" + ping" if cfg.get("welcome_ping", 1) else ""), inline=True)
         e.add_field(name="Goodbye", value=ch(cfg.get("goodbye_channel_id")), inline=True)
         e.set_footer(text="Configure at dashboard.torvex.app")
         await interaction.response.send_message(embed=e, ephemeral=True)
@@ -310,6 +375,45 @@ class Automation(commands.Cog):
         set_config(interaction.guild.id, auto_enabled=1 if on else 0)
         await interaction.response.send_message(
             f"Join & Welcome is now **{'on' if on else 'off'}**.", ephemeral=True)
+
+    @group.command(name="preview",
+                   description="See exactly what the welcome looks like, as a card only you can see.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def preview(self, interaction: discord.Interaction):
+        """Render the configured welcome against yourself, plus anything that
+        would stop it posting for real. Ephemeral, so nobody is pinged and the
+        welcome channel stays clean while you iterate on the dashboard."""
+        cfg = get_config(interaction.guild.id)
+        content, embed = build_welcome(cfg, interaction.user)
+
+        notes = []
+        if not cfg.get("auto_enabled"):
+            notes.append("⚠️ Join & Welcome is **off** — nothing posts until you turn it on.")
+        ch = interaction.guild.get_channel(int(cfg.get("welcome_channel_id") or 0))
+        if ch is None:
+            notes.append("⚠️ No welcome channel set.")
+        else:
+            me = interaction.guild.me
+            perms = ch.permissions_for(me)
+            if not perms.send_messages:
+                notes.append(f"⚠️ I can't **send messages** in {ch.mention}.")
+            elif cfg.get("welcome_embed") and not perms.embed_links:
+                notes.append(f"⚠️ I can't **embed links** in {ch.mention}, so the card won't render.")
+        if not (content or embed):
+            notes.append("⚠️ Nothing to post — the message is empty.")
+        if cfg.get("welcome_embed") and "{mention}" in (cfg.get("welcome_embed_title") or ""):
+            notes.append("⚠️ `{mention}` in the **title** shows as a raw `<@id>` — "
+                         "Discord only renders mentions in the description. The ping is "
+                         "sent above the card anyway.")
+        if cfg.get("welcome_embed") and not cfg.get("welcome_ping", 1):
+            notes.append("ℹ️ Ping is off — a mention inside a card notifies nobody.")
+
+        head = "**Preview — this is what a new member sees:**"
+        if notes:
+            head += "\n" + "\n".join(notes)
+        await interaction.response.send_message(
+            f"{head}\n\n{content or ''}".strip(), embed=embed, ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none())
 
     @group.command(name="sync",
                    description="Give one of the join roles to every current member who doesn't have it yet.")
