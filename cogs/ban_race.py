@@ -55,7 +55,7 @@ INVITE_DAYS = 7
 RACER_ROLE = "Racer"     # only this role can talk in the race channel; Join grants it
 MAX_PINGS = 60
 START_DELAY = 30        # seconds between the start ping and round 1 opening
-BUMP_AFTER = 6          # human messages in the race channel before the panel is re-posted at the bottom
+BUMP_AFTER = 6          # messages in the race channel (the bot's own included) before the panel is re-posted at the bottom
 BUMP_COOLDOWN = 20      # seconds between two bumps of the same race
 SCHEDULE_CHECK_S = 20   # how often the scheduler looks at the clock
 
@@ -692,7 +692,12 @@ class BanRace(commands.Cog):
             await self._fire_slot(guild, channel, race, rows, need, due, slots, tz, gid)
             return
 
-        # T-15 and T-1 pings — the only warning a carried-over player gets.
+        # T-15 and T-1 warnings. They do NOT ping: a warning fires before anyone
+        # knows whether the slot will reach min_players, so pinging here meant
+        # people were pulled in for races that then rolled over (Paul 9/19:
+        # "people are getting annoyed if the game doesn't start and they are
+        # getting pinged"). The names still render, just silently — the only
+        # ping that survives is the one on the race actually starting.
         nxt = engine.next_slot(now, slots, tz)
         sent = cfg.get("race_schedule_warned") or []
         if float(cfg.get("race_schedule_warn_slot") or 0) != nxt:
@@ -709,7 +714,7 @@ class BanRace(commands.Cog):
         pings = " ".join(f"<@{p['user_id']}>" for p in rows[:MAX_PINGS])
         if pings:
             body += "\nIn: " + pings + "\nNot around? Hit **Leave** on the lobby."
-        await self._say(channel, body, mentions=MENTIONS)
+        await self._say(channel, body, mentions=NO_MENTIONS)
 
     async def _fire_slot(self, guild, channel, race, rows, need, due, slots, tz, gid):
         """The slot is here: start the race, or roll it to the next one."""
@@ -1977,16 +1982,25 @@ class BanRace(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.guild is None or message.author.bot:
+        if message.guild is None:
             return
-        rid = self._running.get(message.guild.id)
-        if rid:
-            self._msgs[(rid, str(message.author.id))] += 1
+        # Storm activity is a PLAYER measure — humans only. A bot cannot be
+        # quiet-and-therefore-stormed, so its lines never count here.
+        if not message.author.bot:
+            rid = self._running.get(message.guild.id)
+            if rid:
+                self._msgs[(rid, str(message.author.id))] += 1
         # Chat buries the panel (Paul 9/12: "bump the panel to the bottom so people
-        # can see it if typing happens"): count human messages in the race channel
-        # and re-post the lobby/round card once enough have piled on top of it.
+        # can see it if typing happens") — and in a race channel MOST of what
+        # buries it is the bot itself: round cards, eliminations, drops. Counting
+        # only humans meant the panel sank through a whole round and never came
+        # back (Paul 9/19). Everything counts now except the panel message, which
+        # would otherwise start the countdown to the next bump the moment it lands.
         race = self._race_in_channel(message.guild.id, message.channel.id)
         if race is None:
+            return
+        if str(message.id) in (str(race.get("lobby_msg_id") or ""),
+                               str(race.get("round_msg_id") or "")):
             return
         self._chatter[race["id"]] += 1
         if (self._chatter[race["id"]] >= BUMP_AFTER
