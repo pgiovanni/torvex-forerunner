@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **227 commands** (97 top-level, the rest subcommands) across 40 cogs
+- **228 commands** (98 top-level, the rest subcommands) across 41 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -37,7 +37,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Help** — `/dashboard`, `/help`
 
-**Other** — `/automation`, `/deadchat`
+**Other** — `/automation`, `/deadchat`, `/userinfo`
 
 ---
 
@@ -3408,4 +3408,22 @@ Ping the Dead Chat role to wake the server up — add a question if you like
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `message` | string | No | What do you want to talk about? (optional) *(length 1–200)* |
+
+### user_info
+
+<sub>`cogs/user_info.py`</sub>
+
+#### `/userinfo`
+
+Everything public about a member — account age, join date, roles, badges.
+
+```
+/userinfo [user]
+```
+
+**Access:** Everyone &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `user` | user | No | Who to look up. Leave blank for yourself. |
 

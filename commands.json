@@ -302,6 +302,12 @@
       "cooldown_seconds": 0
     },
     {
+      "name": "userinfo",
+      "description": "Member overview — account age, join date, roles, badges; avatar/banner/permission buttons",
+      "cog": "user_info",
+      "cooldown_seconds": 0
+    },
+    {
       "name": "quiet-kick",
       "description": "Kick with no goodbye message and no mod-log embed — still recorded (admin)",
       "cog": "moderation",

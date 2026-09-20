@@ -4901,6 +4901,24 @@
    "dm_allowed": true
   },
   {
+   "path": "userinfo",
+   "description": "Everything public about a member — account age, join date, roles, badges.",
+   "params": [
+    {
+     "name": "user",
+     "type": "user",
+     "required": false,
+     "description": "Who to look up. Leave blank for yourself."
+    }
+   ],
+   "signature": "/userinfo [user]",
+   "root": "userinfo",
+   "cog": "user_info",
+   "permissions": [],
+   "cooldown_seconds": 0,
+   "dm_allowed": false
+  },
+  {
    "path": "prune-config",
    "description": "Set what happens to members who never verify (admin).",
    "params": [
@@ -6735,6 +6753,12 @@
   },
   "trade": {
    "cog": "trading",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "userinfo": {
+   "cog": "user_info",
    "visibility_permissions": [],
    "runtime_permissions": [],
    "server_owner_only": false
