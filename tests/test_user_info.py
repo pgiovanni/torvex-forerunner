@@ -224,14 +224,27 @@ check("two badges",
       ["Early Supporter", "Active Developer"])
 check("plumbing flags hidden",
       ui.badge_list(_User(flags=_Flags(team_user=True, bot_http_interactions=True))), [])
+# Server Booster is the badge most people who have one actually have. It comes
+# from premium_since, not from a flag, so it needs the member.
+check("booster badge",
+      ui.badge_list(_User(), _Member(premium=datetime(2024, 3, 7, tzinfo=timezone.utc))),
+      ["💎 Server Booster"])
+check("booster alongside a flag",
+      ui.badge_list(_User(flags=_Flags(hypesquad_bravery=True)),
+                    _Member(premium=datetime(2024, 3, 7, tzinfo=timezone.utc))),
+      ["HypeSquad Bravery", "💎 Server Booster"])
+check("non-booster member adds nothing", ui.badge_list(_User(), _Member()), [])
+check("no member, no booster", ui.badge_list(_User(), None), [])
 
 # ── build_card ────────────────────────────────────────────────────────────────
 member = _Member(roles=three, colour=0xE74C3C,
                  premium=datetime(2024, 3, 7, 13, 41, tzinfo=timezone.utc))
 e = build = ui.build_card(_User(), member, None, 42)
 names = [f.name for f in e.fields]
+# a booster earns the badge row as well as the date field — the profile shows
+# both and one without the other reads as a bug
 check("member card fields",
-      names, ["Created", "Joined", "Boosting since", "Roles — 3"])
+      names, ["Created", "Joined", "Boosting since", "Roles — 3", "Badges"])
 check("footer carries the id", e.footer.text, "ID 596446208021626938")
 check("role colour wins", e.colour.value, 0xE74C3C)
 ok("join rank rendered", "42nd to join" in e.fields[1].value)

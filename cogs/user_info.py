@@ -101,11 +101,27 @@ def when(dt):
     return f"{stamp(dt, 'D')}\n{stamp(dt, 'R')}" if dt else "—"
 
 
-def badge_list(user):
+def badge_list(user, member=None):
+    """The badges Discord will actually tell us about.
+
+    `public_flags` is the LEGACY set — HypeSquad, Bug Hunter, Partner, Staff.
+    Measured on 33 real members at home, four had any flag at all, so a card
+    built on flags alone shows nothing to nearly everyone. Server Booster is
+    added here because `premium_since` gives it to us for free and it is a
+    badge people actually have.
+
+    Nitro is absent on purpose and cannot be added: `premium_type` is returned
+    only for the account that authorised the request, never for a third party,
+    and discord.py does not even model it on `User`. Guessing it from an
+    animated avatar would be a guess printed as a fact.
+    """
+    out = []
     flags = getattr(user, "public_flags", None)
-    if flags is None:
-        return []
-    return [label for attr, label in BADGES if getattr(flags, attr, False)]
+    if flags is not None:
+        out = [label for attr, label in BADGES if getattr(flags, attr, False)]
+    if member is not None and getattr(member, "premium_since", None):
+        out.append("💎 Server Booster")
+    return out
 
 
 def role_field(member, cap=MAX_FIELD):
@@ -227,7 +243,9 @@ def build_card(user, member, fetched=None, rank=None):
     else:
         e.add_field(name="Joined", value="Not in this server", inline=True)
 
-    marks = badge_list(user)
+    # the fetched user is the authoritative payload; the cached one can predate
+    # a badge being granted
+    marks = badge_list(fetched or user, member)
     if marks:
         e.add_field(name="Badges", value=" · ".join(marks), inline=False)
 
@@ -253,6 +271,12 @@ class UserButtons(discord.ui.View):
         banner = getattr(fetched, "banner", None)
         if banner:
             self.add_item(discord.ui.Button(label="View Banner", emoji="🏞️", url=banner.url))
+        # 18 of 33 members sampled at home wear one — far commoner than any real
+        # badge, and the only Nitro-adjacent thing the API will actually show us.
+        decoration = getattr(fetched or user, "avatar_decoration", None)
+        if decoration:
+            self.add_item(discord.ui.Button(
+                label="View Decoration", emoji="✨", url=decoration.url))
         if member:
             self.add_item(discord.ui.Button(
                 label="View Permissions", emoji="🔐", style=discord.ButtonStyle.secondary,
