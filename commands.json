@@ -601,7 +601,7 @@
     },
     {
       "name": "levelroles",
-      "description": "Level reward roles + MEE6 XP/level import (admin)",
+      "description": "NO SLASH COMMAND since 2026-09-20 — level reward roles, the MEE6 import, the reward sweep and account XP merges all live on the dashboard's Levels page. This entry stays only because bot.py loads cogs from the 'cog' field here; delete it and reward roles stop being handed out on levelup.",
       "cog": "level_roles",
       "required_permissions": [
         "administrator"

@@ -27,7 +27,7 @@ Who may run it (Paul, 2026-09-13: "change it to staff and level 20+ for my
 server"): two dashboard fields, both blank = any member.
   * `deadchat_min_level_role_id` — one of the server's level-reward roles.
     The tier is looked up in the LevelRoles mapping and anyone holding that
-    tier OR a higher one passes. This matters because `/levelroles sync`
+    tier OR a higher one passes. This matters because the reward-role sweep
     gives a member only their CURRENT tier — a level-50 member holds
     "Level 50+", not "Level 20+" — so a plain role check would lock out the
     most active people. A role that isn't a level tier simply has to be held.

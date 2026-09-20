@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **233 commands** (98 top-level, the rest subcommands) across 41 cogs
+- **227 commands** (97 top-level, the rest subcommands) across 40 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -29,7 +29,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Server setup** — `/give`, `/picount`, `/rolemenu`, `/server-info`, `/setup`, `/steal-emoji`, `/suggest`, `/welcome`
 
-**Members & invites** — `/activity`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/levelroles`, `/mentions`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/store`, `/tracked-invite`
+**Members & invites** — `/activity`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/mentions`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/store`, `/tracked-invite`
 
 **Games & fun** — `/8ball`, `/challenge`, `/chess`, `/connect4_bot`, `/connect4`, `/gear`, `/gift`, `/lastrace`, `/link`, `/market`, `/peepo`, `/powerup`, `/race`, `/roast`, `/rpg`, `/tictactoe_bot`, `/tictactoe`, `/trade`, `/unlink`, `/vote`, `/wordle`
 
@@ -2023,95 +2023,6 @@ Mint a labeled invite for a public source (Disboard, Reddit, a site).
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `label` | string | Yes | A source label, e.g. 'disboard', 'reddit', 'website' |
-
-### Level roles
-
-<sub>`cogs/level_roles.py`</sub>
-
-#### `/levelroles import-mee6`
-
-Import XP, levels & role rewards from MEE6's leaderboard API
-
-```
-/levelroles import-mee6 [preview] [create_missing]
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `preview` | boolean | No | Show what would be imported without writing anything |
-| `create_missing` | boolean | No | Recreate reward roles MEE6 references that no longer exist |
-
-#### `/levelroles list`
-
-Show the level → role reward map
-
-```
-/levelroles list
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-*No parameters.*
-
-#### `/levelroles remove`
-
-Remove the reward role for a level
-
-```
-/levelroles remove <level>
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `level` | integer | Yes | … |
-
-#### `/levelroles set`
-
-Set the reward role for a level
-
-```
-/levelroles set <level> <role>
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `level` | integer | Yes | level threshold (e.g. 10) |
-| `role` | role | Yes | role to award at that level |
-
-#### `/levelroles sync`
-
-Sweep all members: give each their highest Level N+ role, strip the rest
-
-```
-/levelroles sync
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-*No parameters.*
-
-#### `/levelroles transfer`
-
-Move one account's server XP, level & messages onto another account
-
-```
-/levelroles transfer <from> <to> [bucks] [preview]
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `from` | user | Yes | account to take the XP FROM (it ends at level 0) |
-| `to` | user | Yes | account to give the XP TO |
-| `bucks` | boolean | No | also move this server's 💵 Server Bucks balance |
-| `preview` | boolean | No | show what would move without writing anything |
 
 ### Economy & levels
 

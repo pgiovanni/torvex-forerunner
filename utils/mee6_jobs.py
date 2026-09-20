@@ -1,10 +1,20 @@
-"""MEE6 migration job queue — the bot's half of level_jobs.db.
+"""Level job queue — the bot's half of level_jobs.db.
 
-The dashboard cannot run a migration itself: the import writes Postgres
-(`guild_xp` / `level_roles`) which the dashboard has no handle on, and the sync
-sweep assigns roles, which only the bot process can do. So the dashboard writes
-a job row and this queue hands it to the bot, exactly like `panel_store` hands
-reaction-role panels to `panel_sync`.
+The dashboard cannot run these itself: they write Postgres (`guild_xp`) which
+the dashboard has no handle on, and they assign roles, which only the bot
+process can do. So the dashboard writes a job row and this queue hands it to
+the bot, exactly like `panel_store` hands reaction-role panels to `panel_sync`.
+
+Three kinds since 2026-09-20, when `/levelroles` left the slash tree and the
+dashboard became the only surface for it:
+
+  import    — pull MEE6's leaderboard into guild_xp, optionally sweep after
+  sync      — sweep reward roles only (the old `/levelroles sync`)
+  transfer  — merge one account's server XP into another (the old
+              `/levelroles transfer`); `payload.preview` makes it a dry run
+
+Tier editing (the old list/set/remove) needs no job: the level → role map moved
+out of Postgres into security_config.db, which both halves already read.
 
 One active job per guild is enforced by a partial unique index rather than by
 checking-then-inserting, so a double-clicked "Migrate now" cannot start two
@@ -37,6 +47,8 @@ def ensure(path=None):
                 job_id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id       TEXT NOT NULL,
                 requested_by   TEXT,
+                kind           TEXT NOT NULL DEFAULT 'import',
+                payload        TEXT,
                 create_missing INTEGER NOT NULL DEFAULT 0,
                 run_sync       INTEGER NOT NULL DEFAULT 1,
                 state          TEXT NOT NULL DEFAULT 'queued',
@@ -50,6 +62,13 @@ def ensure(path=None):
                 detail         TEXT
             )
         """)
+        # The live table predates kind/payload — add them in place. Every row
+        # already in it is an import, which is exactly what the default says.
+        have = {r["name"] for r in c.execute("PRAGMA table_info(mee6_jobs)")}
+        if "kind" not in have:
+            c.execute("ALTER TABLE mee6_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'import'")
+        if "payload" not in have:
+            c.execute("ALTER TABLE mee6_jobs ADD COLUMN payload TEXT")
         c.execute("CREATE INDEX IF NOT EXISTS idx_mee6jobs_state ON mee6_jobs(state)")
         # one in-flight job per guild — the DB refuses the second, so a
         # double-click can't start two imports on the same XP table
@@ -90,12 +109,27 @@ def finish(job_id, *, ok, detail, imported=None, tiers=None,
 def requeue_stuck(older_than=900, path=None):
     """Return jobs stranded in 'running' by a restart to the queue.
 
-    Import is idempotent (GREATEST everywhere, ON CONFLICT upserts), so
-    re-running a half-finished job is safe — leaving it stuck is not, because
-    the partial unique index would block the guild from ever migrating again.
+    Import and sync are idempotent (GREATEST everywhere, ON CONFLICT upserts,
+    and a sweep only re-derives roles from the numbers), so re-running a
+    half-finished one is safe — leaving it stuck is not, because the partial
+    unique index would block the guild from ever migrating again.
+
+    A TRANSFER is the exception: it empties the source account, so replaying it
+    behind the operator's back is not on. Those are failed with a note instead.
+    The move is a single Postgres transaction, so it either landed in full or
+    not at all, and the numbers on both accounts say which.
     """
     cutoff = time.time() - older_than
+    stranded_transfer = (
+        "Interrupted by a restart, so it was not retried automatically. The move is "
+        "one transaction — it either landed in full or not at all. Check both "
+        "accounts' numbers before running it again."
+    )
     with _conn(path) as c:
+        c.execute("""UPDATE mee6_jobs SET state='failed', finished_at=?, detail=?
+                      WHERE state='running' AND kind='transfer'
+                        AND COALESCE(started_at, 0) < ?""",
+                  (time.time(), stranded_transfer, cutoff))
         cur = c.execute("UPDATE mee6_jobs SET state='queued', started_at=NULL "
                         "WHERE state='running' AND COALESCE(started_at, 0) < ?", (cutoff,))
         return cur.rowcount

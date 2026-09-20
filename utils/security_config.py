@@ -295,6 +295,16 @@ DEFAULTS = {
     # has been folded into levels_announce for this guild. Same pattern as
     # prune_seeded — without it the migration would re-run and stomp later edits.
     "levels_seeded": 0,
+    # Level reward tiers: {"<level threshold>": role_id}, the map cogs/level_roles.py
+    # hands out on a levelup. Moved here from the Postgres `level_roles` table on
+    # 2026-09-20, when the dashboard became the only place to edit them — same
+    # reason levels_announce moved: security_config.db is the one store BOTH
+    # halves can reach, and Postgres is bot-only. JSON keys are strings.
+    "level_tiers": {},
+    # one-time marker: this guild's Postgres level_roles rows have been copied
+    # into level_tiers. Same pattern as levels_seeded — without it the seed
+    # would re-run on every read and resurrect tiers deleted on the dashboard.
+    "level_tiers_seeded": 0,
     # ── activity stats (cogs/stats.py) ────────────────────────────────────────
     # DELIBERATELY ON BY DEFAULT, unlike everything else in this file. This tier
     # stores NUMBERS ONLY — one row per (day, channel, user, count), never a

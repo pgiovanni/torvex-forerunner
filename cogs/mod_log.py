@@ -2365,7 +2365,7 @@ class ModLog(commands.Cog):
                 pass
 
         # Bot-made role changes split two ways. The automated / self-documenting
-        # systems — /levelroles sync + level rewards (bulk), AltGuard
+        # systems — the reward-role sweep + level rewards (bulk), AltGuard
         # quarantine/restore/join-defaults — fire constantly and keep their own
         # trail, so they stay out of the log. Reaction-role self-assigns are the
         # exception: the member clicked the button and the bot only applied it,

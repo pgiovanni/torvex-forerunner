@@ -2,7 +2,7 @@
 
 Replaces MEE6's levels plugin: the "Level N+" reward roles are handed out on
 server levelups (remove-old-give-new — a member holds only their highest
-tier), and /levelroles import-mee6 pulls every member's XP/level/message-count
+tier), and the MEE6 import pulls every member's XP/level/message-count
 straight off MEE6's public leaderboard API into guild_xp — including MEE6's
 own role-reward config, so nothing is guessed from role names.
 
@@ -13,23 +13,36 @@ ever goes DOWN, re-running the import is safe.
 
 The economy cog dispatches "peepo_guild_level_up" on every server levelup;
 this cog listens and swaps reward roles. Grants are done by THIS bot, which
-anti-nuke exempts. /levelroles sync repairs drift (missed levelups, manual
-role edits, and the initial post-import sweep).
+anti-nuke exempts. A sweep repairs drift (missed levelups, manual role edits,
+and the initial post-import pass).
+
+**NO SLASH COMMANDS (2026-09-20).** `/levelroles` — import-mee6, sync, list,
+set, remove, transfer — was deleted whole; the forerunner dashboard's Levels
+page is the only surface. Admin config belongs on the website (the slash tree
+is for players, and it was at 98/100). The split that makes it work:
+
+  * the tier map lives in security_config.db (`level_tiers`), which both the
+    bot and the dashboard read and write, so editing a tier is an ordinary
+    config form with no round-trip through Discord;
+  * anything needing Postgres or the Discord API — the import, the reward-role
+    sweep, an account XP merge — is queued as a job in level_jobs.db and run
+    by `job_runner` below (utils/mee6_jobs.py).
 """
 import os
 import sys
+import json
 import asyncio
 import logging
 
 import aiohttp
 import asyncpg
 import discord
-from discord import app_commands
 from discord.ext import commands, tasks
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from cogs.economy import mee6_level_from_xp  # noqa: E402
 from utils import mee6_jobs  # noqa: E402
+from utils.security_config import get_config, set_config  # noqa: E402
 
 log = logging.getLogger("level_roles")
 
@@ -54,9 +67,12 @@ def parse_guild_allowlist(*values):
     return set()
 
 
-# Where /levelroles transfer works. Moving XP between accounts is an operator
-# tool, not something every server's admins get (Paul 9/15: "it shouldn't be
-# given to everyone yet, just a tool for us"). Unset = the operator's own guild.
+# Where an account XP merge is allowed. Moving XP between accounts is an
+# operator tool, not something every server's admins get (Paul 9/15: "it
+# shouldn't be given to everyone yet, just a tool for us"). Unset = the
+# operator's own guild. The dashboard hides the form for guilds outside this
+# list AND the job runner refuses them here, because the list lives in the
+# bot's environment and a web process is not where that call gets decided.
 XP_TRANSFER_GUILDS = parse_guild_allowlist(
     os.environ.get("XP_TRANSFER_GUILDS"), os.environ.get("ALTGUARD_GUILD_ID"))
 LEADERBOARD_HELP = (
@@ -159,26 +175,44 @@ class LevelRoles(commands.Cog):
             mee6_jobs.ensure()
             back = mee6_jobs.requeue_stuck()
             if back:
-                log.info("level_roles: requeued %s stranded migration job(s)", back)
-            self.migration_runner.start()
+                log.info("level_roles: requeued %s stranded level job(s)", back)
+            self.job_runner.start()
         except Exception as e:
-            # A broken job queue must never stop reward roles from working.
-            log.error("level_roles: migration queue unavailable (%s) — "
-                      "dashboard migrations disabled, slash commands unaffected", e)
+            # A broken job queue must never stop reward roles from working:
+            # levelups keep handing out tiers from config either way.
+            log.error("level_roles: job queue unavailable (%s) — imports, sweeps "
+                      "and merges are disabled until it comes back", e)
+
+        # Seed every guild's tier map out of Postgres NOW rather than on its
+        # next levelup: until a guild is seeded the dashboard's tier editor
+        # would show an empty list for a server that really does have tiers.
+        # bot.guilds is empty inside setup_hook, so this waits for ready.
+        self._seed_task = self.bot.loop.create_task(self._seed_all())
+
+    async def _seed_all(self):
+        await self.bot.wait_until_ready()
+        for guild in list(self.bot.guilds):
+            try:
+                await self._mapping(guild.id)      # seeds + marks on first call
+            except Exception as e:
+                log.warning("level_roles: couldn't seed tiers for %s: %s", guild.id, e)
 
     async def cog_unload(self):
-        self.migration_runner.cancel()
+        self.job_runner.cancel()
+        task = getattr(self, "_seed_task", None)
+        if task:
+            task.cancel()
         if self.pool:
             await self.pool.close()
 
-    # ── dashboard-queued migrations ───────────────────────────────────────────
+    # ── dashboard-queued jobs ────────────────────────────────────────────────
     @tasks.loop(seconds=JOB_POLL_SECONDS)
-    async def migration_runner(self):
-        """Run one MEE6 migration queued from the dashboard.
+    async def job_runner(self):
+        """Run one job queued from the dashboard: import, sync, or transfer.
 
-        The dashboard can't do this itself: the import writes Postgres and the
-        sweep assigns roles, both of which live in the bot process. Same split
-        as reaction-role panels — the web side only ever marks work.
+        The dashboard can't do any of them itself: they write Postgres and
+        assign roles, both of which live in the bot process. Same split as
+        reaction-role panels — the web side only ever marks work.
 
         One job per tick on purpose. A sweep sleeps 1s per adjusted member, so a
         big server can take minutes; running them serially keeps the bot from
@@ -187,7 +221,7 @@ class LevelRoles(commands.Cog):
         try:
             job = mee6_jobs.claim_next()
         except Exception as e:
-            log.warning("level_roles: couldn't read migration queue: %s", e)
+            log.warning("level_roles: couldn't read the job queue: %s", e)
             return
         if not job:
             return
@@ -198,50 +232,150 @@ class LevelRoles(commands.Cog):
             mee6_jobs.finish(job["job_id"], ok=False,
                              detail="The bot isn't in that server any more.")
             return
+        kind = job.get("kind") or "import"
         try:
-            players, rewards = await fetch_mee6(gid)
-            if not players:
-                mee6_jobs.finish(job["job_id"], ok=False,
-                                 detail="MEE6 returned zero players — nothing to import.")
-                return
-            res = await self._write_import(guild, players, rewards,
-                                           bool(job["create_missing"]))
-            swept = {"checked": 0, "changed": 0}
-            if job["run_sync"]:
-                swept = await self._sweep(guild)
-
-            detail = (f"Imported {res['imported']:,} members and "
-                      f"{len(res['rewards'])} reward tier(s).")
-            if res["created"]:
-                detail += f" Recreated {len(res['created'])} role(s)."
-            if res["missing"]:
-                detail += (f" Skipped {len(res['missing'])} tier(s) whose role is gone: "
-                           f"{', '.join(res['missing'])}.")
-            if job["run_sync"]:
-                detail += (f" Swept {swept['checked']} members, "
-                           f"{swept['changed']} adjusted.")
-            mee6_jobs.finish(job["job_id"], ok=True, detail=detail,
-                             imported=res["imported"], tiers=len(res["rewards"]),
-                             roles_created=len(res["created"]),
-                             synced=swept["changed"])
-            log.info("level_roles: migration job %s for %s done — %s",
-                     job["job_id"], gid, detail)
+            if kind == "sync":
+                await self._job_sync(job, guild)
+            elif kind == "transfer":
+                await self._job_transfer(job, guild)
+            else:
+                await self._job_import(job, guild)
         except Mee6Error as e:
             mee6_jobs.finish(job["job_id"], ok=False, detail=str(e))
         except Exception as e:
-            log.exception("level_roles: migration job %s failed", job["job_id"])
+            log.exception("level_roles: %s job %s failed", kind, job["job_id"])
             mee6_jobs.finish(job["job_id"], ok=False,
                              detail=f"Unexpected error: {type(e).__name__}: {e}")
 
-    @migration_runner.before_loop
-    async def _before_migrations(self):
+    @job_runner.before_loop
+    async def _before_jobs(self):
         await self.bot.wait_until_ready()
 
+    async def _job_import(self, job, guild: discord.Guild):
+        players, rewards = await fetch_mee6(guild.id)
+        if not players:
+            mee6_jobs.finish(job["job_id"], ok=False,
+                             detail="MEE6 returned zero players — nothing to import.")
+            return
+        res = await self._write_import(guild, players, rewards,
+                                       bool(job["create_missing"]))
+        swept = {"checked": 0, "changed": 0}
+        if job["run_sync"]:
+            swept = await self._sweep(guild)
+
+        detail = (f"Imported {res['imported']:,} members and "
+                  f"{len(res['rewards'])} reward tier(s).")
+        if res["created"]:
+            detail += f" Recreated {len(res['created'])} role(s)."
+        if res["missing"]:
+            detail += (f" Skipped {len(res['missing'])} tier(s) whose role is gone: "
+                       f"{', '.join(res['missing'])}.")
+        if job["run_sync"]:
+            detail += (f" Swept {swept['checked']} members, "
+                       f"{swept['changed']} adjusted.")
+        mee6_jobs.finish(job["job_id"], ok=True, detail=detail,
+                         imported=res["imported"], tiers=len(res["rewards"]),
+                         roles_created=len(res["created"]),
+                         synced=swept["changed"])
+        log.info("level_roles: import job %s for %s done — %s",
+                 job["job_id"], guild.id, detail)
+
+    async def _job_sync(self, job, guild: discord.Guild):
+        """Reward-role sweep on its own — what `/levelroles sync` used to do.
+
+        Kept separate from the import rather than folded into it as "import
+        with zero pages": a sweep touches nobody's XP, so an admin repairing
+        drift should never have to go back out to MEE6 to do it.
+        """
+        res = await self._sweep(guild)
+        if not res["mapping"]:
+            mee6_jobs.finish(
+                job["job_id"], ok=False,
+                detail="No reward tiers are set for this server, so there was nothing "
+                       "to hand out. Add a tier first, or migrate from MEE6.")
+            return
+        detail = (f"Checked {res['checked']:,} members, {res['changed']:,} adjusted "
+                  f"({res['added']} role(s) added, {res['removed']} removed).")
+        mee6_jobs.finish(job["job_id"], ok=True, detail=detail, synced=res["changed"])
+        log.info("level_roles: sync job %s for %s done — %s",
+                 job["job_id"], guild.id, detail)
+
+    async def _job_transfer(self, job, guild: discord.Guild):
+        """Merge one account's server progress into another (or preview it)."""
+        try:
+            payload = json.loads(job.get("payload") or "{}")
+        except ValueError:
+            payload = {}
+        source_id, target_id = int(payload.get("source") or 0), int(payload.get("target") or 0)
+        bucks, preview = bool(payload.get("bucks")), bool(payload.get("preview"))
+
+        if guild.id not in XP_TRANSFER_GUILDS:
+            mee6_jobs.finish(job["job_id"], ok=False,
+                             detail="Moving XP between accounts is an operator tool and "
+                                    "isn't enabled for this server.")
+            return
+        if not source_id or not target_id or source_id == target_id:
+            mee6_jobs.finish(job["job_id"], ok=False,
+                             detail="Give two different account ids.")
+            return
+
+        res = await self._transfer(guild, source_id, target_id, bucks=bucks, preview=preview)
+        mee6_jobs.finish(job["job_id"], ok=res["ok"], detail=res["detail"],
+                         synced=res.get("roles_changed"))
+        if res["ok"] and not preview:
+            print(f"[level_roles] {guild.id} xp transfer {source_id} -> {target_id}: "
+                  f"{res['moved_xp']} xp, {res['moved_msgs']} msgs"
+                  f"{', ' + str(res['moved_bucks']) + ' bucks' if bucks else ''} "
+                  f"(queued by {job.get('requested_by')})", flush=True)
+
+    # ── the tier map (security_config, mirrored to Postgres) ─────────────────
     async def _mapping(self, guild_id: int) -> dict[int, int]:
-        rows = await self.pool.fetch(
-            "SELECT level, role_id FROM level_roles WHERE guild_id = $1", str(guild_id)
-        )
-        return {r["level"]: int(r["role_id"]) for r in rows}
+        """{level threshold: role_id} for a guild, from config.
+
+        Config is the source of truth since 2026-09-20 so the dashboard can
+        edit it. A guild whose tiers are still only in Postgres is seeded once,
+        marked, and never read from Postgres again — otherwise deleting a tier
+        on the website would be undone by the next levelup.
+        """
+        cfg = get_config(guild_id)
+        if not cfg.get("level_tiers_seeded"):
+            rows = await self.pool.fetch(
+                "SELECT level, role_id FROM level_roles WHERE guild_id = $1", str(guild_id))
+            seeded = {str(r["level"]): int(r["role_id"]) for r in rows}
+            set_config(guild_id, level_tiers=seeded, level_tiers_seeded=1)
+            if seeded:
+                log.info("level_roles: seeded %s tier(s) for %s out of Postgres",
+                         len(seeded), guild_id)
+            return {int(k): int(v) for k, v in seeded.items()}
+        return {int(k): int(v) for k, v in (cfg.get("level_tiers") or {}).items()}
+
+    async def _set_tier(self, guild_id: int, level: int, role_id: int) -> None:
+        """Point a level at a role, in config AND in the old Postgres table.
+
+        The Postgres write is a mirror, not a read path: keeping it current
+        means a rollback to a build that still reads `level_roles` finds the
+        real map rather than whatever it was before the move.
+        """
+        tiers = await self._mapping(guild_id)
+        tiers[int(level)] = int(role_id)
+        set_config(guild_id, level_tiers={str(k): int(v) for k, v in tiers.items()},
+                   level_tiers_seeded=1)
+        await self.pool.execute("""
+            INSERT INTO level_roles (guild_id, level, role_id) VALUES ($1, $2, $3)
+            ON CONFLICT (guild_id, level) DO UPDATE SET role_id = $3
+        """, str(guild_id), int(level), str(role_id))
+
+    async def _remove_tier(self, guild_id: int, level: int) -> bool:
+        tiers = await self._mapping(guild_id)
+        if int(level) not in tiers:
+            return False
+        tiers.pop(int(level))
+        set_config(guild_id, level_tiers={str(k): int(v) for k, v in tiers.items()},
+                   level_tiers_seeded=1)
+        await self.pool.execute(
+            "DELETE FROM level_roles WHERE guild_id = $1 AND level = $2",
+            str(guild_id), int(level))
+        return True
 
     async def _apply(self, member: discord.Member, level: int, mapping: dict[int, int], reason: str) -> tuple[int, int]:
         """Give the highest qualifying reward role, strip the rest. Returns
@@ -268,7 +402,7 @@ class LevelRoles(commands.Cog):
     # ── migration internals (shared by the slash command and dashboard jobs) ──
     async def _write_import(self, guild: discord.Guild, players: list, rewards: list,
                             create_missing: bool = False) -> dict:
-        """Write a fetched MEE6 leaderboard into guild_xp + level_roles.
+        """Write a fetched MEE6 leaderboard into guild_xp + the tier map.
 
         GREATEST() on every column: nobody's XP, level or message count can go
         DOWN, so re-running is safe and a partially-applied job can simply be
@@ -308,10 +442,7 @@ class LevelRoles(commands.Cog):
             if role is None:
                 missing.append(f"level {lvl} ({name})")
                 continue
-            await self.pool.execute("""
-                INSERT INTO level_roles (guild_id, level, role_id) VALUES ($1, $2, $3)
-                ON CONFLICT (guild_id, level) DO UPDATE SET role_id = $3
-            """, str(guild.id), lvl, str(role.id))
+            await self._set_tier(guild.id, lvl, role.id)
             imported_rewards.append(f"{lvl}→{role.name}")
 
         top = max(players, key=lambda p: int(p["xp"])) if players else None
@@ -363,155 +494,52 @@ class LevelRoles(commands.Cog):
         except Exception as e:
             log.error("level_roles: levelup apply failed for %s: %s", member.id, e)
 
-    # ── /levelroles ───────────────────────────────────────────────────────────
-    group = app_commands.Group(
-        name="levelroles", description="Level reward roles + MEE6 XP import (admin)",
-        default_permissions=discord.Permissions(administrator=True), guild_only=True)
+    # ── account XP merge (queued from the dashboard) ─────────────────────────
+    async def _transfer(self, guild: discord.Guild, source_id: int, target_id: int,
+                        *, bucks: bool = False, preview: bool = False) -> dict:
+        """Move one account's server XP, level & messages onto another account.
 
-    @group.command(name="import-mee6", description="Import XP, levels & role rewards from MEE6's leaderboard API")
-    @app_commands.describe(
-        preview="Show what would be imported without writing anything",
-        create_missing="Recreate reward roles MEE6 references that no longer exist")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def import_mee6(self, interaction: discord.Interaction,
-                          preview: bool = False, create_missing: bool = False):
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        try:
-            players, rewards = await fetch_mee6(guild.id)
-        except Mee6Error as e:
-            await interaction.followup.send(f"❌ {e}", ephemeral=True)
-            return
+        Was `/levelroles transfer`; operator-gated then and now (the caller
+        checks XP_TRANSFER_GUILDS). Merging an old or alt account into a new
+        one is the only place in this cog where a number goes DOWN: the source
+        is emptied on purpose, because a transfer that left the XP behind would
+        be a copy. Totals ADD, so a target that already chatted keeps what it
+        earned. Global (cross-server) XP in discord_users is a separate system,
+        untouched.
 
-        if not players:
-            await interaction.followup.send(
-                "MEE6 returned zero players — nothing to import.", ephemeral=True)
-            return
-
-        top = max(players, key=lambda p: int(p["xp"]))
-        if preview:
-            gone = [f"level {int(rr['rank'])} ({rr['role'].get('name', '?')})"
-                    for rr in rewards if guild.get_role(int(rr["role"]["id"])) is None]
-            msg = (f"**Dry run — nothing was written.**\n"
-                   f"Found **{len(players):,}** members with XP and "
-                   f"**{len(rewards)}** reward tier(s).\n"
-                   f"Top: {top['username']} — level {top['level']}, {int(top['xp']):,} XP.")
-            if gone:
-                msg += (f"\n⚠️ {len(gone)} tier(s) whose role was deleted: "
-                        f"{', '.join(gone)}\nRe-run with `create_missing:True` to remake them.")
-            msg += "\n\nRun again without `preview` to import."
-            await interaction.followup.send(msg[:1900], ephemeral=True)
-            return
-
-        res = await self._write_import(guild, players, rewards, create_missing)
-        msg = (f"✅ Imported **{res['imported']:,}** members from MEE6 (top: "
-               f"{top['username']} — level {top['level']}, {int(top['xp']):,} XP). "
-               f"Nobody was lowered.\n"
-               f"**Role rewards:** {', '.join(res['rewards']) or 'none found'}")
-        if res["created"]:
-            msg += f"\n🆕 Recreated: {', '.join(res['created'])}"
-        if res["missing"]:
-            msg += (f"\n⚠️ Rewards whose role is gone (skipped): "
-                    f"{', '.join(res['missing'])}")
-        msg += "\n\nNow run `/levelroles sync` to hand out the right Level N+ role to everyone."
-        await interaction.followup.send(msg[:1900], ephemeral=True)
-
-    @group.command(name="sync", description="Sweep all members: give each their highest Level N+ role, strip the rest")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def sync(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-
-        async def progress(checked, changed):
-            try:
-                await interaction.edit_original_response(
-                    content=f"⏳ Syncing… {checked} checked, {changed} adjusted.")
-            except discord.HTTPException:
-                pass  # token expired on a long sweep — keep sweeping
-
-        res = await self._sweep(guild, progress=progress)
-        if not res["mapping"]:
-            await interaction.followup.send(
-                "No level roles configured — run `/levelroles import-mee6` or "
-                "`/levelroles set`.", ephemeral=True)
-            return
-
-        summary = (f"✅ Sync done: **{res['checked']}** members checked, "
-                   f"**{res['changed']}** adjusted "
-                   f"({res['added']} roles added, {res['removed']} removed).")
-        print(f"[level_roles] {guild.id} sync complete: {res['checked']} checked, "
-              f"{res['changed']} adjusted (+{res['added']}/-{res['removed']})", flush=True)
-        try:
-            await interaction.followup.send(summary, ephemeral=True)
-        except discord.HTTPException:
-            pass  # completion already in the journal
-
-    @group.command(name="transfer",
-                   description="Move one account's server XP, level & messages onto another account")
-    @app_commands.describe(
-        source="account to take the XP FROM (it ends at level 0)",
-        target="account to give the XP TO",
-        bucks="also move this server's 💵 Server Bucks balance",
-        preview="show what would move without writing anything")
-    @app_commands.rename(source="from", target="to")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def transfer(self, interaction: discord.Interaction,
-                       source: discord.User, target: discord.User,
-                       bucks: bool = False, preview: bool = False):
-        """Merge an old/alt account's server progress into a new one.
-
-        Operator-gated: only guilds in XP_TRANSFER_GUILDS (default: the
-        operator's own) can run it, on top of the group's admin requirement.
-
-        The ONE deliberate exception to the never-lower policy everywhere else
-        in this cog: the source account is emptied (0 XP / level 0 / 0 msgs) on
-        purpose — a transfer that left the XP behind would be a copy. Totals are
-        ADDED, so a target that already chatted keeps what it earned. Global
-        (cross-server) XP in discord_users is a separate system, untouched.
+        Returns {ok, detail, ...} — `detail` is plain text for the job row, so
+        it reads the same on the dashboard as it did in an ephemeral reply.
         """
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-
-        if guild.id not in XP_TRANSFER_GUILDS:
-            await interaction.followup.send(
-                "❌ Moving XP between accounts is an operator tool and isn't enabled for this "
-                "server. Everything else in `/levelroles` works normally.", ephemeral=True)
-            return
-        if source.id == target.id:
-            await interaction.followup.send("❌ Those are the same account.", ephemeral=True)
-            return
-        if source.bot or target.bot:
-            await interaction.followup.send("❌ Bots don't hold server XP.", ephemeral=True)
-            return
+        src_name = self._who(guild, source_id)
+        tgt_name = self._who(guild, target_id)
 
         rows = await self.pool.fetch(
             "SELECT discord_id, xp, level, message_count, regular_bucks "
             "FROM guild_xp WHERE guild_id = $1 AND discord_id = ANY($2)",
-            str(guild.id), [str(source.id), str(target.id)])
+            str(guild.id), [str(source_id), str(target_id)])
         by_id = {r["discord_id"]: dict(r) for r in rows}
         empty = {"xp": 0, "level": 0, "message_count": 0, "regular_bucks": 0}
-        src = by_id.get(str(source.id), empty)
-        dst = by_id.get(str(target.id), empty)
+        src = by_id.get(str(source_id), empty)
+        dst = by_id.get(str(target_id), empty)
 
         if not (src["xp"] or src["message_count"] or (bucks and src["regular_bucks"])):
-            await interaction.followup.send(
-                f"{source.mention} has nothing to transfer in this server.", ephemeral=True)
-            return
+            return {"ok": False,
+                    "detail": f"{src_name} has nothing to transfer in this server."}
 
         new = merged_totals(src, dst)
-        moved = (f"**{src['xp']:,} XP** · **{src['message_count']:,}** messages"
-                 + (f" · **{src['regular_bucks']:,}** 💵" if bucks else ""))
-        lands = (f"{target.mention}: level **{dst['level']}** → **{new['level']}**, "
-                 f"{dst['xp']:,} → **{new['xp']:,} XP**, "
-                 f"{dst['message_count']:,} → **{new['message_count']:,}** messages"
-                 + (f", {dst['regular_bucks']:,} → **{new['regular_bucks']:,}** 💵" if bucks else ""))
+        moved = (f"{src['xp']:,} XP · {src['message_count']:,} messages"
+                 + (f" · {src['regular_bucks']:,} bucks" if bucks else ""))
+        lands = (f"{tgt_name}: level {dst['level']} → {new['level']}, "
+                 f"{dst['xp']:,} → {new['xp']:,} XP, "
+                 f"{dst['message_count']:,} → {new['message_count']:,} messages"
+                 + (f", {dst['regular_bucks']:,} → {new['regular_bucks']:,} bucks" if bucks else ""))
 
         if preview:
-            await interaction.followup.send(
-                f"**Dry run — nothing was written.**\nFrom {source.mention}: {moved}\n{lands}\n"
-                f"{source.mention} would end at level 0 with 0 XP.\n\n"
-                f"Run again without `preview` to move it.", ephemeral=True)
-            return
+            return {"ok": True, "preview": True,
+                    "detail": (f"Dry run — nothing was written. From {src_name}: {moved}. "
+                               f"{lands}. {src_name} would end at level 0 with 0 XP."),
+                    "moved_xp": src["xp"], "moved_msgs": src["message_count"],
+                    "moved_bucks": src["regular_bucks"] if bucks else 0}
 
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -521,99 +549,59 @@ class LevelRoles(commands.Cog):
                         VALUES ($1, $2, $3, $4, $5, $6)
                         ON CONFLICT (discord_id, guild_id) DO UPDATE SET
                             xp = $3, level = $4, message_count = $5, regular_bucks = $6
-                    """, str(target.id), str(guild.id), new["xp"], new["level"],
+                    """, str(target_id), str(guild.id), new["xp"], new["level"],
                          new["message_count"], new["regular_bucks"])
                     await conn.execute("""
                         UPDATE guild_xp SET xp = 0, level = 0, message_count = 0, regular_bucks = 0
                         WHERE discord_id = $1 AND guild_id = $2
-                    """, str(source.id), str(guild.id))
+                    """, str(source_id), str(guild.id))
                 else:
                     await conn.execute("""
                         INSERT INTO guild_xp (discord_id, guild_id, xp, level, message_count)
                         VALUES ($1, $2, $3, $4, $5)
                         ON CONFLICT (discord_id, guild_id) DO UPDATE SET
                             xp = $3, level = $4, message_count = $5
-                    """, str(target.id), str(guild.id), new["xp"], new["level"], new["message_count"])
+                    """, str(target_id), str(guild.id), new["xp"], new["level"], new["message_count"])
                     await conn.execute("""
                         UPDATE guild_xp SET xp = 0, level = 0, message_count = 0
                         WHERE discord_id = $1 AND guild_id = $2
-                    """, str(source.id), str(guild.id))
+                    """, str(source_id), str(guild.id))
 
         # Reward roles follow the new numbers on BOTH sides, same as a levelup.
-        notes = []
+        notes, changed = [], 0
         mapping = await self._mapping(guild.id)
         if mapping:
-            tgt_member = guild.get_member(target.id)
+            tgt_member = guild.get_member(target_id)
             if tgt_member:
                 added, removed = await self._apply(
-                    tgt_member, new["level"], mapping, reason=f"XP transfer from {source.id}")
-                notes.append(f"🎖️ {target.mention}: {added} reward role(s) added, {removed} removed.")
+                    tgt_member, new["level"], mapping, reason=f"XP transfer from {source_id}")
+                changed += added + removed
+                notes.append(f"{tgt_name}: {added} reward role(s) added, {removed} removed.")
             else:
-                notes.append(f"⚠️ {target.mention} isn't in this server — their reward role "
-                             f"lands when they join (or run `/levelroles sync`).")
-            src_member = guild.get_member(source.id)
+                notes.append(f"{tgt_name} isn't in this server — their reward role lands "
+                             f"when they join, or on the next sweep.")
+            src_member = guild.get_member(source_id)
             if src_member:
                 _, stripped = await self._apply(
-                    src_member, 0, mapping, reason=f"XP transferred to {target.id}")
+                    src_member, 0, mapping, reason=f"XP transferred to {target_id}")
+                changed += stripped
                 if stripped:
-                    notes.append(f"🎖️ {source.mention}: {stripped} reward role(s) stripped.")
+                    notes.append(f"{src_name}: {stripped} reward role(s) stripped.")
         else:
-            notes.append("⚠️ No level reward roles are configured in this server.")
+            notes.append("No level reward roles are configured in this server.")
 
-        print(f"[level_roles] {guild.id} xp transfer {source.id} -> {target.id}: "
-              f"{src['xp']} xp, {src['message_count']} msgs"
-              f"{', ' + str(src['regular_bucks']) + ' bucks' if bucks else ''} "
-              f"(by {interaction.user.id})", flush=True)
+        detail = (f"Moved {moved} from {src_name} → {tgt_name}. {lands}. "
+                  f"{src_name} is now level 0 with 0 XP"
+                  + (" and 0 bucks" if bucks else "") + ". " + " ".join(notes))
+        return {"ok": True, "detail": detail, "roles_changed": changed,
+                "moved_xp": src["xp"], "moved_msgs": src["message_count"],
+                "moved_bucks": src["regular_bucks"] if bucks else 0}
 
-        msg = (f"✅ Moved {moved}\nfrom {source.mention} → {target.mention}.\n"
-               f"{lands}\n{source.mention} is now level **0** with 0 XP"
-               + (" and 0 💵" if bucks else "") + ".")
-        if notes:
-            msg += "\n" + "\n".join(notes)
-        await interaction.followup.send(msg[:1900], ephemeral=True)
-
-    @group.command(name="list", description="Show the level → role reward map")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def list_rewards(self, interaction: discord.Interaction):
-        mapping = await self._mapping(interaction.guild.id)
-        if not mapping:
-            await interaction.response.send_message("No level roles configured.", ephemeral=True)
-            return
-        lines = [f"**Level {lvl}+** → <@&{rid}>" for lvl, rid in sorted(mapping.items())]
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
-
-    @group.command(name="set", description="Set the reward role for a level")
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(level="level threshold (e.g. 10)", role="role to award at that level")
-    async def set_reward(self, interaction: discord.Interaction, level: int, role: discord.Role):
-        if role >= interaction.guild.me.top_role:
-            await interaction.response.send_message(
-                f"{role.mention} is above my top role — move **Torvex Forerunner** higher first.", ephemeral=True)
-            return
-        await self.pool.execute("""
-            INSERT INTO level_roles (guild_id, level, role_id) VALUES ($1, $2, $3)
-            ON CONFLICT (guild_id, level) DO UPDATE SET role_id = $3
-        """, str(interaction.guild.id), level, str(role.id))
-        await interaction.response.send_message(f"✅ Level **{level}+** now rewards {role.mention}.", ephemeral=True)
-
-    @group.command(name="remove", description="Remove the reward role for a level")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def remove_reward(self, interaction: discord.Interaction, level: int):
-        res = await self.pool.execute(
-            "DELETE FROM level_roles WHERE guild_id = $1 AND level = $2",
-            str(interaction.guild.id), level)
-        if res.endswith("0"):
-            await interaction.response.send_message(f"No reward configured for level {level}.", ephemeral=True)
-        else:
-            await interaction.response.send_message(f"🗑️ Level {level} reward removed.", ephemeral=True)
-
-    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.MissingPermissions):
-            msg = "❌ You need the **Administrator** permission to use this."
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
+    def _who(self, guild: discord.Guild, user_id: int) -> str:
+        """A name for a job-row line. Falls back to the bare id rather than
+        failing — an account being merged is often one that already left."""
+        m = guild.get_member(user_id) or self.bot.get_user(user_id)
+        return f"{m.display_name if isinstance(m, discord.Member) else m.name} ({user_id})" if m else str(user_id)
 
 
 async def setup(bot):
