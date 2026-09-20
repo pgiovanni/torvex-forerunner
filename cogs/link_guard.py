@@ -379,6 +379,16 @@ def extract_invite_codes(content, embed_dicts):
     return out
 
 
+INVITE_MODES = ("log", "delete", "timeout")
+
+
+def invite_mode(cfg):
+    """What a SINGLE foreign invite from a normal member earns. Unknown values
+    read as `log`: a typo in config must never start deleting people's posts."""
+    m = str(cfg.get("linkguard_invite_mode", "log") or "log").strip().lower()
+    return m if m in INVITE_MODES else "log"
+
+
 def invite_spam_hit(times, now, count, window):
     """Sliding-window spam check for one member. `times` is their mutable list of
     prior post stamps: `now` is appended, stale stamps pruned, and True returned
@@ -1203,6 +1213,7 @@ class LinkGuard(commands.Cog):
             s_count, s_win = 3, 60
         times = self._invite_times.setdefault(key, [])
         hit = invite_spam_hit(times, now, s_count, s_win)
+        mode = invite_mode(cfg)
         acts = {"deleted": False, "timed_out": False}
         if hit:
             # suppress further embeds/punishment for them either mode; enforce
@@ -1210,9 +1221,15 @@ class LinkGuard(commands.Cog):
             self._invite_tripped[key] = now + 600
             if len(self._invite_tripped) > 2048:
                 self._invite_tripped = {k: v for k, v in self._invite_tripped.items() if v > now}
-            if enforce:
-                acts["deleted"] = await self._delete(message.channel, message, message.id)
-                why = f"invite spam: {len(times)} server invites in {s_win}s"
+        # A single foreign invite is a policy question, not an attack: `log` is
+        # the old behaviour (card only), `delete` takes the advert down, and
+        # `timeout` says don't come back with another. A spam burst always gets
+        # the full response whatever the mode says.
+        if enforce and (hit or mode in ("delete", "timeout")):
+            acts["deleted"] = await self._delete(message.channel, message, message.id)
+            if hit or mode == "timeout":
+                why = (f"invite spam: {len(times)} server invites in {s_win}s" if hit
+                       else "posted an invite to another server")
                 try:
                     await member.timeout(
                         datetime.timedelta(minutes=int(cfg.get("linkguard_invite_timeout_min", 60))),
@@ -1221,10 +1238,10 @@ class LinkGuard(commands.Cog):
                 except (discord.Forbidden, discord.HTTPException):
                     pass
         await self._invite_alert(guild, cfg, message.channel, member, foreign,
-                                 hit, enforce, acts, s_win, len(times))
+                                 hit, enforce, acts, s_win, len(times), mode)
 
     async def _invite_alert(self, guild, cfg, channel, member, foreign, hit,
-                            enforce, acts, window, n):
+                            enforce, acts, window, n, mode="log"):
         ch = self._modlog(guild, cfg)
         if ch is None:
             return
@@ -1266,6 +1283,16 @@ class LinkGuard(commands.Cog):
             else:
                 action = [f"none — SHADOW (would delete + timeout "
                           f"{int(cfg.get('linkguard_invite_timeout_min', 60))}m)"]
+            embed.add_field(name="Action", value=" · ".join(action), inline=False)
+        elif mode in ("delete", "timeout"):
+            if enforce:
+                action = ["🗑️ deleted" if acts["deleted"] else "⚠️ not deleted"]
+                if mode == "timeout":
+                    tmin = int(cfg.get("linkguard_invite_timeout_min", 60))
+                    action.append(f"⏳ timed out {tmin}m" if acts["timed_out"]
+                                  else "⚠️ timeout failed")
+            else:
+                action = [f"none — SHADOW (would {mode})"]
             embed.add_field(name="Action", value=" · ".join(action), inline=False)
         ping = self._ping_prefix(cfg) if (hit and enforce) else None
         try:

@@ -20,7 +20,9 @@ class Links(unittest.TestCase):
     def test_discord_and_gif_pickers_always_allowed(self):
         for u in ("https://tenor.com/view/abc", "https://media.tenor.com/x.gif",
                   "https://cdn.discordapp.com/attachments/1/2/a.png", "https://discord.gg/abc",
-                  "https://giphy.com/gifs/x"):
+                  "https://giphy.com/gifs/x",
+                  # the picker that was actually losing members' posts at home
+                  "https://klipy.com/gifs/s02e01-screaming"):
             self.assertTrue(am.host_allowed(am.host_of(u), []), u)
 
     def test_lookalikes_are_not_allowed(self):

@@ -107,5 +107,21 @@ with tempfile.TemporaryDirectory() as td:
     finally:
         lg._TRIPDB = real
 
+# ------------------------------------------------- invite_mode (9/19)
+# What ONE foreign invite from a normal member earns. Unknown values must read
+# as `log` — a typo in config can't be allowed to start deleting people's posts.
+check("mode: default is log", lg.invite_mode({}) == "log")
+check("mode: delete", lg.invite_mode({"linkguard_invite_mode": "delete"}) == "delete")
+check("mode: timeout", lg.invite_mode({"linkguard_invite_mode": "timeout"}) == "timeout")
+check("mode: case and space tolerated",
+      lg.invite_mode({"linkguard_invite_mode": "  DELETE "}) == "delete")
+check("mode: typo falls back to log",
+      lg.invite_mode({"linkguard_invite_mode": "delte"}) == "log")
+check("mode: None falls back to log",
+      lg.invite_mode({"linkguard_invite_mode": None}) == "log")
+check("mode: empty falls back to log",
+      lg.invite_mode({"linkguard_invite_mode": ""}) == "log")
+check("mode: ban is not a mode", lg.invite_mode({"linkguard_invite_mode": "ban"}) == "log")
+
 print(f"\n{_total - len(_fails)}/{_total} passed")
 sys.exit(1 if _fails else 0)

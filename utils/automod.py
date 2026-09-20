@@ -19,10 +19,14 @@ import re
 import time
 from urllib.parse import urlparse
 
-# Never policed: Discord itself + the GIF pickers every client embeds.
+# Never policed: Discord itself + the GIF pickers every client embeds. A GIF is
+# not the link problem anyone turns this feature on for, and deleting one reads
+# to the member as the bot breaking — klipy.com was eating real posts at home
+# the night the policy went to `delete` (2026-09-19).
 ALWAYS_ALLOWED = (
     "discord.com", "discord.gg", "discordapp.com", "discordapp.net", "discord.new",
     "discord.media", "tenor.com", "tenor.co", "giphy.com", "gfycat.com",
+    "klipy.com", "klipy.app",
 )
 
 LINK_MODES = ("off", "delete", "timeout")

@@ -140,6 +140,7 @@ DEFAULTS = {
     # ~1 msg/s and splitting across channels stays under 12-in-7s per channel
     # forever, but 3 foreign invites in a minute from one member is the signature.
     "linkguard_invites": 1,                  # capture invite links (rides linkguard_enabled)
+    "linkguard_invite_mode": "log",   # one foreign invite: log | delete | timeout
     "linkguard_invite_spam": [3, 60],        # foreign invites [count, window_s], counted ACROSS channels
     "linkguard_invite_timeout_min": 60,      # spam response (enforce only): delete + this timeout
     "linkguard_invite_exempt_channels": [],  # promo channels where invites are ignored entirely
