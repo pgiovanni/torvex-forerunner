@@ -120,15 +120,27 @@ _INVITE_RE = re.compile(
     r"(?:https?://)?(?:(?:www|ptb|canary)\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/"
     r"([A-Za-z0-9][A-Za-z0-9-]{1,31})", re.I)
 
-# Perms that mean "trusted enough to share an invite deliberately" — staff posts
-# (partnerships etc.) are captured in the table but never alerted or punished.
+# Perms that mean "trusted enough to share an invite deliberately" — the DEFAULT
+# staff set, not a fixed one. A server that wants its helpers policed like
+# everyone else, or wants only admins exempt, says so on the panel
+# (`automod_staff_perms`) instead of asking for a code change.
 _STAFF_PERMS = ("administrator", "manage_guild", "manage_channels", "manage_messages",
                 "kick_members", "ban_members", "moderate_members", "manage_roles")
 
 
-def _is_staff(member):
+def staff_perm_names(cfg):
+    """Which permissions count as staff here. Config wins; anything unrecognised
+    is dropped, and an empty result falls back to the defaults — a typo that
+    silenced the exemption would quietly start punishing the mod team."""
+    picked = tuple(p for p in (str(x).strip().lower()
+                               for x in (cfg or {}).get("automod_staff_perms") or [])
+                   if p in _STAFF_PERMS)
+    return picked or _STAFF_PERMS
+
+
+def _is_staff(member, cfg=None):
     p = member.guild_permissions
-    return any(getattr(p, name, False) for name in _STAFF_PERMS)
+    return any(getattr(p, name, False) for name in staff_perm_names(cfg))
 
 
 # URL-ish token (with or without scheme, or bare www.) — greedy up to whitespace
@@ -744,7 +756,9 @@ class LinkGuard(commands.Cog):
         channels (thread parents count), the whitelist, and pass holders."""
         if member is None:
             return True   # can't check their roles → never punish blind
-        if self._exempt(guild, member.id, cfg) or _is_staff(member):
+        if self._exempt(guild, member.id, cfg):
+            return True
+        if cfg.get("automod_links_exempt_staff", 1) and _is_staff(member, cfg):
             return True
         chan_ids = {str(channel.id), str(getattr(channel, "parent_id", "") or "")}
         if chan_ids & {str(c) for c in (cfg.get("automod_links_exempt_channels") or [])}:
@@ -1196,8 +1210,13 @@ class LinkGuard(commands.Cog):
         if not foreign:
             return  # our own / friendly invites: captured quietly, nothing more
         member = guild.get_member(author.id)
-        if member is None or _is_staff(member):
+        if member is None:
+            return
+        if cfg.get("linkguard_invite_exempt_staff", 1) and _is_staff(member, cfg):
             return  # staff share invites deliberately (partnerships) — table only
+        inv_exempt_roles = {str(r) for r in (cfg.get("linkguard_invite_exempt_roles") or [])}
+        if inv_exempt_roles and any(str(r.id) in inv_exempt_roles for r in member.roles):
+            return  # partner/ambassador roles that aren't staff — table only
 
         enforce = bool(cfg.get("linkguard_enforce"))
         key = (guild.id, author.id)

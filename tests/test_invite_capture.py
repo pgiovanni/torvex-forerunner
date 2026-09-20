@@ -123,5 +123,50 @@ check("mode: empty falls back to log",
       lg.invite_mode({"linkguard_invite_mode": ""}) == "log")
 check("mode: ban is not a mode", lg.invite_mode({"linkguard_invite_mode": "ban"}) == "log")
 
+# ---------------------------------------- staff exemption is CONFIG (9/19)
+# Paul: "exemptions need to be boiled into configuration not hard coded."
+D = lg._STAFF_PERMS
+check("staff perms: unset = the built-in set", lg.staff_perm_names({}) == D)
+check("staff perms: empty list = the built-in set",
+      lg.staff_perm_names({"automod_staff_perms": []}) == D)
+check("staff perms: a narrower list is honoured",
+      lg.staff_perm_names({"automod_staff_perms": ["administrator", "manage_guild"]})
+      == ("administrator", "manage_guild"))
+check("staff perms: case and space tolerated",
+      lg.staff_perm_names({"automod_staff_perms": [" Administrator "]}) == ("administrator",))
+check("staff perms: junk dropped",
+      lg.staff_perm_names({"automod_staff_perms": ["administrator", "be_cool"]})
+      == ("administrator",))
+check("staff perms: ALL junk falls back, never punishes the mod team by typo",
+      lg.staff_perm_names({"automod_staff_perms": ["be_cool", "vibes"]}) == D)
+check("staff perms: None falls back",
+      lg.staff_perm_names({"automod_staff_perms": None}) == D)
+
+
+class _P:
+    def __init__(self, **kw):
+        self._kw = kw
+
+    def __getattr__(self, n):
+        return self._kw.get(n, False)
+
+
+class _Mem:
+    def __init__(self, **perms):
+        self.guild_permissions = _P(**perms)
+
+
+mod = _Mem(manage_messages=True)
+admin = _Mem(administrator=True)
+plain = _Mem()
+check("_is_staff: a Mod is staff by default", lg._is_staff(mod, {}) is True)
+check("_is_staff: a plain member never is", lg._is_staff(plain, {}) is False)
+check("_is_staff: narrowed to admin-only, a Mod is NOT staff",
+      lg._is_staff(mod, {"automod_staff_perms": ["administrator"]}) is False)
+check("_is_staff: narrowed to admin-only, an admin still is",
+      lg._is_staff(admin, {"automod_staff_perms": ["administrator"]}) is True)
+check("_is_staff: cfg omitted entirely still works (old call shape)",
+      lg._is_staff(mod) is True)
+
 print(f"\n{_total - len(_fails)}/{_total} passed")
 sys.exit(1 if _fails else 0)

@@ -141,6 +141,8 @@ DEFAULTS = {
     # forever, but 3 foreign invites in a minute from one member is the signature.
     "linkguard_invites": 1,                  # capture invite links (rides linkguard_enabled)
     "linkguard_invite_mode": "log",   # one foreign invite: log | delete | timeout
+    "linkguard_invite_exempt_staff": 1,   # staff may share invites (partnerships)
+    "linkguard_invite_exempt_roles": [],  # non-staff roles allowed to as well
     "linkguard_invite_spam": [3, 60],        # foreign invites [count, window_s], counted ACROSS channels
     "linkguard_invite_timeout_min": 60,      # spam response (enforce only): delete + this timeout
     "linkguard_invite_exempt_channels": [],  # promo channels where invites are ignored entirely
@@ -189,6 +191,8 @@ DEFAULTS = {
     # exempt roles/channels, Discord/Tenor/Giphy domains and members holding a
     # `/hitlist pass` are let through.
     "automod_links_mode": "off",           # off | delete | timeout
+    "automod_links_exempt_staff": 1,      # staff are above the link policy
+    "automod_staff_perms": [],            # [] = the built-in staff perm set
     "automod_links_timeout_min": 10,       # timeout length in "timeout" mode
     "automod_links_allow_domains": [],     # extra allowed domains (suffix match)
     "automod_links_exempt_roles": [],      # role ids that may always post links
