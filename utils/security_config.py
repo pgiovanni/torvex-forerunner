@@ -241,7 +241,13 @@ DEFAULTS = {
     "welcome_embed_thumb": 1,        # joiner's avatar, top-right
     "welcome_embed_footer": "",
     "goodbye_channel_id": None,
-    "goodbye_message": "",
+    "goodbye_message": "",           # same tokens as the welcome
+    "goodbye_embed": 0,              # render the goodbye as an embed card
+    "goodbye_embed_title": "",       # no ping rides with a goodbye — they already left
+    "goodbye_embed_color": "#5865F2",
+    "goodbye_embed_image": "",       # http(s) only — the big picture under the text
+    "goodbye_embed_thumb": 1,        # leaver's avatar, top-right
+    "goodbye_embed_footer": "",
     # ── dead chat ping (cogs/deadchat.py) ─────────────────────────────────────
     # /deadchat lets ANY member ping one role to wake the server up. The role is
     # picked on the dashboard; the cooldown is server-wide (whoever pinged

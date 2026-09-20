@@ -53,6 +53,11 @@ CARD = dict(PLAIN, welcome_embed=1, welcome_embed_title="Welcome, {user}!",
             welcome_embed_color="#57F287",
             welcome_embed_image="https://example.com/pepe.gif",
             welcome_embed_footer="Member #{count}")
+BYE_PLAIN = {"goodbye_message": "Hey {user}, it's sad to see you go. 🥺"}
+BYE_CARD = dict(BYE_PLAIN, goodbye_embed=1, goodbye_embed_title="👋 GOODBYE",
+                goodbye_embed_color="#f8a5c2",
+                goodbye_embed_image="https://example.com/bye.gif",
+                goodbye_embed_footer="until next time · {count} left")
 
 
 # ── colours: a typo must never cost the welcome ─────────────────────────
@@ -111,10 +116,39 @@ check("card: nothing configured posts nothing, not a bare coloured bar",
 check("card: nothing configured, ping on — still nothing",
       auto.build_welcome({"welcome_embed": 1, "welcome_ping": 1}, M), ("", None))
 
+# ── goodbye: the same builder, the other set of keys ──────────────────
+content, embed = auto.build_goodbye(BYE_PLAIN, M)
+check("bye plain: no embed", embed, None)
+check("bye plain: tokens substituted", content, "Hey starlght, it's sad to see you go. 🥺")
+check("bye plain: nothing configured posts nothing", auto.build_goodbye({}, M), ("", None))
+
+content, e = auto.build_goodbye(BYE_CARD, M)
+check("bye card: content stays empty — a leaver can't be pinged", content, "")
+check("bye card: title rendered", e.title, "👋 GOODBYE")
+check("bye card: body becomes the description", e.description,
+      "Hey starlght, it's sad to see you go. 🥺")
+check("bye card: colour applied", e.colour.value, 0xF8A5C2)
+check("bye card: image set", e.image.url, "https://example.com/bye.gif")
+check("bye card: footer rendered", e.footer.text, "until next time · 2405 left")
+check("bye card: avatar thumbnail on by default", e.thumbnail.url, M.display_avatar.url)
+check("bye card: thumbnail can be turned off",
+      auto.build_goodbye(dict(BYE_CARD, goodbye_embed_thumb=0), M)[1].thumbnail.url, None)
+check("bye card: bad image dropped, card still posts",
+      auto.build_goodbye(dict(BYE_CARD, goodbye_embed_image="data:image/png;base64,A"), M)[1].image.url,
+      None)
+check("bye card: welcome_ping never leaks into a goodbye",
+      auto.build_goodbye(dict(BYE_CARD, welcome_ping=1), M)[0], "")
+check("bye card: nothing configured posts nothing, not a bare coloured bar",
+      auto.build_goodbye({"goodbye_embed": 1}, M), ("", None))
+check("bye: welcome keys don't drive the goodbye",
+      auto.build_goodbye(CARD, M), ("", None))
+check("welcome: goodbye keys don't drive the welcome",
+      auto.build_welcome(BYE_CARD, M), ("", None))
+
 # ── the @everyone guard the template can never get past ──────────────
 check("render caps at 2000 chars", len(auto.render("x" * 3000, M)), 2000)
 
-print(f"{_total - len(_fails)}/{_total} welcome-card checks passed")
+print(f"{_total - len(_fails)}/{_total} welcome/goodbye-card checks passed")
 for f in _fails:
     print("  FAIL", f)
 sys.exit(1 if _fails else 0)

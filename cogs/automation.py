@@ -131,24 +131,28 @@ def safe_image_url(raw):
     return s[:1024] if (low.startswith("http://") or low.startswith("https://")) else ""
 
 
-def build_welcome(cfg, member):
-    """`(content, embed|None)` for one join. Pure but for the member it reads.
+def build_card(cfg, member, kind="welcome"):
+    """`(content, embed|None)` for one join (`welcome`) or one leave (`goodbye`).
+    Pure but for the member it reads — one builder, two sets of keys, so a fix
+    to either mode lands on both.
 
     The ping lives in the CONTENT, never in the embed. A mention inside an embed
     notifies nobody, and inside a TITLE it does not even render — it shows the raw
-    `<@id>`, which is how most welcome embeds end up looking broken.
+    `<@id>`, which is how most welcome embeds end up looking broken. A goodbye
+    never pings at all: they've left, so it would only ring for nobody and read
+    as a raw mention to everyone still here.
     """
-    body = render((cfg.get("welcome_message") or "").strip(), member)
-    if not cfg.get("welcome_embed"):
+    body = render((cfg.get(f"{kind}_message") or "").strip(), member)
+    if not cfg.get(f"{kind}_embed"):
         # Plain mode: the template is the whole message, so its own {mention} is
         # the ping. Prepending another one would say their name twice.
         return (body, None)
-    title = render((cfg.get("welcome_embed_title") or "").strip(), member)[:MAX_EMBED_TITLE]
-    image = safe_image_url(cfg.get("welcome_embed_image"))
-    footer = render((cfg.get("welcome_embed_footer") or "").strip(), member)[:MAX_EMBED_FOOTER]
+    title = render((cfg.get(f"{kind}_embed_title") or "").strip(), member)[:MAX_EMBED_TITLE]
+    image = safe_image_url(cfg.get(f"{kind}_embed_image"))
+    footer = render((cfg.get(f"{kind}_embed_footer") or "").strip(), member)[:MAX_EMBED_FOOTER]
     if not (title or body or image):
         return ("", None)       # an empty embed is a bare coloured bar — post nothing
-    e = discord.Embed(colour=discord.Colour(parse_color(cfg.get("welcome_embed_color"))))
+    e = discord.Embed(colour=discord.Colour(parse_color(cfg.get(f"{kind}_embed_color"))))
     if title:
         e.title = title
     if body:
@@ -157,11 +161,20 @@ def build_welcome(cfg, member):
         e.set_image(url=image)
     if footer:
         e.set_footer(text=footer)
-    if cfg.get("welcome_embed_thumb", 1):
+    if cfg.get(f"{kind}_embed_thumb", 1):
         avatar = getattr(member, "display_avatar", None)
         if getattr(avatar, "url", None):
             e.set_thumbnail(url=avatar.url)
-    return (member.mention if cfg.get("welcome_ping", 1) else "", e)
+    ping = kind == "welcome" and cfg.get("welcome_ping", 1)
+    return (member.mention if ping else "", e)
+
+
+def build_welcome(cfg, member):
+    return build_card(cfg, member, "welcome")
+
+
+def build_goodbye(cfg, member):
+    return build_card(cfg, member, "goodbye")
 
 
 class Automation(commands.Cog):
@@ -226,9 +239,12 @@ class Automation(commands.Cog):
             return
         cfg = get_config(member.guild.id)
         ch = member.guild.get_channel(int(cfg.get("goodbye_channel_id") or 0))
-        msg = (cfg.get("goodbye_message") or "").strip()
-        if ch and msg:
-            await self._send(ch, render(msg, member))
+        if ch is None:
+            return
+        content, embed = build_goodbye(cfg, member)
+        if not (content or embed):
+            return
+        await self._send(ch, content, embed)
 
     # ─────────────────────────────────────────────────────────────── internals
     async def _welcome(self, member, cfg):
@@ -365,6 +381,8 @@ class Automation(commands.Cog):
                     value=("embed card" if cfg.get("welcome_embed") else "plain text")
                           + (" + ping" if cfg.get("welcome_ping", 1) else ""), inline=True)
         e.add_field(name="Goodbye", value=ch(cfg.get("goodbye_channel_id")), inline=True)
+        e.add_field(name="Goodbye style",
+                    value="embed card" if cfg.get("goodbye_embed") else "plain text", inline=True)
         e.set_footer(text="Configure at dashboard.torvex.app")
         await interaction.response.send_message(embed=e, ephemeral=True)
 
@@ -377,38 +395,52 @@ class Automation(commands.Cog):
             f"Join & Welcome is now **{'on' if on else 'off'}**.", ephemeral=True)
 
     @group.command(name="preview",
-                   description="See exactly what the welcome looks like, as a card only you can see.")
+                   description="See exactly what the welcome (or goodbye) looks like, as a card only you can see.")
+    @app_commands.describe(message="Which one to preview — the welcome (default) or the goodbye.")
+    @app_commands.choices(message=[
+        app_commands.Choice(name="Welcome", value="welcome"),
+        app_commands.Choice(name="Goodbye", value="goodbye"),
+    ])
     @app_commands.checks.has_permissions(administrator=True)
-    async def preview(self, interaction: discord.Interaction):
-        """Render the configured welcome against yourself, plus anything that
-        would stop it posting for real. Ephemeral, so nobody is pinged and the
-        welcome channel stays clean while you iterate on the dashboard."""
+    async def preview(self, interaction: discord.Interaction,
+                      message: app_commands.Choice[str] = None):
+        """Render the configured welcome or goodbye against yourself, plus
+        anything that would stop it posting for real. Ephemeral, so nobody is
+        pinged and the channel stays clean while you iterate on the dashboard.
+
+        A choice rather than a second subcommand: the slash tree is at its
+        100-command ceiling, and an argument costs nothing there."""
+        kind = (message.value if message else "welcome")
         cfg = get_config(interaction.guild.id)
-        content, embed = build_welcome(cfg, interaction.user)
+        content, embed = build_card(cfg, interaction.user, kind)
 
         notes = []
         if not cfg.get("auto_enabled"):
             notes.append("⚠️ Join & Welcome is **off** — nothing posts until you turn it on.")
-        ch = interaction.guild.get_channel(int(cfg.get("welcome_channel_id") or 0))
+        ch = interaction.guild.get_channel(int(cfg.get(f"{kind}_channel_id") or 0))
         if ch is None:
-            notes.append("⚠️ No welcome channel set.")
+            notes.append(f"⚠️ No {kind} channel set.")
         else:
             me = interaction.guild.me
             perms = ch.permissions_for(me)
             if not perms.send_messages:
                 notes.append(f"⚠️ I can't **send messages** in {ch.mention}.")
-            elif cfg.get("welcome_embed") and not perms.embed_links:
+            elif cfg.get(f"{kind}_embed") and not perms.embed_links:
                 notes.append(f"⚠️ I can't **embed links** in {ch.mention}, so the card won't render.")
         if not (content or embed):
             notes.append("⚠️ Nothing to post — the message is empty.")
-        if cfg.get("welcome_embed") and "{mention}" in (cfg.get("welcome_embed_title") or ""):
+        if cfg.get(f"{kind}_embed") and "{mention}" in (cfg.get(f"{kind}_embed_title") or ""):
             notes.append("⚠️ `{mention}` in the **title** shows as a raw `<@id>` — "
-                         "Discord only renders mentions in the description. The ping is "
-                         "sent above the card anyway.")
-        if cfg.get("welcome_embed") and not cfg.get("welcome_ping", 1):
+                         "Discord only renders mentions in the description."
+                         + (" The ping is sent above the card anyway." if kind == "welcome" else ""))
+        if kind == "welcome" and cfg.get("welcome_embed") and not cfg.get("welcome_ping", 1):
             notes.append("ℹ️ Ping is off — a mention inside a card notifies nobody.")
+        if kind == "goodbye" and "{mention}" in (cfg.get("goodbye_message") or ""):
+            notes.append("ℹ️ `{mention}` in a goodbye rings nobody — they've already left. "
+                         "`{user}` reads better.")
 
-        head = "**Preview — this is what a new member sees:**"
+        head = ("**Preview — this is what a new member sees:**" if kind == "welcome"
+                else "**Preview — this is what the channel sees when someone leaves:**")
         if notes:
             head += "\n" + "\n".join(notes)
         await interaction.response.send_message(
