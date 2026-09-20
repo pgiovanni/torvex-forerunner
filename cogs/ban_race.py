@@ -57,6 +57,7 @@ MAX_PINGS = 60
 START_DELAY = 30        # seconds between the start ping and round 1 opening
 BUMP_AFTER = 6          # messages in the race channel (the bot's own included) before the panel is re-posted at the bottom
 BUMP_COOLDOWN = 20      # seconds between two bumps of the same race
+CARD_REPOST_COOLDOWN = 30   # seconds before a missing lobby card may be re-posted again
 SCHEDULE_CHECK_S = 20   # how often the scheduler looks at the clock
 
 MODE_CHOICES = [
@@ -504,6 +505,7 @@ class BanRace(commands.Cog):
         self._chatter = defaultdict(int)  # race_id -> human messages since the panel was last (re)posted
         self._last_bump = {}              # race_id -> time of the last re-post
         self._chan_cache = {}             # guild_id -> (expires, race dict | None) for on_message's channel check
+        self._last_card = {}              # race_id -> when its lobby card was last re-posted
         self._drops = {}                  # nonce -> {kind, race_id, claimed}
         self._lobby_sig = {}              # race_id -> the schedule last drawn on its card
         self._resumed = False
@@ -530,15 +532,10 @@ class BanRace(commands.Cog):
         for race in engine.lobby_races():
             guild = self.bot.get_guild(int(race["guild_id"]))
             channel = guild and await self._channel_for(guild, race)
-            if channel is None or not race.get("lobby_msg_id"):
+            if channel is None:
                 continue
-            try:
-                msg = await channel.fetch_message(int(race["lobby_msg_id"]))
-                await msg.edit(embed=self._card(guild, race, engine.players(race["id"])),
-                               view=lobby_view(race["id"]))
+            if await self._ensure_lobby_card(guild, channel, race):
                 log.info("refreshed lobby embed for race %s", race["id"])
-            except (discord.HTTPException, ValueError):
-                pass
 
     # ── the schedule ──────────────────────────────────────────────────────────────────
     # Paul 9/16: "instead of starting when everyone joins, it should be
@@ -599,6 +596,45 @@ class BanRace(commands.Cog):
             return await channel.fetch_message(int(race["lobby_msg_id"]))
         except (discord.HTTPException, ValueError):
             return None
+
+    async def _ensure_lobby_card(self, guild, channel, race):
+        """The lobby card, re-posted if it has gone missing.
+
+        Every path used to give up when `fetch_message` 404'd, so a card that
+        someone deleted left the lobby alive in the database with no buttons and
+        no way back — the scheduler kept warning about a race nobody could join
+        (Paul 9/19: "maybe cuz i deleted it? so it doesn't know what to do").
+        Deleting the card is now just a request for a fresh one."""
+        if channel is None:
+            return None
+        # Re-read the row. Two callers can arrive with the same stale race dict
+        # — on_ready and the scheduler tick did, on the first deploy of this
+        # helper — and both would then "heal" the same missing card and leave
+        # two live panels in the channel.
+        race = engine.get_race(race["id"]) or race
+        if time.time() - self._last_card.get(race["id"], 0) < CARD_REPOST_COOLDOWN:
+            return await self._lobby_message(channel, race)
+        rows = engine.players(race["id"])
+        msg = await self._lobby_message(channel, race)
+        if msg is not None:
+            try:
+                await msg.edit(embed=self._card(guild, race, rows), view=lobby_view(race["id"]))
+                return msg
+            except discord.NotFound:
+                msg = None          # deleted between the fetch and the edit
+            except discord.HTTPException:
+                return msg          # transient — the card is still there
+        try:
+            msg = await channel.send(embed=self._card(guild, race, rows),
+                                     view=lobby_view(race["id"]))
+        except discord.HTTPException:
+            log.warning("race %s: could not re-post the lobby card", race["id"])
+            return None
+        engine.update_race(race["id"], lobby_msg_id=str(msg.id))
+        self._chatter[race["id"]] = 0
+        self._last_card[race["id"]] = time.time()
+        log.info("race %s: lobby card re-posted (the old one was gone)", race["id"])
+        return msg
 
     async def _open_lobby(self, guild, channel, host_id, settings):
         """Lock the channel, mint the return invite, create the race, post its
@@ -777,13 +813,7 @@ class BanRace(commands.Cog):
             engine.update_race(race["id"], settings=s)
             race = engine.get_race(race["id"])
             log.info("race %s: lobby synced to the dashboard (%s)", race["id"], "; ".join(changed))
-        msg = await self._lobby_message(channel, race)
-        if msg:
-            try:
-                await msg.edit(embed=self._card(guild, race, engine.players(race["id"])),
-                               view=lobby_view(race["id"]))
-            except discord.HTTPException:
-                pass
+        await self._ensure_lobby_card(guild, channel, race)
         return race
 
     def _template(self, cfg):
@@ -2029,10 +2059,17 @@ class BanRace(commands.Cog):
         key = "lobby_msg_id" if race["status"] == "lobby" else "round_msg_id"
         old_id = race.get(key)
         if not old_id:
+            if race["status"] == "lobby":
+                await self._ensure_lobby_card(channel.guild, channel, race)
             return
         try:
             old = await channel.fetch_message(int(old_id))
         except (discord.HTTPException, ValueError):
+            # Gone (deleted by hand, or purged). A lobby can be rebuilt from the
+            # race row; a round card can't — its embed only exists on the message
+            # — so that one waits for the next round to post a fresh one.
+            if race["status"] == "lobby":
+                await self._ensure_lobby_card(channel.guild, channel, race)
             return
         if race["status"] == "lobby":
             embed = self._card(channel.guild, race, engine.players(race["id"]))
