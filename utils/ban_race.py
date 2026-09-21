@@ -290,6 +290,91 @@ GOLDAPPLE_OVER = 2          # how far above max lives a golden apple can take yo
 SUPER_WEIGHTS = {"nuke": 3, "fullheal": 3, "arsenal": 3, "goldapple": 1, "revive_full": 3,
                  "revive_extra": 1, "fieldhosp": 3}
 
+# ── the guide's shape: BY TYPE, one short line each ───────────────────────────
+# Paul 9/20: "the powerups should be grouped by type … healing items, shooting
+# items, reviving items, defense items, and each listed just as short as
+# possible with effect and side effect." The long ✅/❌ blurbs above stay on the
+# DROP card, where a player reads one item at a time; the guide lists every
+# item at once, so it reads from BRIEF instead.
+#
+# A rule the whole family obeys is stated ONCE, in the group header — that is
+# what kept the old list bloated: every ally heal repeated "lands at round
+# close, is not your vote".
+ITEM_GROUPS = {
+    "shoot":     ("🔫", "Shooting", ""),
+    "defend":    ("🛡️", "Defense", ""),
+    "heal_self": ("🩹", "Healing — YOURSELF",
+                  "instant, never above max"),
+    "heal_ally": ("💉", "Healing — AN ALLY",
+                  "aimed at another player, lands at round close, never above max — and never your "
+                  "vote, so you still owe a shot"),
+    "revive":    ("💫", "Revives",
+                  "aimed at someone already out, land at round close, nobody comes back twice"),
+}
+ITEM_GROUP = {
+    "overload": "shoot", "shot": "shoot", "nuke": "shoot", "arsenal": "shoot",
+    "shield": "defend", "goldapple": "defend",
+    "patch": "heal_self", "medkit": "heal_self", "fullheal": "heal_self",
+    "transfuse": "heal_ally", "bloodbag": "heal_ally", "paramedic": "heal_ally",
+    "fieldhosp": "heal_ally",
+    "revive_small": "revive", "revive_medium": "revive",
+    "revive_full": "revive", "revive_extra": "revive",
+}
+# kind -> (what it does, what it costs you). An empty cost = no strings.
+BRIEF = {
+    "overload":   ("your shot deals 2 instead of 1",
+                   "burns 1 of YOUR lives; needs an unfired shot — arm it instead of shooting"),
+    "shot":       ("one more shot this round", "1 damage each, and it's gone at round close"),
+    "nuke":       ("1 damage to every other survivor at round close",
+                   "it IS your shot for the round, and it paints a target on you"),
+    "arsenal":    ("+3 shots, right now", "one target per shot; unfired shots die with you"),
+    "shield":     ("eats the next shot at you, whole",
+                   "one at a time (a second becomes a Patch); OFF in sudden death; no help against "
+                   "the AFK penalty or the storm"),
+    "goldapple":  ("+2 lives ABOVE max (the only thing that passes the cap)",
+                   "a shot still takes 1: a buffer, not armour"),
+    "patch":      ("heal 1", "wasted at full lives"),
+    "medkit":     ("heal 2", "costs you this round's vote; refused once you've fired"),
+    "fullheal":   ("straight back to max lives", ""),
+    "transfuse":  ("heals them 1", "costs you 1 life; refused on your last one"),
+    "bloodbag":   ("heals them 1, free", ""),
+    "paramedic":  ("heals them 2", ""),
+    "fieldhosp":  ("heals them 3", ""),
+    "revive_small":  ("back with 1 life", "one shot from being out again"),
+    "revive_medium": ("back with 2 lives", ""),
+    "revive_full":   ("back at FULL lives", "the one you bring back is everyone's target"),
+    "revive_extra":  ("back with one life ABOVE max", ""),
+}
+
+
+def rarity_mark(kind):
+    """The one-glyph rarity for the guide: ⚪🟢🟡 for a regular drop, 🌟 for a
+    super, 🌟🌟 for the two super-rares. Read from the same tables the drop
+    roll uses, so a re-tier can't leave the guide lying."""
+    if kind in POWERUP_TIER:
+        return TIERS[POWERUP_TIER[kind]][0]
+    return "🌟🌟" if SUPER_WEIGHTS.get(kind) == 1 else "🌟"
+
+
+def grouped_items():
+    """[(group key, emoji, title, shared-rules note, [(kind, emoji, label,
+    rarity, effect, cost), …]), …] — the guide's whole catalogue, regular
+    drops and supers together, ordered by ITEM_GROUPS. Within a group the
+    commoner things come first, so each list reads cheapest to rarest."""
+    order = {"⚪": 0, "🟢": 1, "🟡": 2, "🌟": 3, "🌟🌟": 4}
+    out = []
+    for key, (g_emoji, title, note) in ITEM_GROUPS.items():
+        items = []
+        for kind, group in ITEM_GROUP.items():
+            if group != key:
+                continue
+            emoji, label = item_face(kind)
+            effect, cost = BRIEF[kind]
+            items.append((kind, emoji, label, rarity_mark(kind), effect, cost))
+        items.sort(key=lambda it: order.get(it[3], 9))
+        out.append((key, g_emoji, title, note, items))
+    return out
+
 ACTIVE = ("lobby", "running")
 
 

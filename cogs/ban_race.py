@@ -339,31 +339,40 @@ def add_chunked_if_room(e, name, blocks, *, budget=EMBED_BUDGET):
     return False
 
 
-# one line per drop tier, next to its header in the guides
-TIER_NOTE = {
-    "common": "they bite back — drop often",
-    "uncommon": "the middle rung — drop now and then",
-    "rare": "no strings — drop rarely",
-}
+# What a rarity MEANS, said once at the top of the guide instead of on every
+# line. The glyphs come from engine.rarity_mark, which reads the drop tables.
+RARITY_LEGEND = (
+    "⚪ **Common** — drops often, and it bites back  ·  🟢 **Uncommon** — the middle rung  ·  "
+    "🟡 **Rare** — no strings  ·  🌟 **Super** — sudden death only, one a round "
+    "(🌟🌟 = super rare, one super in ten).\n"
+    "A super fires the moment you grab it — except revives and the field hospital, which go to "
+    "your kit. Everything else stays with you until the race ends."
+)
 
 
 def powerup_blocks():
-    """Every power-up with its benefit and its cost, ONE BLOCK PER DROP TIER —
-    the same text the drop shows, so nobody grabs something they don't
-    understand. A block keeps a tier's header with its items when fields split."""
-    blocks = [[
-        "🩺 **Healing someone else is its own ladder** — 💉 Transfuse (1, costs you 1) → 🩸 Blood bag (1, free) "
-        "→ 🚑 Paramedic (2) → ⛑️ Field hospital (3, sudden death). The rarer the drop, the more you can give. "
-        "They're aimed at ANOTHER player, they land when the round closes, and they are never your vote. "
-        "🩹 Patch and 🏥 Medkit are the two that heal YOU, instantly.",
-    ]]
-    for tier, (t_emoji, t_label, _) in engine.TIERS.items():
-        kinds = [k for k, t in engine.POWERUP_TIER.items() if t == tier]
-        note = TIER_NOTE.get(tier, "")
-        block = [f"{t_emoji} **{t_label.upper()}** · {note}"]
-        for k in kinds:
-            emoji, name, blurb = engine.POWERUPS[k]
-            block.append(f"{emoji} **{name}** — {blurb}")
+    """Every item GROUPED BY WHAT IT DOES — shooting, defense, healing
+    yourself, healing an ally, revives — one short line each: what it does,
+    then what it costs you.
+
+    Paul 9/20: "grouped by type … each listed just as short as possible with
+    effect and side effect". The copy lives in engine.BRIEF/ITEM_GROUPS, so
+    a rule a whole family shares is written once in the group header. Supers
+    sit in their group with a 🌟 rather than in a section of their own — a
+    nuke is a shooting item first and a sudden-death item second.
+
+    One block per group, so a group's header never splits from its items when
+    add_chunked spills into "(cont.)" fields."""
+    blocks = [[RARITY_LEGEND]]
+    for _key, g_emoji, title, note, items in engine.grouped_items():
+        block = [f"{g_emoji} **{title}**" + (f" · *{note}*" if note else "")]
+        for _kind, emoji, label, rarity, effect, cost in items:
+            # 🌟 Full revive's own emoji IS the super glyph — don't print it twice.
+            face = emoji if rarity == emoji else f"{rarity} {emoji}"
+            line = f"{face} **{label}** — {effect}."
+            if cost:
+                line += f" ❌ {cost}."
+            block.append(line)
         blocks.append(block)
     return blocks
 
@@ -385,17 +394,6 @@ def lives_line(s, n_joined):
             + (f", for the {n_joined} in so far: **{rec_now}**" if rec_now != rec_full and n_joined else "") + ".")
 
 
-def super_blocks():
-    """The sudden-death supers, golden apple flagged as the super-rare one.
-    One block per line, so the list packs into as few fields as it needs."""
-    blocks = [["🌟 **SUPER** · sudden death only, one per round — most fire the moment they're grabbed, "
-               "revives go to your kit"]]
-    for kind, (emoji, name, blurb) in engine.SUPER.items():
-        tag = " · **SUPER RARE**" if engine.SUPER_WEIGHTS.get(kind) == 1 else ""
-        blocks.append([f"{emoji} **{name}**{tag} — {blurb}"])
-    return blocks
-
-
 def overkill_blocks():
     """How overkill pays, for the kit pop-up. Rules live in the engine, so the
     thresholds here can never drift from what actually resolves."""
@@ -410,21 +408,26 @@ def overkill_blocks():
 
 
 def reference_embed(settings=None, *, header=None):
-    """The whole game on one card: how a round works, how shots and backfire
-    resolve, and what every drop does.
+    """The power-up card: what every drop does, what it costs, how rare it is —
+    plus how a shot, an Overload and a backfire resolve, because those are what
+    the items ride on.
 
-    This exists because the answer to "what does this power-up do?" used to be
+    It exists because the answer to "what does this power-up do?" used to be
     reachable only from a kit, and a kit only exists inside a running race —
     ask between races and the bot said "No race running right now" and stopped
     (Paul 9/20: "it just says 'no race running right now', does not offer an
     explanation of what's going on"). Settings default to DEFAULTS, so it
     answers with real numbers even when there's no race to read them from.
+
+    It no longer teaches the RACE (Paul 9/20: "remove the how a race works in
+    the power up description ... we'll add a wiki to the dashboard instead") —
+    the round/storm/AFK rules stay on the lobby card, where a player meets them
+    before joining.
     """
     s = dict(engine.DEFAULTS)
     s.update(settings or {})
-    e = discord.Embed(title="🎒 Power-ups & how a race works", color=COLOR_DROP,
+    e = discord.Embed(title="🎒 Power-ups", color=COLOR_DROP,
                       description=header or PITCH.format(lives=s["lives"]))
-    e.add_field(name="How it works", value=how_it_works(s), inline=False)
     add_chunked(e, "Shots, Overload & backfire", shot_rules_blocks(s))
     if not add_chunked_if_room(e, "What the power-ups do", powerup_blocks()):
         e.add_field(name="What the power-ups do", inline=False,
@@ -432,11 +435,6 @@ def reference_embed(settings=None, *, header=None):
                                      for emoji, name, _ in engine.POWERUPS.values())[:FIELD_LIMIT]
                           + "\nEvery drop says what it does when it lands — grab one and read it.")
     # Tail sections yield if the card is full — see add_chunked_if_room.
-    if not add_chunked_if_room(e, "Super drops (sudden death)", super_blocks()):
-        e.add_field(name="Super drops (sudden death)", inline=False,
-                    value="🌟 One extra drop a round once sudden death starts — nukes, full heals, "
-                          "an arsenal, full revives, the golden apple. Open 🎒 **Power-ups** in a "
-                          "race for the list.")
     if not add_chunked_if_room(e, "Overkill", overkill_blocks()):
         e.add_field(name="Overkill", inline=False,
                     value="💀 Damage past someone's last life inside one round pays the credited "
@@ -1855,9 +1853,10 @@ class BanRace(commands.Cog):
         e.set_footer(text="Shields and extra shots work on their own. Overload, the ally heals "
                           "(💉🩸🚑⛑️) and revives need a target. Patch and Medkit are the only ones that heal "
                           "YOU, and they're instant. Everything stays with you until the race ends.")
-        add_chunked(e, "What they do", powerup_blocks())
-        add_chunked(e, "Super drops (sudden death)", super_blocks())
-        add_chunked(e, "Overkill", overkill_blocks())
+        # _if_room, not add_chunked: the kit already carries nine stat fields,
+        # and a kit that 400s reads to the player as "didn't respond in time".
+        add_chunked_if_room(e, "What they do", powerup_blocks())
+        add_chunked_if_room(e, "Overkill", overkill_blocks())
         view = _PowerupView(self, race["id"], p, rows)
         # discord.py treats view=None as "a view" and calls .is_finished() on it —
         # pass the kwarg only when there are buttons to show (crashed live 9/12).

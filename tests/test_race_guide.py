@@ -61,11 +61,12 @@ for label, settings, header in (
     check(f"{label}: within the 6000 cap", br.embed_len(e) <= br.EMBED_TOTAL_LIMIT, True)
     check(f"{label}: at most 25 fields", len(e.fields) <= 25, True)
     check(f"{label}: no field over 1024", max(len(f.value) for f in e.fields) <= br.FIELD_LIMIT, True)
-    ok(f"{label}: explains a round", "How it works" in names(e))
     ok(f"{label}: explains shots", any(n.startswith("Shots, Overload") for n in names(e)))
     ok(f"{label}: lists the power-ups", any(n.startswith("What the power-ups do") for n in names(e)))
-    ok(f"{label}: covers supers", any(n.startswith("Super drops") for n in names(e)))
     ok(f"{label}: covers overkill", any(n.startswith("Overkill") for n in names(e)))
+    # It is the POWER-UP card now, not the rulebook (Paul 9/20) — the race
+    # rules live on the lobby card, and a wiki is coming to the dashboard.
+    ok(f"{label}: no race tutorial", "How it works" not in names(e))
 
 # ── the three questions this card exists to answer ──────────────────────
 e = br.reference_embed(None)
@@ -82,24 +83,36 @@ check("backfire % from defaults", "Backfire (10%)" in text(br.reference_embed(No
 check("backfire % from the race's own setting",
       "Backfire (25%)" in text(br.reference_embed(dict(engine.DEFAULTS, backfire=0.25))), True)
 
+# ── grouped by type, every item listed exactly once ─────────────────────
+e = br.reference_embed(None)
+body = text(e)
+for kind in set(engine.POWERUPS) | set(engine.SUPER):
+    ok(f"{kind}: has a group", kind in engine.ITEM_GROUP)
+    ok(f"{kind}: has a short blurb", kind in engine.BRIEF)
+    ok(f"{kind}: on the card", engine.item_face(kind)[1] in body)
+for _k, _emoji, title, _note, items in engine.grouped_items():
+    ok(f"group {title}: has items", bool(items))
+    ok(f"group {title}: on the card", title in body)
+ok("says what common means", "**Common**" in body and "**Super**" in body)
+ok("marks the super-rares", "🌟🌟" in body)
+ok("ally heals say it once, in the header", body.count("still owe a shot") <= 2)
+
 # ── the size guard: a bloated table yields a short line, never a 400 ────
-_real = engine.POWERUPS
+_real = engine.BRIEF
 try:
-    engine.POWERUPS = {k: (v[0], v[1], v[2] + " " + "x" * 400) for k, v in _real.items()}
+    engine.BRIEF = {k: (v[0] + " " + "x" * 300, v[1] + " " + "y" * 300) for k, v in _real.items()}
     e = br.reference_embed(None, header=LONG_HEADER)
     check("bloated: still within the cap", br.embed_len(e) <= br.EMBED_TOTAL_LIMIT, True)
-    ok("bloated: still says what supers are", any(n.startswith("Super drops") for n in names(e)))
     ok("bloated: still says what overkill is", any(n.startswith("Overkill") for n in names(e)))
     ok("bloated: points at the drops for the detail", "grab one and read it" in text(e))
 finally:
-    engine.POWERUPS = _real
+    engine.BRIEF = _real
 
 # ── one source for the rules: the lobby card and the guide share it ─────
 race = {"settings": dict(engine.DEFAULTS), "status": "lobby"}
 lobby = br.lobby_embed(race, [], "Torvex")
 how = br.how_it_works(race["settings"])
 check("lobby card uses how_it_works", how in [f.value for f in lobby.fields], True)
-check("guide uses the same how_it_works", how in [f.value for f in br.reference_embed(None).fields], True)
 
 print(f"{_total - len(_fails)}/{_total} race-guide checks passed")
 for f in _fails:
