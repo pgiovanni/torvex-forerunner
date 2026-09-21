@@ -167,7 +167,7 @@ class _TargetSelect(discord.ui.View):
         if not opts:
             opts = [discord.SelectOption(label="(nobody to pick)", value="0")]
         if not label and kind in engine.HEALS:
-            _, heal_label, gives, _ = engine.HEALS[kind]
+            _, heal_label, gives, _, _ = engine.HEALS[kind]
             label = f"{heal_label} — who gets +{gives} {'life' if gives == 1 else 'lives'}?"
         label = label or {"shot": "Who are you going for?",
                           "overload": "Overload — who takes 2?"}.get(kind) \
@@ -226,7 +226,7 @@ class _PowerupView(discord.ui.View):
             self.add_item(b)
         # the heal-an-ally ladder, in tier order — every one of them aims at
         # somebody else, so they all open the target picker
-        for kind, (emoji, label, gives, _cost) in engine.HEALS.items():
+        for kind, (emoji, label, gives, _cost, _over) in engine.HEALS.items():
             if p.get(kind, 0) > 0:
                 b = discord.ui.Button(label=f"Use {label} ×{p[kind]} (heal an ally {gives})"[:80], emoji=emoji,
                                       style=discord.ButtonStyle.primary)
@@ -272,8 +272,13 @@ def _lives_bar(n, max_lives=None):
 
 FIELD_LIMIT = 1024  # Discord's hard cap on one embed field's value
 
+# Discord embeds have no horizontal rule, so a section ends with a drawn one
+# (Paul 9/20: "we need this to have lines after every section"). It goes on the
+# LAST chunk of a section, and only when it fits — a rule is never worth a 400.
+SECTION_RULE = "─────────────────────────────"
 
-def add_chunked(e, name, blocks, inline=False):
+
+def add_chunked(e, name, blocks, inline=False, rule=False):
     """Add `blocks` to embed `e` under `name`, spilling into "(cont.)" fields so
     no value ever passes Discord's 1024-char limit. A block is a group of lines
     kept together when it fits (a drop tier, say); an oversized block splits
@@ -308,7 +313,10 @@ def add_chunked(e, name, blocks, inline=False):
                 flush()
             cur = f"{cur}\n{line}" if cur else line
     flush()
-    for i, value in enumerate(parts or ["—"]):
+    parts = parts or ["—"]
+    if rule and len(parts[-1]) + 1 + len(SECTION_RULE) <= FIELD_LIMIT:
+        parts[-1] += "\n" + SECTION_RULE
+    for i, value in enumerate(parts):
         e.add_field(name=name if i == 0 else f"{name} (cont.)", value=value, inline=inline)
 
 
@@ -323,7 +331,7 @@ def embed_len(e):
     return n + sum(len(f.name or "") + len(f.value or "") for f in e.fields)
 
 
-def add_chunked_if_room(e, name, blocks, *, budget=EMBED_BUDGET):
+def add_chunked_if_room(e, name, blocks, *, budget=EMBED_BUDGET, rule=False):
     """`add_chunked`, rolled back if it would push the embed past the cap.
 
     The field cap is not the only one that 400s a message, and a 400 inside a
@@ -331,7 +339,7 @@ def add_chunked_if_room(e, name, blocks, *, budget=EMBED_BUDGET):
     revive-tier bug). The guide grows every time a power-up is added, so the
     tail sections yield instead of taking the whole card down with them."""
     start = len(e.fields)
-    add_chunked(e, name, blocks)
+    add_chunked(e, name, blocks, rule=rule)
     if embed_len(e) <= budget:
         return True
     for i in range(len(e.fields) - 1, start - 1, -1):
@@ -377,13 +385,13 @@ def add_powerup_fields(e):
 
     Every field goes through add_chunked_if_room, so a table that outgrows the
     card loses its tail to a one-line summary instead of 400ing the message."""
-    add_chunked_if_room(e, "Drops & rarity", [[DROP_INTRO, RARITY_LEGEND]])
+    add_chunked_if_room(e, "Drops & rarity", [[DROP_INTRO, RARITY_LEGEND]], rule=True)
     missed = []
     for _key, g_emoji, title, note, items in engine.grouped_items():
         lines = [f"*{note}*"] if note else []
         lines += [item_line(emoji, label, rarity, effect, cost)
                   for _kind, emoji, label, rarity, effect, cost in items]
-        if not add_chunked_if_room(e, f"{g_emoji} {title}", [lines]):
+        if not add_chunked_if_room(e, f"{g_emoji} {title}", [lines], rule=True):
             missed += [f"{emoji} **{label}**" for _kind, emoji, label, *_ in items]
     if missed:
         e.add_field(name="The rest", inline=False,
@@ -446,9 +454,9 @@ def reference_embed(settings=None, *, header=None):
     # ORDER (Paul 9/20: "this is so out of order"): the primer, then the items
     # group by group, and only then the shot mechanics the items ride on.
     add_powerup_fields(e)
-    add_chunked_if_room(e, "Shots, Overload & backfire", shot_rules_blocks(s))
+    add_chunked_if_room(e, "Shots, Overload & backfire", shot_rules_blocks(s), rule=True)
     # Tail sections yield if the card is full — see add_chunked_if_room.
-    if not add_chunked_if_room(e, "Overkill", overkill_blocks()):
+    if not add_chunked_if_room(e, "Overkill", overkill_blocks(), rule=True):
         e.add_field(name="Overkill", inline=False,
                     value="💀 Damage past someone's last life inside one round pays the credited "
                           "killer in 🩹 Patches. Full ladder in 🎒 **Power-ups**.")
@@ -1129,7 +1137,7 @@ class BanRace(commands.Cog):
             back = engine.revive_lives(kind, race["settings"]["lives"])
             return (f"{emoji} {label} set for **{t['name']}** — they come back with **{back}** "
                     f"{'life' if back == 1 else 'lives'} when the round closes {when}. It doesn't count as your shot.")
-        emoji, label, gives, costs = engine.HEALS[kind]
+        emoji, label, gives, costs, _over = engine.HEALS[kind]
         return (f"{emoji} **{label}** set for **{t['name']}** — they gain **{gives}**"
                 + (", you lose 1" if costs else ", it costs you nothing")
                 + f". Lands {when}. It is NOT your shot — you still owe one this round.")
@@ -1855,10 +1863,10 @@ class BanRace(commands.Cog):
         e = discord.Embed(title="🎒 Your kit", color=COLOR_DROP)
         e.add_field(name="Lives", value=_lives_bar(p["lives"], race["settings"]["lives"]), inline=True)
         e.add_field(name="Shots this round", value=str(p["shots"]), inline=True)
-        e.add_field(name="Shield", value=f"🛡️ ×{p['shield']}", inline=True)
+        e.add_field(name="Defense", value=f"🛡️ ×{p['shield']} · 🪞 ×{p.get('reflect', 0)}", inline=True)
         e.add_field(name="Overload", value=f"💥 ×{p['overload']}", inline=True)
         e.add_field(name="Heal an ALLY", inline=True,
-                    value=" ".join(f"{em}×{p.get(k, 0)}" for k, (em, _, _, _) in engine.HEALS.items()))
+                    value=" ".join(f"{em}×{p.get(k, 0)}" for k, (em, *_) in engine.HEALS.items()))
         e.add_field(name="Heal YOURSELF", value=f"🩹 ×{p.get('patch', 0)} · 🏥 ×{p.get('medkit', 0)}", inline=True)
         e.add_field(name="Revives", value=" ".join(f"{em}×{p.get(k, 0)}" for k, (em, _, _) in engine.REVIVES.items()),
                     inline=True)
@@ -1870,7 +1878,7 @@ class BanRace(commands.Cog):
         # the kit already carries nine stat fields of its own, and a kit that
         # 400s reads to the player as "didn't respond in time".
         add_powerup_fields(e)
-        add_chunked_if_room(e, "Overkill", overkill_blocks())
+        add_chunked_if_room(e, "Overkill", overkill_blocks(), rule=True)
         view = _PowerupView(self, race["id"], p, rows)
         # discord.py treats view=None as "a view" and calls .is_finished() on it —
         # pass the kwarg only when there are buttons to show (crashed live 9/12).
