@@ -339,42 +339,57 @@ def add_chunked_if_room(e, name, blocks, *, budget=EMBED_BUDGET):
     return False
 
 
-# What a rarity MEANS, said once at the top of the guide instead of on every
-# line. The glyphs come from engine.rarity_mark, which reads the drop tables.
+# The top of the card: how you get a drop, how you use it, and what a rarity
+# means — before any item is named (Paul 9/20: "the top is common vs rare drops
+# and how to use an item").
+DROP_INTRO = (
+    "Drops land in the race channel every round — **first click takes it**, and it stays with "
+    "you until the race ends. Use one from **🎒 Power-ups** (or `/powerup use:<item> player:@them`).\n"
+    "🩹 Patch and 🏥 Medkit fire the instant you use them. Anything aimed at someone else — heals, "
+    "revives — lands when the round closes."
+)
 RARITY_LEGEND = (
     "⚪ **Common** — drops often, and it bites back  ·  🟢 **Uncommon** — the middle rung  ·  "
     "🟡 **Rare** — no strings  ·  🌟 **Super** — sudden death only, one a round "
     "(🌟🌟 = super rare, one super in ten).\n"
-    "A super fires the moment you grab it — except revives and the field hospital, which go to "
-    "your kit. Everything else stays with you until the race ends."
+    "A super fires the moment you grab it — except revives and the field hospital, which go to your kit."
 )
 
 
-def powerup_blocks():
-    """Every item GROUPED BY WHAT IT DOES — shooting, defense, healing
-    yourself, healing an ally, revives — one short line each: what it does,
-    then what it costs you.
+def item_line(emoji, label, rarity, effect, cost):
+    """One item: rarity, face, what it does, what it costs. 🌟 Full revive's own
+    emoji IS the super glyph — don't print it twice."""
+    face = emoji if rarity == emoji else f"{rarity} {emoji}"
+    return f"{face} **{label}** — {effect}." + (f" ❌ {cost}." if cost else "")
 
-    Paul 9/20: "grouped by type … each listed just as short as possible with
-    effect and side effect". The copy lives in engine.BRIEF/ITEM_GROUPS, so
-    a rule a whole family shares is written once in the group header. Supers
-    sit in their group with a 🌟 rather than in a section of their own — a
+
+def add_powerup_fields(e):
+    """The catalogue: the drops/rarity primer, then ONE FIELD PER GROUP.
+
+    Paul 9/20: "it should just be a label shooting, then each shooting item" —
+    so the group name IS the field name, which is the only header Discord
+    renders. Everything used to hang under one "What the power-ups do" field
+    that spilled into "(cont.)", which buried the groups mid-paragraph.
+
+    Copy lives in engine.BRIEF/ITEM_GROUPS: a rule a whole family shares is
+    written once, under its group. Supers sit in their group behind a 🌟 — a
     nuke is a shooting item first and a sudden-death item second.
 
-    One block per group, so a group's header never splits from its items when
-    add_chunked spills into "(cont.)" fields."""
-    blocks = [[RARITY_LEGEND]]
+    Every field goes through add_chunked_if_room, so a table that outgrows the
+    card loses its tail to a one-line summary instead of 400ing the message."""
+    add_chunked_if_room(e, "Drops & rarity", [[DROP_INTRO, RARITY_LEGEND]])
+    missed = []
     for _key, g_emoji, title, note, items in engine.grouped_items():
-        block = [f"{g_emoji} **{title}**" + (f" · *{note}*" if note else "")]
-        for _kind, emoji, label, rarity, effect, cost in items:
-            # 🌟 Full revive's own emoji IS the super glyph — don't print it twice.
-            face = emoji if rarity == emoji else f"{rarity} {emoji}"
-            line = f"{face} **{label}** — {effect}."
-            if cost:
-                line += f" ❌ {cost}."
-            block.append(line)
-        blocks.append(block)
-    return blocks
+        lines = [f"*{note}*"] if note else []
+        lines += [item_line(emoji, label, rarity, effect, cost)
+                  for _kind, emoji, label, rarity, effect, cost in items]
+        if not add_chunked_if_room(e, f"{g_emoji} {title}", [lines]):
+            missed += [f"{emoji} **{label}**" for _kind, emoji, label, *_ in items]
+    if missed:
+        e.add_field(name="The rest", inline=False,
+                    value=(" · ".join(missed))[:FIELD_LIMIT - 60]
+                          + "\nEvery drop says what it does when it lands — grab one and read it.")
+    return not missed
 
 
 def lives_line(s, n_joined):
@@ -428,12 +443,10 @@ def reference_embed(settings=None, *, header=None):
     s.update(settings or {})
     e = discord.Embed(title="🎒 Power-ups", color=COLOR_DROP,
                       description=header or PITCH.format(lives=s["lives"]))
-    add_chunked(e, "Shots, Overload & backfire", shot_rules_blocks(s))
-    if not add_chunked_if_room(e, "What the power-ups do", powerup_blocks()):
-        e.add_field(name="What the power-ups do", inline=False,
-                    value=" · ".join(f"{emoji} **{name}**"
-                                     for emoji, name, _ in engine.POWERUPS.values())[:FIELD_LIMIT]
-                          + "\nEvery drop says what it does when it lands — grab one and read it.")
+    # ORDER (Paul 9/20: "this is so out of order"): the primer, then the items
+    # group by group, and only then the shot mechanics the items ride on.
+    add_powerup_fields(e)
+    add_chunked_if_room(e, "Shots, Overload & backfire", shot_rules_blocks(s))
     # Tail sections yield if the card is full — see add_chunked_if_room.
     if not add_chunked_if_room(e, "Overkill", overkill_blocks()):
         e.add_field(name="Overkill", inline=False,
@@ -1853,9 +1866,10 @@ class BanRace(commands.Cog):
         e.set_footer(text="Shields and extra shots work on their own. Overload, the ally heals "
                           "(💉🩸🚑⛑️) and revives need a target. Patch and Medkit are the only ones that heal "
                           "YOU, and they're instant. Everything stays with you until the race ends.")
-        # _if_room, not add_chunked: the kit already carries nine stat fields,
-        # and a kit that 400s reads to the player as "didn't respond in time".
-        add_chunked_if_room(e, "What they do", powerup_blocks())
+        # Same order and the same group fields as the /powerup card, guarded:
+        # the kit already carries nine stat fields of its own, and a kit that
+        # 400s reads to the player as "didn't respond in time".
+        add_powerup_fields(e)
         add_chunked_if_room(e, "Overkill", overkill_blocks())
         view = _PowerupView(self, race["id"], p, rows)
         # discord.py treats view=None as "a view" and calls .is_finished() on it —

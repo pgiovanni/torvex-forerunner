@@ -62,8 +62,17 @@ for label, settings, header in (
     check(f"{label}: at most 25 fields", len(e.fields) <= 25, True)
     check(f"{label}: no field over 1024", max(len(f.value) for f in e.fields) <= br.FIELD_LIMIT, True)
     ok(f"{label}: explains shots", any(n.startswith("Shots, Overload") for n in names(e)))
-    ok(f"{label}: lists the power-ups", any(n.startswith("What the power-ups do") for n in names(e)))
     ok(f"{label}: covers overkill", any(n.startswith("Overkill") for n in names(e)))
+    # ORDER, top to bottom (Paul 9/20: "this is so out of order"): what a drop
+    # is and what a rarity means, then the items group by group, and only then
+    # the shot mechanics they ride on.
+    order = names(e)
+    check(f"{label}: primer first", order[0], "Drops & rarity")
+    first_group = min(order.index(f"{g} {t}") for _k, g, t, _n, _i in engine.grouped_items())
+    ok(f"{label}: items before the shot rules",
+       first_group < order.index("Shots, Overload & backfire"))
+    ok(f"{label}: shot rules before overkill",
+       order.index("Shots, Overload & backfire") < order.index("Overkill"))
     # It is the POWER-UP card now, not the rulebook (Paul 9/20) — the race
     # rules live on the lobby card, and a wiki is coming to the dashboard.
     ok(f"{label}: no race tutorial", "How it works" not in names(e))
@@ -90,9 +99,11 @@ for kind in set(engine.POWERUPS) | set(engine.SUPER):
     ok(f"{kind}: has a group", kind in engine.ITEM_GROUP)
     ok(f"{kind}: has a short blurb", kind in engine.BRIEF)
     ok(f"{kind}: on the card", engine.item_face(kind)[1] in body)
-for _k, _emoji, title, _note, items in engine.grouped_items():
+for _k, g_emoji, title, _note, items in engine.grouped_items():
     ok(f"group {title}: has items", bool(items))
-    ok(f"group {title}: on the card", title in body)
+    # the group name IS a field name — Discord bolds it, which is the label
+    # Paul asked for ("it should just be a label shooting, then each item")
+    ok(f"group {title}: is its own field", f"{g_emoji} {title}" in names(e))
 ok("says what common means", "**Common**" in body and "**Super**" in body)
 ok("marks the super-rares", "🌟🌟" in body)
 ok("ally heals say it once, in the header", body.count("still owe a shot") <= 2)
@@ -104,6 +115,7 @@ try:
     e = br.reference_embed(None, header=LONG_HEADER)
     check("bloated: still within the cap", br.embed_len(e) <= br.EMBED_TOTAL_LIMIT, True)
     ok("bloated: still says what overkill is", any(n.startswith("Overkill") for n in names(e)))
+    ok("bloated: still opens with the primer", names(e)[0] == "Drops & rarity")
     ok("bloated: points at the drops for the detail", "grab one and read it" in text(e))
 finally:
     engine.BRIEF = _real

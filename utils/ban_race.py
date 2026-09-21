@@ -303,9 +303,9 @@ SUPER_WEIGHTS = {"nuke": 3, "fullheal": 3, "arsenal": 3, "goldapple": 1, "revive
 ITEM_GROUPS = {
     "shoot":     ("🔫", "Shooting", ""),
     "defend":    ("🛡️", "Defense", ""),
-    "heal_self": ("🩹", "Healing — YOURSELF",
+    "heal_self": ("🩹", "Healing — yourself",
                   "instant, never above max"),
-    "heal_ally": ("💉", "Healing — AN ALLY",
+    "heal_ally": ("💉", "Healing — an ally",
                   "aimed at another player, lands at round close, never above max — and never your "
                   "vote, so you still owe a shot"),
     "revive":    ("💫", "Revives",
