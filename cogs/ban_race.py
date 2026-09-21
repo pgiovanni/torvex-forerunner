@@ -312,6 +312,33 @@ def add_chunked(e, name, blocks, inline=False):
         e.add_field(name=name if i == 0 else f"{name} (cont.)", value=value, inline=inline)
 
 
+EMBED_TOTAL_LIMIT = 6000    # Discord's cap on title + description + every field
+EMBED_BUDGET = EMBED_TOTAL_LIMIT - 250   # leave room for a footer and a fallback line
+
+
+def embed_len(e):
+    """What Discord counts against the 6000-character cap."""
+    n = len(e.title or "") + len(e.description or "")
+    n += len((e.footer.text or "") if e.footer else "")
+    return n + sum(len(f.name or "") + len(f.value or "") for f in e.fields)
+
+
+def add_chunked_if_room(e, name, blocks, *, budget=EMBED_BUDGET):
+    """`add_chunked`, rolled back if it would push the embed past the cap.
+
+    The field cap is not the only one that 400s a message, and a 400 inside a
+    button handler reads to the player as "didn't respond in time" (the 9/13
+    revive-tier bug). The guide grows every time a power-up is added, so the
+    tail sections yield instead of taking the whole card down with them."""
+    start = len(e.fields)
+    add_chunked(e, name, blocks)
+    if embed_len(e) <= budget:
+        return True
+    for i in range(len(e.fields) - 1, start - 1, -1):
+        e.remove_field(i)
+    return False
+
+
 # one line per drop tier, next to its header in the guides
 TIER_NOTE = {
     "common": "they bite back — drop often",
@@ -382,6 +409,41 @@ def overkill_blocks():
     ]]
 
 
+def reference_embed(settings=None, *, header=None):
+    """The whole game on one card: how a round works, how shots and backfire
+    resolve, and what every drop does.
+
+    This exists because the answer to "what does this power-up do?" used to be
+    reachable only from a kit, and a kit only exists inside a running race —
+    ask between races and the bot said "No race running right now" and stopped
+    (Paul 9/20: "it just says 'no race running right now', does not offer an
+    explanation of what's going on"). Settings default to DEFAULTS, so it
+    answers with real numbers even when there's no race to read them from.
+    """
+    s = dict(engine.DEFAULTS)
+    s.update(settings or {})
+    e = discord.Embed(title="🎒 Power-ups & how a race works", color=COLOR_DROP,
+                      description=header or PITCH.format(lives=s["lives"]))
+    e.add_field(name="How it works", value=how_it_works(s), inline=False)
+    add_chunked(e, "Shots, Overload & backfire", shot_rules_blocks(s))
+    if not add_chunked_if_room(e, "What the power-ups do", powerup_blocks()):
+        e.add_field(name="What the power-ups do", inline=False,
+                    value=" · ".join(f"{emoji} **{name}**"
+                                     for emoji, name, _ in engine.POWERUPS.values())[:FIELD_LIMIT]
+                          + "\nEvery drop says what it does when it lands — grab one and read it.")
+    # Tail sections yield if the card is full — see add_chunked_if_room.
+    if not add_chunked_if_room(e, "Super drops (sudden death)", super_blocks()):
+        e.add_field(name="Super drops (sudden death)", inline=False,
+                    value="🌟 One extra drop a round once sudden death starts — nukes, full heals, "
+                          "an arsenal, full revives, the golden apple. Open 🎒 **Power-ups** in a "
+                          "race for the list.")
+    if not add_chunked_if_room(e, "Overkill", overkill_blocks()):
+        e.add_field(name="Overkill", inline=False,
+                    value="💀 Damage past someone's last life inside one round pays the credited "
+                          "killer in 🩹 Patches. Full ladder in 🎒 **Power-ups**.")
+    return e
+
+
 def fmt_slots(slots, tz):
     """The daily start times as Discord timestamps — '<t:...:t> · <t:...:t> …'.
     Discord renders each one on the READER's clock, so a player in London sees
@@ -395,24 +457,49 @@ def fmt_slots(slots, tz):
     return " · ".join(f"<t:{int(ts)}:t>" for ts in stamps)
 
 
+def how_it_works(s):
+    """The "How it works" bullets. Shared by the lobby card and the /powerup
+    reference so a rule can never be right in one place and stale in the other."""
+    return (f"• Rounds last **{_fmt_round(s['round_secs'])}**; shots are secret and all land at once.\n"
+            f"• One shot per round — it doesn't stack. Power-ups you grab stay with you for the whole race.\n"
+            f"• Zero lives = {'**actually banned**' if s['mode'] == 'real' else 'out'}. "
+            f"{'Everyone is unbanned the moment it ends, and you get the invite by DM first.' if s['mode'] == 'real' else ''}\n"
+            f"• Don't vote in a round and you lose a life. AFK is not a strategy.\n"
+            f"• Only racers can talk here — **Join** unlocks the channel; ghosts watch in silence.\n"
+            f"• Power-ups drop in this channel every round — the more of you still in, the more drops. First click takes it. "
+            f"Sudden death adds **super drops**.\n"
+            f"• **Sudden death** (shields off, half-length rounds) once **{s.get('sudden_death_at', engine.DEFAULTS['sudden_death_at'])}** are left"
+            f"{' — sized to the head-count when it starts' if s.get('sudden_auto') else ''}.\n"
+            f"• **Overkill**: damage past someone's last life still counts — pile on a target who's "
+            f"already down and the killer takes the Patches.\n"
+            f"• Last one standing wins. 🎁")
+
+
+def shot_rules_blocks(s):
+    """What actually happens to a shot — the questions players ask mid-race:
+    when it lands, what an Overload needs, which way backfire resolves."""
+    pct = int(round(float(s.get("backfire", engine.DEFAULTS["backfire"])) * 100))
+    return [[
+        "🔫 **One shot per round**, cast in private — **Vote** on the round card, or `/vote`. "
+        "Shots don't compile: an unused one is gone when the round closes.",
+        "💥 **An Overload rides on that shot.** Arm it from **🎒 Power-ups** (or "
+        "`/powerup use:Overload player:@them`) INSTEAD of shooting — shoot first and there's "
+        "nothing left for it to ride on. It is your shot for the round, doubled.",
+        f"🔥 **Backfire ({pct}%)** — one roll per shot, at round close. It redirects YOUR shot "
+        "onto you, so your target takes nothing; there's no version where it backfires *and* "
+        "lands. A shield eats it (not in sudden death), and a backfired Overload costs you 3: "
+        "the 1 it burns to fire, then its own 2.",
+        "⚰️ Dying doesn't cancel what you cast — a dead shooter still fires.",
+        "🩺 **Heals and revives are not your vote.** They're aimed at someone else and land at "
+        "round close; you still owe a shot, or the AFK penalty takes a life anyway.",
+    ]]
+
+
 def lobby_embed(race, rows, guild_name, schedule=None):
     s = race["settings"]
     e = discord.Embed(title="🔫 LAST TO SURVIVE", color=COLOR,
                       description=PITCH.format(lives=s["lives"]))
-    how = (f"• Rounds last **{_fmt_round(s['round_secs'])}**; shots are secret and all land at once.\n"
-           f"• One shot per round — it doesn't stack. Power-ups you grab stay with you for the whole race.\n"
-           f"• Zero lives = {'**actually banned**' if s['mode'] == 'real' else 'out'}. "
-           f"{'Everyone is unbanned the moment it ends, and you get the invite by DM first.' if s['mode'] == 'real' else ''}\n"
-           f"• Don't vote in a round and you lose a life. AFK is not a strategy.\n"
-           f"• Only racers can talk here — **Join** unlocks the channel; ghosts watch in silence.\n"
-           f"• Power-ups drop in this channel every round — the more of you still in, the more drops. First click takes it. "
-           f"Sudden death adds **super drops**.\n"
-           f"• **Sudden death** (shields off, half-length rounds) once **{s.get('sudden_death_at', engine.DEFAULTS['sudden_death_at'])}** are left"
-           f"{' — sized to the head-count when it starts' if s.get('sudden_auto') else ''}.\n"
-           f"• **Overkill**: damage past someone's last life still counts — pile on a target who's "
-           f"already down and the killer takes the Patches.\n"
-           f"• Last one standing wins. 🎁")
-    e.add_field(name="How it works", value=how, inline=False)
+    e.add_field(name="How it works", value=how_it_works(s), inline=False)
     e.add_field(name="Lives", value=lives_line(s, len(rows)), inline=False)
     # No power-up catalogue here (Paul 9/13: "way too much") — the item blurbs
     # live on the drops themselves and behind the Power-ups button.
@@ -862,6 +949,40 @@ class BanRace(commands.Cog):
 
     async def _channel_for(self, guild, race):
         return guild.get_channel(int(race["channel_id"]))
+
+    def _reference(self, guild, race=None):
+        """`reference_embed` with a first line that says where the game IS —
+        no race, a lobby waiting, or a round you're not in. A player asking
+        "what does this do?" between races gets the rules AND a way in, never
+        a bare refusal."""
+        settings = race["settings"] if race else None
+        where = ""
+        ch = self._configured_channel(guild)
+        sc = self._schedule_cfg(guild.id)
+        if sc and ch:
+            slots, tz, _ = sc
+            try:
+                nxt = int(engine.next_slot(time.time(), slots, tz))
+                where = f" Next one is **<t:{nxt}:R>** in {ch.mention}."
+            except Exception:
+                where = f" Races run in {ch.mention}."
+        elif ch:
+            where = f" Anyone can open one with `/race start` — it runs in {ch.mention}."
+        else:
+            where = (" Anyone can open one with `/race start`, but a mod has to point it at a "
+                     "channel first (`/race channel`).")
+
+        if race is None:
+            header = "**No race is running right now.**" + where + " Here's the whole game anyway:"
+        elif race["status"] == "lobby":
+            need = race["settings"].get("min_players", engine.MIN_PLAYERS)
+            header = ("**The lobby is open — the race hasn't started yet.** Hit **Join** on the card"
+                      + (f" in {ch.mention}." if ch else ".")
+                      + (where if sc else f" It starts at **{need}** players."))
+        else:
+            header = ("**A round is running.** You're not in this one — **Join** on the round card "
+                      "drops you into the next round, a life lighter for every round already played.")
+        return reference_embed(settings, header=header)
 
     def _configured_channel(self, guild):
         """The server's race channel from config, or None. Coerces the stored
@@ -1679,7 +1800,8 @@ class BanRace(commands.Cog):
     async def vote(self, interaction: discord.Interaction, player: discord.Member):
         race = engine.active_race(interaction.guild.id)
         if not race or race["status"] != "running":
-            return await interaction.response.send_message("No round to shoot in right now.", ephemeral=True)
+            return await interaction.response.send_message(
+                embed=self._reference(interaction.guild, race), ephemeral=True)
         text = await self._do_cast(interaction.guild, race["id"], interaction.user.id, player.id, "shot")
         await interaction.response.send_message(text, ephemeral=True)
 
@@ -1692,7 +1814,10 @@ class BanRace(commands.Cog):
                       player: discord.Member = None):
         race = engine.active_race(interaction.guild.id)
         if not race or race["status"] != "running":
-            return await interaction.response.send_message("No race running right now.", ephemeral=True)
+            # No kit to show — but this is the command people reach for when
+            # they want to know what a power-up does, so answer that instead.
+            return await interaction.response.send_message(
+                embed=self._reference(interaction.guild, race), ephemeral=True)
         if use and use.value in engine.SELF_USE:
             text = await self._do_use_self(race["id"], interaction.user.id, use.value)
             return await interaction.response.send_message(text, ephemeral=True)
@@ -1706,9 +1831,15 @@ class BanRace(commands.Cog):
     async def _send_inventory(self, interaction, race):
         p = engine.player(race["id"], interaction.user.id)
         if not p:
-            return await interaction.response.send_message("You're not in this race.", ephemeral=True)
+            return await interaction.response.send_message(
+                embed=self._reference(interaction.guild, race), ephemeral=True)
         if not p["alive"]:
-            return await interaction.response.send_message("You're out — power-ups are for the living.", ephemeral=True)
+            return await interaction.response.send_message(
+                embed=reference_embed(race["settings"],
+                                      header="**You're out — power-ups are for the living.** "
+                                             "Someone holding a revive can still bring you back. "
+                                             "Here's the game while you watch:"),
+                ephemeral=True)
         rows = engine.players(race["id"])
         e = discord.Embed(title="🎒 Your kit", color=COLOR_DROP)
         e.add_field(name="Lives", value=_lives_bar(p["lives"], race["settings"]["lives"]), inline=True)
@@ -1954,7 +2085,8 @@ class BanRace(commands.Cog):
 
     async def _btn_powerup(self, interaction, race, _):
         if race["status"] != "running":
-            return await interaction.response.send_message("No round open.", ephemeral=True)
+            return await interaction.response.send_message(
+                embed=self._reference(interaction.guild, race), ephemeral=True)
         await self._send_inventory(interaction, race)
 
     async def _btn_standings(self, interaction, race, _):
