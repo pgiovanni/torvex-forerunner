@@ -7,9 +7,10 @@ never changes its behaviour on its own.
 Deliberately small: this is the "MEE6 basics" layer. Anything that punishes or
 restricts lives in the security cogs, not here.
 
-NAMING: this used to be called Automation and own the /automation command. That
+NAMING: this used to be called Automation and own the /automation command. The
 name now belongs to cogs/auto_rules.py — the rule builder, which is what people
-mean by automation — so this is /welcome. The config keys stay `auto_*`, because
+mean by automation, and which is dashboard-only (no slash command) — so this is
+/welcome. The config keys stay `auto_*`, because
 renaming them would orphan every guild's stored settings for the sake of a label.
 """
 import asyncio

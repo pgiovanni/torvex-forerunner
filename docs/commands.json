@@ -824,39 +824,6 @@
    "dm_allowed": false
   },
   {
-   "path": "automation enable",
-   "description": "Turn ALL automation rules on or off.",
-   "params": [
-    {
-     "name": "on",
-     "type": "boolean",
-     "required": true,
-     "description": "…"
-    }
-   ],
-   "signature": "/automation enable <on>",
-   "root": "automation",
-   "cog": "auto_rules",
-   "permissions": [
-    "Administrator"
-   ],
-   "cooldown_seconds": null,
-   "dm_allowed": true
-  },
-  {
-   "path": "automation status",
-   "description": "Show this server's automation rules.",
-   "params": [],
-   "signature": "/automation status",
-   "root": "automation",
-   "cog": "auto_rules",
-   "permissions": [
-    "Administrator"
-   ],
-   "cooldown_seconds": null,
-   "dm_allowed": true
-  },
-  {
    "path": "give members",
    "description": "Give a role to every member who doesn't already have it.",
    "params": [
@@ -5247,22 +5214,6 @@
   },
   "antinuke admin-lockdown": {
    "cog": "antinuke",
-   "visibility_permissions": [],
-   "runtime_permissions": [
-    "administrator"
-   ],
-   "server_owner_only": false
-  },
-  "automation status": {
-   "cog": "auto_rules",
-   "visibility_permissions": [],
-   "runtime_permissions": [
-    "administrator"
-   ],
-   "server_owner_only": false
-  },
-  "automation enable": {
-   "cog": "auto_rules",
    "visibility_permissions": [],
    "runtime_permissions": [
     "administrator"

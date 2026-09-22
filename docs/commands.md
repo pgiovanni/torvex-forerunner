@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **225 commands** (98 top-level, the rest subcommands) across 41 cogs
+- **223 commands** (97 top-level, the rest subcommands) across 40 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -37,7 +37,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Help** — `/dashboard`, `/help`
 
-**Other** — `/automation`, `/deadchat`, `/userinfo`
+**Other** — `/deadchat`, `/userinfo`
 
 ---
 
@@ -3322,36 +3322,6 @@ Show all available commands, or details for one.
 ---
 
 ## Other
-
-### auto_rules
-
-<sub>`cogs/auto_rules.py`</sub>
-
-#### `/automation enable`
-
-Turn ALL automation rules on or off.
-
-```
-/automation enable <on>
-```
-
-**Access:** Requires **Administrator**
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `on` | boolean | Yes | … |
-
-#### `/automation status`
-
-Show this server's automation rules.
-
-```
-/automation status
-```
-
-**Access:** Requires **Administrator**
-
-*No parameters.*
 
 ### deadchat
 

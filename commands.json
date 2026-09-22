@@ -680,14 +680,6 @@
       ]
     },
     {
-      "name": "automation",
-      "description": "Custom automation rules (Admin only)",
-      "cog": "auto_rules",
-      "required_permissions": [
-        "administrator"
-      ]
-    },
-    {
       "name": "mentions",
       "description": "Your latest pings with jump links — including deleted ones",
       "cog": "mentions",

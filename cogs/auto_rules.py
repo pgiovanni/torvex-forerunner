@@ -39,11 +39,10 @@ import sys
 import time
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from utils.security_config import get_config, set_config  # noqa: E402
+from utils.security_config import get_config  # noqa: E402
 from utils.quiet_removals import is_quiet  # noqa: E402
 
 MAX_RULES = 25              # mirrors the dashboard's cap; re-applied here because
@@ -382,7 +381,7 @@ class AutoRules(commands.Cog):
             color=0xFAA61A, timestamp=discord.utils.utcnow())
         e.add_field(name="Rule", value=str(rule.get("name") or rule.get("id")), inline=True)
         e.add_field(name="Trigger", value=str(rule.get("trigger")), inline=True)
-        e.set_footer(text="Built at dashboard.torvex.app · /automation status")
+        e.set_footer(text="Built at dashboard.torvex.app")
         try:
             await ch.send(embed=e)
         except (discord.Forbidden, discord.HTTPException):
@@ -499,41 +498,9 @@ class AutoRules(commands.Cog):
             user_id=member.id, is_bot=member.bot, roles=[r.id for r in member.roles],
             account_days=_account_days(member), channel_id=after.channel.id))
 
-    # ── commands ────────────────────────────────────────────────────────────
-    group = app_commands.Group(
-        name="automation", description="Custom automation rules (Admin only)",
-        default_permissions=discord.Permissions(administrator=True))
-
-    @group.command(name="status", description="Show this server's automation rules.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def status(self, interaction: discord.Interaction):
-        cfg = get_config(interaction.guild.id)
-        rules = [r for r in (cfg.get("rules") or []) if isinstance(r, dict)]
-        on = bool(cfg.get("rules_enabled"))
-        e = discord.Embed(
-            title="⚙️ Automation",
-            description=("🟢 **On**" if on else "🔴 **Off** — no rule runs"),
-            color=0x5B8CFF)
-        if not rules:
-            e.add_field(name="Rules", value="None yet.", inline=False)
-        else:
-            lines = []
-            for r in rules[:MAX_RULES]:
-                acts = ", ".join(str(a.get("t")) for a in (r.get("actions") or []))
-                lines.append(f"{'🟢' if r.get('on') else '⚫'} **{r.get('name')}** — "
-                             f"on `{r.get('trigger')}` → {acts or '—'}")
-            e.add_field(name=f"Rules ({len(rules)})", value="\n".join(lines)[:1024],
-                        inline=False)
-        e.set_footer(text="Build and edit them at dashboard.torvex.app")
-        await interaction.response.send_message(embed=e, ephemeral=True)
-
-    @group.command(name="enable", description="Turn ALL automation rules on or off.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def enable(self, interaction: discord.Interaction, on: bool):
-        set_config(interaction.guild.id, rules_enabled=1 if on else 0)
-        await interaction.response.send_message(
-            f"Automation rules are now **{'on' if on else 'off'}**."
-            + ("" if on else " Every rule stays saved."), ephemeral=True)
+    # No slash commands: the rules AND the master on/off switch live on the
+    # dashboard's Automation card. /automation status|enable only duplicated it
+    # (Paul 9/22: "automations should be dashboard only").
 
 
 async def setup(bot):
