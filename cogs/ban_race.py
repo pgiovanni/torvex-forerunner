@@ -504,10 +504,10 @@ def shot_rules_blocks(s):
         "💥 **An Overload rides on that shot.** Arm it from **🎒 Power-ups** (or "
         "`/powerup use:Overload player:@them`) INSTEAD of shooting — shoot first and there's "
         "nothing left for it to ride on. It is your shot for the round, doubled.",
-        f"🔥 **Backfire ({pct}%)** — one roll per shot, at round close. It redirects YOUR shot "
-        "onto you, so your target takes nothing; there's no version where it backfires *and* "
-        "lands. A shield eats it (not in sudden death), and a backfired Overload costs you 3: "
-        "the 1 it burns to fire, then its own 2.",
+        f"🔥 **Backfire ({pct}%) is an Overload risk only** — a plain shot never turns on you. "
+        "The roll happens at round close and redirects the Overload onto YOU, so your target takes "
+        "nothing; there's no version where it backfires *and* lands. That costs you 3: the 1 it "
+        "burns to fire, then its own 2. A shield eats it (not in sudden death).",
         "⚰️ Dying doesn't cancel what you cast — a dead shooter still fires.",
         "🩺 **Heals and revives are not your vote.** They're aimed at someone else and land at "
         "round close; you still owe a shot, or the AFK penalty takes a life anyway.",
@@ -553,6 +553,11 @@ def round_embed(race, rows, round_no, ends_at, sudden, extra_lines):
                                   f"Hit **Vote** (or `/vote`) to fire. Shots land when the round closes.")
     if sudden:
         e.add_field(name="☠️ SUDDEN DEATH", value="Shields are off. Rounds are half as long.", inline=False)
+    if n <= engine.DUEL_ALIVE:
+        # heads-up the drop table changes under them — say so, it's the last thing
+        # that decides the race (engine.DUEL_MULT)
+        e.add_field(name="🎯 HEADS-UP", value="Last two standing — drops are **attack and self-heal** now. "
+                                          "No shields, no healing your opponent.", inline=False)
     for line in extra_lines:
         e.add_field(name="​", value=line, inline=False)
     return e
@@ -1113,10 +1118,9 @@ class BanRace(commands.Cog):
         engine.spend(p, kind)
         engine.update_player(race_id, shooter_id, shots=p["shots"],
                              **{k: p.get(k, 0) for k in engine.ITEM_COLS})
-        # purge rounds hand everyone three; anything past the allowance was paid
-        # for by a drop, a bounty or Arsenal — the story labels those "(extra)"
-        allowance = 3 if rn == race.get("purge_round") else 1
-        info = engine.cast(race_id, rn, shooter_id, target_id, kind, allowance=allowance)
+        # one shot a round is free; anything past it was paid for by a drop, a
+        # bounty or Arsenal — the story labels those "(extra)"
+        info = engine.cast(race_id, rn, shooter_id, target_id, kind, allowance=1)
         when = f"<t:{int(race['round_ends_at'])}:R>"
         seq = info.get("seq") or 1
         tag = f"**Shot {seq}{' (extra)' if info.get('extra') else ''}** "
@@ -1169,7 +1173,7 @@ class BanRace(commands.Cog):
         if t is None or not t["alive"]:
             return "That player isn't in the race (or is already gone)."
         if t["user_id"] == p["user_id"]:
-            return "Shooting yourself is what backfire is for."
+            return "Pick someone else — you can't shoot yourself."
         mv = engine.retarget(race_id, race["round_no"], shooter_id, target_id, seq=seq)
         if not mv:
             return f"You haven't fired a shot {seq} this round."
@@ -1234,8 +1238,8 @@ class BanRace(commands.Cog):
                 else:
                     round_no = race["round_no"] + 1
                     sudden = engine.is_sudden_death(rows, s["sudden_death_at"])
-                    extra = engine.open_round(rows, round_no, race["purge_round"], s["shot_cap"])
-                    for line in extra:      # e.g. PURGE ROUND — on the card AND in the story (9/13)
+                    extra = engine.open_round(rows)
+                    for line in extra:      # round-open announcements — card AND story (9/13)
                         engine.log(race_id, round_no, line, kind="open")
                     engine.save_players(race_id, rows)
                     secs = max(30, s["round_secs"] // 2 if sudden else s["round_secs"])
@@ -2029,7 +2033,6 @@ class BanRace(commands.Cog):
         the status check makes a double trigger harmless."""
         if engine.get_race(race["id"])["status"] != "lobby":
             return
-        purge = engine.pick_purge_round(self._rng, len(rows))
         s = race["settings"]
         if s.get("lives_auto"):
             s["lives"] = engine.recommended_lives(len(rows))
@@ -2040,7 +2043,7 @@ class BanRace(commands.Cog):
             s["sudden_death_at"] = engine.recommended_sudden_death(len(rows))
         if s.get("lives_auto") or s.get("sudden_auto"):
             engine.update_race(race["id"], settings=s)
-        engine.update_race(race["id"], status="running", started_at=time.time(), purge_round=purge)
+        engine.update_race(race["id"], status="running", started_at=time.time())
         race = engine.get_race(race["id"])
         try:
             if lobby_msg:

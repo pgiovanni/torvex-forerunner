@@ -15,7 +15,7 @@ ten-second click race.
 Round model (all resolution is SIMULTANEOUS at round close):
   * every living player gets ONE shot per round — it does not stack (Paul 9/13:
     "one shot per round, they don't compile"); extras come only from power-ups
-    and are good for that round; a PURGE round hands out three;
+    and are good for that round;
   * shots are cast privately and resolve together in a random order — so a
     player who dies this round still fires (dead man's shot) and two people
     focusing one target is how you kill someone in a single round;
@@ -23,14 +23,15 @@ Round model (all resolution is SIMULTANEOUS at round close):
     marks you out (mode "ghost");
   * shields eat one whole shot and are hidden until they pop; none work in
     sudden death (alive <= `sudden_death_at`, rounds also run at half length);
-  * `backfire` fraction of shots hit the shooter instead;
+  * `backfire` fraction of OVERLOAD shots hit the shooter instead — a plain
+    shot never turns on you (Paul 9/21: "the backfire thing should go away
+    except for overload");
   * AFK costs a life: a survivor who cast nothing in a round loses one at
     round close (shields don't apply, no kill credit) — you play or you bleed;
   * the STORM takes a life from the survivor who sent the fewest chat messages each round from
     `storm_from_round` on, whenever 3+ are alive — hiding is not a strategy;
   * the top killer (2+ kills, unique max) carries a BOUNTY: finishing them is
     worth two extra shots;
-  * one PURGE round per race (picked at start) gives everyone three shots;
   * drops are GUARANTEED every round and SCALE WITH THE PLAYERS STILL IN:
     alive × `drops_per_player` (min 1, capped so drops never overlap a
     `drop_window`), spread evenly over the middle of the timer — twenty
@@ -70,7 +71,7 @@ DEFAULTS = dict(
     lives=5,
     round_secs=90,           # 1.5 min (Paul 9/13: "people are complaining it's too long")
     mode="ghost",            # ghost = marked out only; real = actual bans (opt-in)
-    backfire=0.10,
+    backfire=0.10,          # OVERLOAD shots only (9/21) — a plain shot never backfires
     sudden_death_at=5,       # overwritten at start from the head-count unless the host set it (9/12)
     min_account_days=7,
     min_players=3,           # lobby needs this many before Start works
@@ -92,8 +93,8 @@ POWERUPS = {
                   "❌ One at a time (a second becomes a Patch); OFF in sudden death; "
                   "doesn't stop the AFK penalty or the storm."),
     "reflect":   ("🪞", "Reflect",
-                  "✅ The next shot fired at you bounces back — you take nothing, THEY take it, and it "
-                  "reads as a backfire so nobody can tell you had one. "
+                  "✅ The next shot fired at you bounces back — you take nothing, the shooter takes it, "
+                  "and the feed says you reflected it. "
                   "❌ One at a time (a second becomes a Patch); OFF in sudden death; a nuke is a blast, "
                   "not an aimed shot, so it goes straight through."),
     "shot":      ("🔫", "Extra shot",
@@ -101,7 +102,8 @@ POWERUPS = {
                   "❌ Still 1 damage each, and it's gone when the round closes — use it or lose it."),
     "overload":  ("💥", "Overload",
                   "✅ Your shot deals 2 instead of 1 — a full-health kill in two rounds, or a finisher now. "
-                  "❌ Burns 1 of YOUR lives the moment it fires (it can kill you) and rides on a banked shot."),
+                  "❌ Burns 1 of YOUR lives the moment it fires (it can kill you), rides on a banked shot, and "
+                  "it is the ONLY shot that can backfire — one in ten comes back at you for all 3."),
     "transfuse": ("💉", "Transfuse",
                   "✅ Heals ANOTHER player 1 — keep an ally in. "
                   "❌ You lose 1 of yours; refused on your last life; lands at round close, and it does NOT "
@@ -217,9 +219,21 @@ POWERUP_TIER = {
     "bloodbag": "uncommon", "paramedic": "rare",
 }
 # Within a tier a kind can be rarer still. Extra shots also arrive from
-# bounties, purge rounds and Arsenal, so the drop itself is halved (Paul 9/12:
+# bounties, kill rewards and Arsenal, so the drop itself is halved (Paul 9/12:
 # "extra shot appearing way too much").
-KIND_WEIGHT = {"shot": 0.5, "reflect": 0.5}   # a mirror beats a shield outright — half as often
+# A mirror beats a shield outright, so it stays rarer than one — but 0.5 was
+# rare enough that Paul never saw one drop (9/21: "literally no one has used a
+# reflect yet. they haven't even appeared"). 0.75 is ~5% of drops, still under
+# 🛡️ Shield's 7%.
+KIND_WEIGHT = {"shot": 0.5, "reflect": 0.75}
+# Paul 9/21: "ally items should be less common than everything else." The rungs
+# keep their ladder against each other (the cheap one is the common one) but the
+# whole family is scaled UNDER the rarest thing anyone else can grab, so an ally
+# heal reads as a treat rather than filler. 0.15 puts the top rung (💉 Transfuse,
+# 3 × 0.15 = 0.45) below 🔫 Extra shot and 🪞 Reflect at 0.5 — the invariant the
+# tests hold: max(ally) < min(everything else), in the super table too.
+ALLY_SCARCITY = 0.15
+KIND_WEIGHT.update({kind: ALLY_SCARCITY for kind in HEALS})
 DROP_WEIGHTS = {kind: TIERS[tier][2] * KIND_WEIGHT.get(kind, 1) for kind, tier in POWERUP_TIER.items()}
 
 
@@ -305,6 +319,63 @@ SUPER = {
 # the sudden death finale"; supers only ever fall in sudden death).
 SUPER_WEIGHTS = {"nuke": 3, "fullheal": 3, "arsenal": 3, "goldapple": 1, "revive_full": 3,
                  "revive_extra": 1, "fieldhosp": 3, "ambrosia": 1}
+# ⛑️ and 🍯 are ally items too, so the same scarcity applies to them (9/21).
+SUPER_WEIGHTS.update({k: v * ALLY_SCARCITY for k, v in SUPER_WEIGHTS.items() if k in HEALS})
+
+# ── heads-up: the last two standing (Paul 9/21: "when there's two people left
+# make it more likely to get self heal and attack items") ────────────────
+# With two alive the standard table has gone mostly dead. Two alive is ALWAYS
+# sudden death (the threshold floors at 2), so 🛡️ Shield and 🪞 Reflect do
+# nothing, and every heal-an-ally rung would hand lives to the ONE player
+# you're trying to eliminate. That left a duel where most drops were noise.
+# Heads-up the table tilts to the two things that can still decide it: hit
+# harder, or stay up.
+#
+# Multipliers on the normal weights, not a second table, so re-tiering a
+# power-up still carries its duel weight with it. 0 = it cannot drop heads-up.
+# Resulting regular table: 💥 Overload 6 · 🏥 Medkit 4.5 · 🩹 Patch 4 ·
+# 🔫 Extra shot 3 · revives 1.25 — attack 48 %, self-heal 45 %.
+DUEL_ALIVE = 2
+DUEL_MULT = {
+    "overload": 2, "shot": 6,                          # attack (shot is halved at source)
+    "patch": 4, "medkit": 1.5,                         # stay up
+    "shield": 0, "reflect": 0,                         # off in sudden death — dead drops
+    "transfuse": 0, "bloodbag": 0, "paramedic": 0,     # would heal your only opponent
+    "revive_small": 0.25, "revive_medium": 0.5,        # still legal, just not the story here
+}
+# Same idea for the sudden-death super: 🧨 Nuke / 🔫 Arsenal / 💖 Full heal keep
+# their weight, the ally heals are out, and the revives thin out — the golden
+# apple stays about one super in ten, which is the whole point of it.
+DUEL_SUPER_MULT = {"fieldhosp": 0, "ambrosia": 0, "revive_full": 1 / 3, "revive_extra": 0.5}
+
+# ── small field: ally heals wait for a crowd (Paul 9/21: "ally items should come
+# alive when there's more than 5 players … most people don't even use ally items
+# yet") ───────────────────────────────────────────────────────────────────────
+# Healing someone else is a five-way-alliance move: it only reads as generous
+# while there is a crowd to be generous inside. In a thin field it is either
+# pointless or a straight gift to a rival, which is why they were being grabbed
+# and never spent. So the whole family — 💉🩸🚑 and the ⛑️🍯 supers — sits out
+# any round that opens with ALLY_ALIVE or fewer survivors, and its weight goes
+# back to the items people actually fire. Raise the number and they get rarer.
+#
+# Bands stack: <= ALLY_ALIVE drops the ally heals, <= DUEL_ALIVE then applies
+# the heads-up tilt on top.
+ALLY_ALIVE = 5
+SMALL_FIELD_MULT = {kind: 0 for kind in HEALS}
+
+
+def drop_weights(alive, supers=False):
+    """The drop table a round rolls against, given the survivors it opens with.
+    Thin fields (`alive` <= ALLY_ALIVE) drop the heal-an-ally family; heads-up
+    (`alive` <= DUEL_ALIVE) also tilts to attack and self-heal and drops the
+    kinds that do nothing there. Above that it's the standard table."""
+    base = SUPER_WEIGHTS if supers else DROP_WEIGHTS
+    if alive > ALLY_ALIVE:
+        return dict(base)
+    mult = dict(SMALL_FIELD_MULT)
+    if alive <= DUEL_ALIVE:
+        mult.update(DUEL_SUPER_MULT if supers else DUEL_MULT)
+    return {k: v * mult.get(k, 1) for k, v in base.items() if v * mult.get(k, 1) > 0}
 
 # ── the guide's shape: BY TYPE, one short line each ───────────────────────────
 # Paul 9/20: "the powerups should be grouped by type … healing items, shooting
@@ -322,8 +393,9 @@ ITEM_GROUPS = {
     "heal_self": ("🩹", "Healing — yourself",
                   "instant, and you are capped at max unless you get the 🍎 Golden apple"),
     "heal_ally": ("💉", "Healing — an ally",
-                  "aimed at another player, lands at round close, and never your vote — you still owe "
-                  "a shot. Only 🍯 Ambrosia can take them above max"),
+                  f"aimed at another player, lands at round close, and never your vote — you still owe "
+                  f"a shot. Only 🍯 Ambrosia can take them above max. **They only drop while more "
+                  f"than {ALLY_ALIVE} are alive**"),
     "revive":    ("💫", "Revives",
                   "aimed at someone already out, land at round close, nobody comes back twice"),
 }
@@ -339,13 +411,13 @@ ITEM_GROUP = {
 # kind -> (what it does, what it costs you). An empty cost = no strings.
 BRIEF = {
     "overload":   ("your shot deals 2 instead of 1",
-                   "burns 1 of YOUR lives; needs an unfired shot — arm it instead of shooting"),
+                   "burns 1 of YOUR lives; needs an unfired shot — arm it instead of shooting; the only "
+                   "shot that can backfire"),
     "shot":       ("one more shot this round", "1 damage each, and it's gone at round close"),
     "nuke":       ("1 damage to every other survivor at round close",
                    "it IS your shot for the round, and it paints a target on you"),
     "arsenal":    ("+3 shots, right now", "one target per shot; unfired shots die with you"),
-    "reflect":    ("the next shot at you bounces back at whoever fired it — and it reads as a "
-                   "backfire, so nobody can tell you had one",
+    "reflect":    ("the next shot at you bounces back and hits whoever fired it",
                    "one at a time (a second becomes a Patch); OFF in sudden death; a nuke goes through it"),
     "shield":     ("eats the next shot at you, whole",
                    "one at a time (a second becomes a Patch); OFF in sudden death; no help against "
@@ -419,7 +491,6 @@ def init(db=None):
                 settings      TEXT NOT NULL,          -- json
                 round_no      INTEGER NOT NULL DEFAULT 0,
                 round_ends_at REAL,
-                purge_round   INTEGER,
                 lobby_msg_id  TEXT,
                 round_msg_id  TEXT,
                 invite_url    TEXT,
@@ -705,9 +776,9 @@ BANKED = ("shot", "overload")   # the kinds that spend a banked shot — these g
 
 def cast(race_id, round_no, shooter_id, target_id, kind="shot", now=None, db=None, allowance=1):
     """Record a cast. Banked shots (shot/overload) are numbered per shooter per
-    round — shot 1, shot 2 … — and flagged `extra` past `allowance` (1 normally,
-    3 in a purge round), so the story can say WHICH shot did what and which
-    ones a drop or reward paid for. Returns {id, seq, extra}."""
+    round — shot 1, shot 2 … — and flagged `extra` past `allowance` (always 1
+    since the purge round was removed on 9/21), so the story can say WHICH shot
+    did what and which ones a drop or reward paid for. Returns {id, seq, extra}."""
     with _conn(db) as c:
         seq, extra = None, 0
         if kind in BANKED:
@@ -904,8 +975,10 @@ CAST_VERB = {"shot": "🎯 fired at", "overload": "💥 overloaded at", "transfu
 # every other heal reads the same way: "🚑 Paramedic → @them"
 CAST_VERB.update({k: f"{HEALS[k][0]} {HEALS[k][1]} →" for k in HEALS if k not in CAST_VERB})
 RESULT_TAG = {"hit": " → hit", "kill": " → **KILL**", "shielded": " → eaten by a shield",
-              "backfire": " → backfired", "reflect": " → backfired",   # 🪞 never shows "wasted": " → wasted (already gone)", "self": " → hit themselves",
-              "transfused": " → done", "healed": " → healed", "late": " → too late", "nuke": " → went off"}
+              "backfire": " → backfired", "reflect": " → reflected back at you",
+              "wasted": " → wasted (already gone)", "self": " → hit themselves",
+              "transfused": " → done", "healed": " → healed", "late": " → too late", "nuke": " → went off",
+              "overkill": " → piled on (overkill)", "revived": " → brought them back"}
 
 
 def timeline(user_id, shot_rows, log_rows):
@@ -1015,23 +1088,16 @@ def late_join_lives(max_lives, rounds_played):
     return max(1, int(max_lives) - max(0, int(rounds_played)))
 
 
-def pick_purge_round(rng, n_players):
-    """A purge round somewhere in the early-middle of the race, never round 1."""
-    hi = max(2, min(4, n_players // 4 + 2))
-    return rng.randint(2, hi)
-
-
-def open_round(rows, round_no, purge_round, shot_cap):
-    """Hand every survivor this round's shot. ONE per round, never carried
-    (Paul 9/13: a purge's three used to leak into the next three rounds);
-    a purge round hands out three. Returns the lines to announce."""
-    lines = []
-    purge = round_no == purge_round
+def open_round(rows):
+    """Hand every survivor this round's shot: ONE, never carried (Paul 9/13:
+    "one shot per round, they don't compile"). Every extra shot in the race is
+    something you earned that round — a drop, a bounty, an Arsenal. The PURGE
+    round (one round per race where everyone got three) was removed on 9/21 at
+    Paul's word: "we should definitely remove the purge round." Returns the
+    lines to announce, so the caller's shape doesn't depend on the mechanic."""
     for p in alive(rows):
-        p["shots"] = 3 if purge else 1
-    if purge:
-        lines.append("🩸 **PURGE ROUND** — everyone has three shots. Nobody is safe.")
-    return lines
+        p["shots"] = 1
+    return []
 
 
 def roll_drop(rng, weights=None):
@@ -1055,15 +1121,17 @@ def drop_schedule(rng, round_secs, alive, per_player, sudden, drop_window=10):
     alive (see drop_count). They're spread over the middle of the timer in
     equal slots with jitter inside each — steady traffic instead of a random
     clump — so none lands on the open or the close. Sudden death adds one
-    SUPER drop."""
+    SUPER drop. Down to the last two the table itself changes — see
+    drop_weights / DUEL_MULT."""
     n = drop_count(alive, per_player, round_secs, drop_window)
     lo, hi = 0.10 * round_secs, 0.85 * round_secs
     slot = (hi - lo) / n
     out = []
+    regular, supers = drop_weights(alive), drop_weights(alive, supers=True)
     for i in range(n):
-        out.append((lo + slot * (i + rng.random()), roll_drop(rng), False))
+        out.append((lo + slot * (i + rng.random()), roll_drop(rng, regular), False))
     if sudden:
-        out.append((rng.uniform(0.20, 0.70) * round_secs, roll_drop(rng, SUPER_WEIGHTS), True))
+        out.append((rng.uniform(0.20, 0.70) * round_secs, roll_drop(rng, supers), True))
     out.sort(key=lambda t: t[0])
     return out
 
@@ -1185,7 +1253,7 @@ def cast_error(p, target, kind="shot", round_no=None):
         return "That player isn't in the race (or is already gone)."
     if target["user_id"] == p["user_id"]:
         if kind not in HEALS:
-            return "Shooting yourself is what backfire is for."
+            return "Pick someone else — you can't shoot yourself."
         # the whole point of the ladder: these heal OTHER people. 🩹 Patch and
         # 🏥 Medkit are the ones that heal you.
         return (f"{HEALS[kind][1]} heals someone ELSE — use a 🩹 Patch or a 🏥 Medkit on yourself.")
@@ -1238,8 +1306,9 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
                 overkill)
       overkill — {victim_id: excess damage} landed past their last life
       revived — user_ids brought back this round (the cog unbans / re-roles them)
-    `sudden` disables shields. `msgs` is {user_id: messages this round} for the
-    storm. `afk` charges a life to every survivor who cast no shot/overload.
+    `sudden` disables shields. `backfire` is the chance an OVERLOAD turns on
+    its shooter — plain shots never do (9/21). `msgs` is {user_id: messages
+    this round} for the storm. `afk` charges a life to every survivor who cast no shot/overload.
     Shooters who die mid-batch still fire (dead man's shot)."""
     P = {p["user_id"]: p for p in rows}
     lines, dead, killers, results = [], [], {}, {}
@@ -1343,8 +1412,8 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
         Returns the outcome word for the shot record.
 
         `credit` is who BANKS the kill when that differs from who the line
-        names — a reflected shot reads as the shooter's own backfire while the
-        mirror's holder collects."""
+        names — a reflected shot reads as the shooter's own while the mirror's
+        holder collects."""
         vid = victim["user_id"]
         if not victim["alive"]:
             return "wasted"
@@ -1421,17 +1490,20 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
         victim = target
         name = shot_name(s)
         backfired, credit = False, None
-        if rng.random() < backfire:
+        # Only an OVERLOAD can turn on you (Paul 9/21). A plain shot lands or
+        # it doesn't — the risk now belongs to the item that buys the damage.
+        if kind == "overload" and rng.random() < backfire:
             victim = shooter
             backfired = True
             lines.append(f"🔥 **Backfire!** {name} at {m(tid)} hit themselves.")
         elif target.get("reflect") and not sudden and target["alive"]:
-            # 🪞 A mirror is SILENT: same line as a real backfire, same result
-            # tag, and the holder is never named — the shooter can't tell bad
-            # luck from a mirror. The kill still pays the holder.
+            # 🪞 The mirror used to hide behind the backfire line — that cover is
+            # gone now that only an Overload can backfire, so it says what it is
+            # (Paul 9/21: "it's okay to say 'reflected'"). The kill still pays
+            # the holder, the same as when it was silent.
             target["reflect"] = 0
             victim, credit = shooter, target
-            lines.append(f"🔥 **Backfire!** {name} at {m(tid)} hit themselves.")
+            lines.append(f"🪞 **Reflected!** {m(tid)} mirrored {name} — it hit {m(sid)} instead.")
         if not victim["alive"]:
             if victim is shooter:
                 record(s, "backfire")

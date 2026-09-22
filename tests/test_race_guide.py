@@ -82,7 +82,11 @@ e = br.reference_embed(None)
 body = text(e)
 ok("says an Overload rides on a shot", "rides on" in body and "Overload" in body)
 ok("says where to arm an Overload", "Power-ups" in body)
-ok("says a backfire redirects YOUR shot", "redirects YOUR shot" in body)
+# 9/21: backfire belongs to the Overload only — the card has to say so, or
+# players keep asking why their plain shot "might" turn on them
+ok("says backfire is an Overload risk only", "Overload risk only" in body)
+ok("says a plain shot never backfires", "plain shot never turns on you" in body)
+ok("says a backfire redirects the Overload onto you", "redirects the Overload onto YOU" in body)
 ok("says the target takes nothing", "target takes nothing" in body)
 ok("says a dead shooter still fires", "still fires" in body)
 ok("says heals are not your vote", "not your vote" in body)

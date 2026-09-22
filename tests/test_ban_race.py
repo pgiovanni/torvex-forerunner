@@ -140,14 +140,22 @@ class Shields(unittest.TestCase):
 
 class PowerUps(unittest.TestCase):
     def test_backfire_hits_the_shooter(self):
-        a, b = P(1), P(2)
-        resolve([a, b], [S(1, 2)], rng=AlwaysBackfire())
-        self.assertEqual(a["lives"], 2)
+        # Paul 9/21: "the backfire thing should go away except for overload" —
+        # so the roll only ever happens on an Overload, which costs its shooter
+        # 3 when it comes back: 1 to fire, then its own 2.
+        a, b = P(1, overload=1), P(2)
+        resolve([a, b], [S(1, 2, "overload")], rng=AlwaysBackfire())
+        self.assertEqual(a["lives"], 0)
         self.assertEqual(b["lives"], 3)
 
+    def test_a_plain_shot_never_backfires(self):
+        a, b = P(1), P(2)
+        resolve([a, b], [S(1, 2)], rng=AlwaysBackfire())
+        self.assertEqual((a["lives"], b["lives"]), (3, 2))     # it just lands
+
     def test_backfire_self_kill_gives_no_credit(self):
-        a, b = P(1, lives=1), P(2)
-        r = resolve([a, b], [S(1, 2)], rng=AlwaysBackfire())
+        a, b = P(1, lives=1, overload=1), P(2)
+        r = resolve([a, b], [S(1, 2, "overload")], rng=AlwaysBackfire())
         self.assertFalse(a["alive"])
         self.assertEqual(a["kills"], 0)
         self.assertNotIn("1", r["killers"])
@@ -240,39 +248,39 @@ class Heals(unittest.TestCase):
 
 class Reflect(unittest.TestCase):
     """🪞 Reflect (Paul 9/20: "there needs to be more defensive items, a
-    reflect item would help" + "not telling people if it has been used would
-    be good too"). A shot fired at the holder lands on the shooter instead,
-    and the feed says exactly what a real backfire says."""
+    reflect item would help"). A shot fired at the holder lands on the shooter
+    instead. It used to pose as a backfire so nobody could tell the holder had
+    one — 9/21 that cover went (backfire is Overload-only now) and Paul said
+    "it's okay to say 'reflected'", so the feed names the mirror."""
 
     def test_a_shot_bounces_back_at_the_shooter(self):
         a, b = P(1, lives=3), P(2, lives=3, reflect=1)
-        out = resolve([a, b], [S(1, 2)], afk=False, backfire=0.0)
+        out = resolve([a, b], [S(1, 2)], afk=False)
         self.assertEqual(a["lives"], 2)                        # the shooter ate it
         self.assertEqual(b["lives"], 3)                        # the holder took nothing
         self.assertEqual(b["reflect"], 0)                      # and spent the mirror
 
-    def test_the_line_is_word_for_word_a_backfire(self):
+    def test_the_line_says_it_was_reflected_and_who_it_hit(self):
         a, b = P(1, lives=3), P(2, lives=3, reflect=1)
-        mirrored = resolve([a, b], [S(1, 2)], afk=False, backfire=0.0)["lines"]
-        c, d = P(1, lives=3), P(2, lives=3)
-        real = resolve([c, d], [S(1, 2)], afk=False, backfire=1.0)["lines"]
-        self.assertEqual(mirrored, real)                       # indistinguishable
-        for line in mirrored:                                  # the holder is never named
-            self.assertNotIn("Reflect", line)
-            self.assertNotIn("🪞", line)
+        line = next(ln for ln in resolve([a, b], [S(1, 2)], afk=False)["lines"] if "🪞" in ln)
+        self.assertIn("Reflected", line)
+        self.assertIn(b["user_id"], line)                      # the mirror's holder
+        self.assertIn(a["user_id"], line)                      # and who ate it
+        self.assertNotIn("Backfire", line)                     # it stopped posing as one
+        self.assertEqual(E.RESULT_TAG["reflect"], " → reflected back at you")
 
-    def test_a_reflected_kill_pays_the_holder_but_names_nobody(self):
+    def test_a_reflected_kill_pays_the_holder(self):
         a, b = P(1, lives=1), P(2, lives=3, reflect=1)
-        out = resolve([a, b], [S(1, 2)], afk=False, backfire=0.0)
+        out = resolve([a, b], [S(1, 2)], afk=False)
         self.assertFalse(a["alive"])
         self.assertEqual(b["kills"], 1)                        # the holder banks it
-        self.assertNotIn(a["user_id"], out["killers"])         # ... with no attribution
+        self.assertNotIn(a["user_id"], out["killers"])         # death still reads self-inflicted
         self.assertEqual(b["shield"], 1)                       # and takes the kill pay
         self.assertIn("their own shot", " ".join(out["lines"]))
 
     def test_it_is_off_in_sudden_death_like_a_shield(self):
         a, b = P(1, lives=3), P(2, lives=3, reflect=1)
-        resolve([a, b], [S(1, 2)], afk=False, backfire=0.0, sudden=True)
+        resolve([a, b], [S(1, 2)], afk=False, sudden=True)
         self.assertEqual((a["lives"], b["lives"]), (3, 2))     # straight through
         self.assertEqual(b["reflect"], 1)                      # and not spent
 
@@ -464,7 +472,13 @@ class Drops(unittest.TestCase):
         # the two big revives are supers; the extra one is golden-apple rare
         self.assertEqual(E.SUPER_WEIGHTS["revive_full"], 3)
         self.assertEqual(E.SUPER_WEIGHTS["revive_extra"], 1)
-        self.assertGreater(min(E.DROP_WEIGHTS[k] for k in common), max(E.DROP_WEIGHTS[k] for k in rare))
+        # ... with the heal-an-ally family held out: it is scaled under everything
+        # else (9/21), so its tier only sorts it against the other rungs
+        plain = lambda ks: [k for k in ks if k not in E.HEALS]
+        self.assertGreater(min(E.DROP_WEIGHTS[k] for k in plain(common)),
+                           max(E.DROP_WEIGHTS[k] for k in plain(rare)))
+        self.assertGreater(E.DROP_WEIGHTS["transfuse"], E.DROP_WEIGHTS["bloodbag"])
+        self.assertGreater(E.DROP_WEIGHTS["bloodbag"], E.DROP_WEIGHTS["paramedic"])
         self.assertGreater(E.DROP_WEIGHTS["overload"], E.DROP_WEIGHTS["shot"])
         self.assertEqual(E.tier_of("overload"), ("⚪", "Common"))
         self.assertEqual(E.tier_of("shot")[1], "Rare")
@@ -474,6 +488,80 @@ class Drops(unittest.TestCase):
         n = collections.Counter(E.roll_drop(rng) for _ in range(6000))
         self.assertGreater(sum(n[k] for k in common), 0.60 * 6000)
         self.assertGreater(sum(n[k] for k in common), 2 * sum(n[k] for k in rare))
+
+    def test_heads_up_drops_favour_attack_and_self_heal(self):
+        # Paul 9/21: "when there's two people left make it more likely to get
+        # self heal and attack items." A full field's table is untouched.
+        self.assertEqual(E.drop_weights(E.ALLY_ALIVE + 1), E.DROP_WEIGHTS)
+        self.assertEqual(E.drop_weights(E.ALLY_ALIVE + 1, supers=True), E.SUPER_WEIGHTS)
+        duel = E.drop_weights(2)
+        self.assertLessEqual(set(duel), set(E.POWERUPS))
+        attack = sum(duel[k] for k in ("overload", "shot"))
+        self_heal = sum(duel[k] for k in ("patch", "medkit"))
+        total = sum(duel.values())
+        self.assertGreater(attack + self_heal, 0.85 * total)
+        for k in ("overload", "shot", "patch", "medkit"):      # every one of them gains
+            self.assertGreater(duel[k] / total, E.DROP_WEIGHTS[k] / sum(E.DROP_WEIGHTS.values()), k)
+        # the dead drops are gone: shields/mirrors are off in sudden death (two
+        # alive is always sudden death), ally heals would heal your only enemy
+        for k in ("shield", "reflect", "transfuse", "bloodbag", "paramedic"):
+            self.assertNotIn(k, duel, k)
+        # supers: the ally heals go too, the golden apple stays ~one in ten
+        sup = E.drop_weights(2, supers=True)
+        self.assertLessEqual(set(sup), set(E.SUPER))
+        for k in ("fieldhosp", "ambrosia"):
+            self.assertNotIn(k, sup, k)
+        self.assertAlmostEqual(sup["goldapple"] / sum(sup.values()), 0.10, delta=0.03)
+        # and a heads-up round actually rolls against it
+        import collections
+        rng = random.Random(11)
+        n = collections.Counter(E.roll_drop(rng, E.drop_weights(2)) for _ in range(3000))
+        self.assertEqual(n["transfuse"], 0)
+        self.assertGreater(n["overload"] + n["shot"] + n["patch"] + n["medkit"], 0.85 * 3000)
+        kinds = [k for _, k, _ in E.drop_schedule(random.Random(5), 45, 2, 0.5, sudden=True)]
+        self.assertTrue(all(k not in ("shield", "transfuse", "ambrosia") for k in kinds), kinds)
+
+    def test_ally_heals_are_rarer_than_everything_else(self):
+        # Paul 9/21: "ally items should be less common than everything else."
+        # The invariant, in both tables: the commonest ally rung is still rarer
+        # than the rarest thing anyone else can grab.
+        for table in (E.DROP_WEIGHTS, E.SUPER_WEIGHTS):
+            ally = [w for k, w in table.items() if k in E.HEALS]
+            rest = [w for k, w in table.items() if k not in E.HEALS]
+            self.assertTrue(ally and rest)
+            self.assertLess(max(ally), min(rest))
+        # and it holds by construction, not by hand-tuned numbers
+        self.assertLess(E.ALLY_SCARCITY, 1)
+        for kind in E.HEALS:
+            self.assertEqual(E.KIND_WEIGHT[kind], E.ALLY_SCARCITY)
+        import collections
+        rng = random.Random(19)
+        n = collections.Counter(E.roll_drop(rng, E.drop_weights(12)) for _ in range(8000))
+        self.assertLess(sum(n[k] for k in E.HEALS), 0.10 * 8000)   # a treat, not filler
+        self.assertGreater(sum(n[k] for k in E.HEALS), 0)          # but they do still drop
+
+    def test_ally_heals_only_drop_with_a_crowd(self):
+        # Paul 9/21: "ally items should come alive when there's more than 5
+        # players … most people don't even use ally items yet."
+        allies = set(E.HEALS)
+        self.assertTrue(allies & set(E.drop_weights(E.ALLY_ALIVE + 1)))       # crowd: they drop
+        self.assertTrue(allies & set(E.drop_weights(E.ALLY_ALIVE + 1, supers=True)))
+        for alive in range(1, E.ALLY_ALIVE + 1):                              # thin field: none of them
+            self.assertFalse(allies & set(E.drop_weights(alive)), alive)
+            self.assertFalse(allies & set(E.drop_weights(alive, supers=True)), alive)
+        # their weight goes back to the items people actually fire, and nothing
+        # else about the table moves
+        full, thin = E.drop_weights(E.ALLY_ALIVE + 1), E.drop_weights(E.ALLY_ALIVE)
+        self.assertEqual(set(full) - set(thin), allies & set(E.POWERUPS))
+        for k in thin:
+            self.assertEqual(thin[k], full[k], k)                             # raw weights unchanged
+            self.assertGreater(thin[k] / sum(thin.values()), full[k] / sum(full.values()), k)
+        import collections
+        rng = random.Random(3)
+        n = collections.Counter(E.roll_drop(rng, E.drop_weights(4)) for _ in range(3000))
+        self.assertEqual(sum(n[k] for k in allies), 0)
+        # the guide says so once, in the ally group header, from the constant
+        self.assertIn(str(E.ALLY_ALIVE), E.ITEM_GROUPS["heal_ally"][2])
 
     def test_super_effects(self):
         p = P(1, lives=1, shots=0)
@@ -504,10 +592,14 @@ class Drops(unittest.TestCase):
 
     def test_golden_apple_is_the_rarest_super(self):
         self.assertIn("goldapple", E.SUPER)
-        low = min(E.SUPER_WEIGHTS.values())
-        rarest = sorted(k for k, w in E.SUPER_WEIGHTS.items() if w == low)
-        # 9/13 the extra revive, 9/20 Ambrosia — the apple's equivalents are as rare as the apple
-        self.assertEqual(rarest, ["ambrosia", "goldapple", "revive_extra"])
+        plain = {k: w for k, w in E.SUPER_WEIGHTS.items() if k not in E.HEALS}
+        low = min(plain.values())
+        rarest = sorted(k for k, w in plain.items() if w == low)
+        # 9/13 the extra revive — the apple's equivalent is as rare as the apple.
+        # 🍯 Ambrosia was the third of them until 9/21, when the ally items were
+        # scaled under everything else; it is rarer than the apple now.
+        self.assertEqual(rarest, ["goldapple", "revive_extra"])
+        self.assertLess(E.SUPER_WEIGHTS["ambrosia"], E.SUPER_WEIGHTS["goldapple"])
         self.assertEqual(set(E.SUPER_WEIGHTS), set(E.SUPER))
         rng = random.Random(11)
         n = sum(E.roll_drop(rng, E.SUPER_WEIGHTS) == "goldapple" for _ in range(5000))
@@ -643,15 +735,16 @@ class Storm(unittest.TestCase):
 
 
 class Rounds(unittest.TestCase):
-    def test_open_round_hands_out_exactly_one_shot_and_purge_gives_three(self):
-        # 9/13 (Paul): "one shot per round, they don't compile" — a leftover
-        # purge shot used to ride along for three more rounds
+    def test_open_round_hands_out_exactly_one_shot_every_round(self):
+        # 9/13 (Paul): "one shot per round, they don't compile" — leftovers
+        # used to ride along into later rounds. 9/21: the PURGE round (three
+        # shots for everyone, once a race) is gone, so one is the only answer.
         a, b, dead = P(1, shots=0), P(2, shots=3), P(3, alive=0, shots=0)
-        self.assertEqual(E.open_round([a, b, dead], 1, purge_round=4, shot_cap=3), [])
+        self.assertEqual(E.open_round([a, b, dead]), [])
         self.assertEqual((a["shots"], b["shots"], dead["shots"]), (1, 1, 0))
-        lines = E.open_round([a, b], 4, purge_round=4, shot_cap=3)
-        self.assertTrue(lines and "PURGE" in lines[0])
-        self.assertEqual((a["shots"], b["shots"]), (3, 3))
+        self.assertEqual(E.open_round([a, b]), [])
+        self.assertEqual((a["shots"], b["shots"]), (1, 1))
+        self.assertFalse(hasattr(E, "pick_purge_round"))
 
     def test_sudden_death_threshold(self):
         rows = [P(i) for i in range(6)]
@@ -676,12 +769,6 @@ class Rounds(unittest.TestCase):
         r = E.create_race(9191, 3, 9, settings={"lives": 5, "lives_auto": False, "min_players": 15})
         self.assertEqual((r["settings"]["lives"], r["settings"]["lives_auto"]), (5, False))
         E.update_race(r["id"], status="aborted")
-
-    def test_purge_round_never_round_one(self):
-        rng = random.Random(1)
-        for n in (3, 8, 30, 200):
-            for _ in range(20):
-                self.assertGreaterEqual(E.pick_purge_round(rng, n), 2)
 
     def test_join_rules(self):
         now = time.time()
@@ -862,10 +949,17 @@ class Tracking(unittest.TestCase):
         d = P(4, alive=0, lives=0)
         r2 = resolve([a, d], [dict(S(1, 4), id=9, seq=1)], round_no=2)
         self.assertEqual(r2["results"][9], "wasted")
-        x, y = P(7), P(8)
-        r3 = resolve([x, y], [dict(S(7, 8), id=21, seq=1)], rng=AlwaysBackfire())
+        x, y = P(7, overload=1), P(8)
+        r3 = resolve([x, y], [dict(S(7, 8, "overload"), id=21, seq=1)], rng=AlwaysBackfire())
         self.assertEqual(r3["results"][21], "backfire")
-        self.assertEqual(x["lives"], 2)
+        self.assertEqual(x["lives"], 0)               # 1 to fire it, then its own 2
+
+    def test_every_shot_result_has_a_timeline_tag(self):
+        # a stray inline comment once swallowed the "wasted" and "self" entries,
+        # so those shots rendered with no outcome at all in /lastrace player:
+        for res in ("hit", "kill", "shielded", "backfire", "reflect", "wasted", "self",
+                    "transfused", "healed", "late", "nuke", "overkill", "revived"):
+            self.assertTrue(E.RESULT_TAG.get(res), res)
 
     def test_rows_without_ids_or_seq_still_resolve(self):
         a, b = P(1), P(2)
@@ -884,7 +978,7 @@ class Tracking(unittest.TestCase):
         self.assertEqual((i1["seq"], i1["extra"]), (1, 0))
         self.assertEqual((i2["seq"], i2["extra"]), (2, 1))
         self.assertEqual((t["seq"], t["extra"]), (None, 0))
-        # purge round: three are free, the fourth is extra
+        # a caller that hands out a bigger allowance: three free, the fourth extra
         for k in range(3):
             self.assertEqual(E.cast(rid, 2, 2, 1, allowance=3)["extra"], 0)
         self.assertEqual(E.cast(rid, 2, 2, 1, allowance=3)["extra"], 1)
