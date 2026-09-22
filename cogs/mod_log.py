@@ -61,11 +61,12 @@ MEDIA_DIR = os.path.join(ROOT, "media_cache")
 #
 #   TEXT IS NEVER AGED OUT — any tier (Paul, 2026-09-10). Message text, edits,
 #   the mention index, the structure ledger, the command log and the identity
-#   ledger stay until somebody ASKS: `/msglog revoke-terms` (that server's
-#   Manage Server) or `/msglog forget <uid>` (erasure request). Leaving the
-#   guild does NOT purge. The trigger: Dismiss's #general was wiped back
-#   to the day the bot arrived, and the free 24h text window had already thrown
-#   away everything but the last day — an audit gap the log exists to close.
+#   ledger stay until somebody ASKS: `/msglog forget <uid>` (erasure request)
+#   or a whole-guild purge, which since 2026-09-21 is an operator job through
+#   `_purge_guild` — no command exposes it. Leaving the guild does NOT purge.
+#   The trigger: Dismiss's #general was wiped back to the day the bot arrived,
+#   and the free 24h text window had already thrown away everything but the
+#   last day — an audit gap the log exists to close.
 #   Size was weighed and accepted. The tiers below govern FILES only.
 #
 #   0. RECENT WINDOW (default, every msglog guild, no agreement needed)
@@ -73,19 +74,21 @@ MEDIA_DIR = os.path.join(ROOT, "media_cache")
 #      per guild (MSGLOG_RECENT_MEDIA_MB) so a GIF-heavy stranger's server can't
 #      evict the operator's evidence. Quark free: 12h + a per-channel cap.
 #
-#   1. PRO ARCHIVE (paid entitlement + Manage Server accepts the retention terms)
+#   1. PRO ARCHIVE (paid entitlement — the retention terms are agreed AT PURCHASE)
 #      Files for MSGLOG_PRO_MEDIA_DAYS (30), the identity ledger surfaced through
 #      `/msglog deleted` / `/msglog history`. The entitlement is granted by the
-#      operator (`/msglog pro-grant`, fed by the web checkout); the terms
-#      acceptance is what makes the server's admin — not us — the one who decided
-#      to keep their members' files longer. Both are required. Quark Pro: 4 weeks.
+#      operator (`/msglog pro-grant`, fed by the web checkout) and THE GRANT
+#      STAMPS THE ACCEPTANCE (Paul, 2026-09-21: "let them just do it when they
+#      purchase it" — the /msglog terms family is gone). Buying the archive is
+#      what makes the server's admin, not us, the one who decided to keep their
+#      members' files longer. Quark Pro: 4 weeks.
 #      (MSGLOG_PRO_TEXT_DAYS is kept as a knob for copy/compat; it no longer sweeps.)
 #
 #   2. OPERATOR ARCHIVE (MSGLOG_ARCHIVE_GUILDS — the operator's own servers)
 #      Unlimited, nothing swept, full disk budget. Unchanged from before.
 #
 # Every row is keyed by guild_id and every read is filtered by it, so a guild is
-# a lookup away and revoking the terms purges exactly that guild.
+# a lookup away and a purge-on-request hits exactly that guild.
 ARCHIVE_GUILDS = {g.strip() for g in os.environ.get(
     "MSGLOG_ARCHIVE_GUILDS",
     os.environ.get("ALTGUARD_GUILD_ID", "")).split(",") if g.strip()}
@@ -114,6 +117,10 @@ OPERATOR_GUILDS = {g.strip() for g in os.environ.get(
 # Bump when the terms text changes materially — acceptance records store the
 # version they agreed to, so an old acceptance can be re-prompted rather than
 # silently treated as consent to something they never read.
+# ⚠️ There is NO in-Discord accept command since 2026-09-21: the terms are agreed
+# at checkout and stamped by `/msglog pro-grant`. So a bump here drops every paid
+# guild to the free FILE window with no way for them to fix it themselves —
+# re-stamp the acceptance rows (or re-run pro-grant) in the same change.
 TERMS_VERSION = 2   # v2 2026-08-23: free 24h window + Logging Pro windows
 
 # guild_id -> acceptance row. Cached because on_message consults it per message;
@@ -122,6 +129,10 @@ _CONSENT = {}
 
 
 # DRAFT — operator should review the wording before this ships publicly.
+# Nothing in Discord renders this any more (`/msglog terms|accept-terms|
+# revoke-terms` were removed 2026-09-21): this is the wording the PURCHASE flow
+# has to show, and TERMS_VERSION is what a Pro grant stamps onto the guild.
+# Keep the two in step — the checkout is the only place consent is now taken.
 TERMS_TEXT = (
     "📜 **Message archive — data retention terms (v2)**\n"
     "**Every server already gets this, nothing to accept:** message text, edits and who-deleted-it "
@@ -132,10 +143,10 @@ TERMS_TEXT = (
     "**Stored:** message text, author, channel and timestamps · edit history · deletions and who "
     f"performed them · attachments, stickers and avatars (files for {PRO_MEDIA_DAYS} days) · "
     "member events (joins, leaves, nickname/username changes, timeouts, kicks, bans). "
-    "Files are stored from the moment you accept.\n"
+    "Files are stored from the moment Logging Pro is granted.\n"
     f"**How long:** text for as long as the bot is here; files for {PRO_MEDIA_DAYS} days, rolling, "
-    "while the Pro entitlement is active. `/msglog revoke-terms` stops storage and permanently "
-    "deletes everything held for this server; when Pro lapses files fall back to the "
+    "while the Pro entitlement is active. Ask the operator and storage stops and everything held "
+    "for this server is permanently deleted; when Pro lapses files fall back to the "
     f"{RECENT_HOURS}-hour window.\n"
     "**Who can read it:** people with Manage Server *in this server* (via the bot's commands), "
     "and the bot operator, who maintains the database and cannot be locked out of it.\n"
@@ -147,7 +158,11 @@ TERMS_TEXT = (
 
 
 def consent_ok(guild_id) -> bool:
-    """Current, un-revoked acceptance of the retention terms for this guild."""
+    """Current, un-revoked acceptance of the retention terms for this guild.
+
+    Written by `/msglog pro-grant` since 2026-09-21 — the terms are agreed as
+    part of the purchase, so the grant that fulfils it is what records them.
+    """
     row = _CONSENT.get(str(guild_id))
     return bool(row) and int(row.get("version") or 0) >= TERMS_VERSION
 
@@ -1849,7 +1864,7 @@ class ModLog(commands.Cog):
     def _sweep_rows(self, now):
         """Blocking. Text rows are never aged out — messages, edits, mentions,
         guild_events, command_log and identity_events all stay until the guild
-        is purged on request (`/msglog forget`, `/msglog revoke-terms`);
+        is purged on request (`/msglog forget`, or an operator `_purge_guild`);
         the bot leaving a guild does not purge.
         Kept as the sweeper's hook so the tier logic has one place to live;
         returns {} because nothing is swept by time. (Until 2026-09-10 this
@@ -3057,14 +3072,16 @@ class ModLog(commands.Cog):
                              f"{PRO_GRACE_DAYS} more days, then fall back to the {RECENT_HOURS}h window. "
                              f"Renew: {PRO_URL}")
             elif row and pro_active(gid) and not consent_ok(gid):
-                lines.append("💳 Pro is **paid for** but the archive is still off — anyone with "
-                             "Manage Server must accept the retention terms: "
-                             "`/msglog accept-terms confirm:True` (read `/msglog terms` first).")
+                # Shouldn't happen since 2026-09-21 — the grant stamps the
+                # acceptance — but a pre-removal paid guild can still sit here,
+                # and it is OUR side to finish, not something they can fix.
+                lines.append("💳 Pro is **paid for** but the archive is not switched on yet — "
+                             f"that one is on us. Nudge us at {PRO_URL} and we'll finish it.")
             else:
                 lines.append(f"⬆️ **Logging Pro** — {PRO_MEDIA_DAYS} days of deleted images, identity "
                              "history, and the archive searchable by member. Quark Pro keeps 4 "
-                             f"weeks. Get it at {PRO_URL}, then accept the terms here with "
-                             "`/msglog accept-terms confirm:True`.")
+                             f"weeks. Get it at {PRO_URL} — the retention terms are part of "
+                             "checkout, and the archive starts the moment the grant lands.")
         return lines
 
     @msglog.command(name="pro", description="Logging Pro: what this server has, what it would get.")
@@ -3114,7 +3131,25 @@ class ModLog(commands.Cog):
                     " expires_ts=excluded.expires_ts, granted_ts=excluded.granted_ts,"
                     " granted_by=excluded.granted_by, note=excluded.note",
                     (gid, gname, exp, now, str(interaction.user), note or None))
+                # The terms are agreed at CHECKOUT (Paul, 2026-09-21: "let them
+                # just do it when they purchase it"), so the grant that fulfils
+                # the purchase is what records the acceptance — there is no
+                # `/msglog accept-terms` any more. revoked_ts is cleared so a
+                # re-purchase after a purge licenses the archive again, and the
+                # version stamped is the one the checkout showed.
+                c.execute(
+                    "INSERT INTO archive_consent"
+                    " (guild_id, guild_name, uid, username, accepted_ts, version, revoked_ts)"
+                    " VALUES (?,?,?,?,?,?,NULL)"
+                    " ON CONFLICT(guild_id) DO UPDATE SET"
+                    " guild_name=COALESCE(excluded.guild_name, guild_name),"
+                    " uid=excluded.uid, username=excluded.username,"
+                    " accepted_ts=excluded.accepted_ts, version=excluded.version,"
+                    " revoked_ts=NULL",
+                    (gid, gname, str(interaction.user.id),
+                     f"purchase ({note})" if note else "purchase", now, TERMS_VERSION))
         self._load_pro()
+        self._load_consent()
         if days < 0:
             await interaction.response.send_message(
                 f"🗑️ Pro revoked for `{gid}`{f' ({gname})' if gname else ''}. Its archive is kept "
@@ -3123,14 +3158,14 @@ class ModLog(commands.Cog):
         row = _PRO.get(gid) or {}
         exp = row.get("expires_ts")
         until = f"until <t:{int(exp)}:D>" if exp else "no expiry"
-        state = ("archive ON" if consent_ok(gid)
-                 else "terms NOT accepted yet — archive stays on the free window until they run "
-                      "`/msglog accept-terms confirm:True`")
+        state = ("archive ON (terms v%d recorded with the purchase)" % TERMS_VERSION
+                 if consent_ok(gid) else
+                 "⚠️ acceptance NOT recorded — the archive stays on the free window; re-run this grant")
         await interaction.response.send_message(
             f"⭐ Pro granted to `{gid}`{f' ({gname})' if gname else ''} — {until}. {state}.",
             ephemeral=True)
-        # Tell the server. Pro without accepted terms does nothing, and the
-        # admin who paid is not necessarily the one in the log channel.
+        # Tell the server: the admin who paid is not necessarily the one
+        # reading the log channel.
         if target is not None:
             cfg = get_config(target.id)
             log_ch = self._log_channel(target, cfg)
@@ -3143,95 +3178,13 @@ class ModLog(commands.Cog):
                 except discord.HTTPException:
                     pass
 
-    @msglog.command(name="terms",
-                    description="What the archive stores, and how to turn it on or off.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def terms_cmd(self, interaction: discord.Interaction):
-        gid = str(interaction.guild.id)
-        row = _CONSENT.get(gid)
-        if gid in ARCHIVE_GUILDS:
-            state = "🟢 **Full archive** — text and files, unlimited (operator-run server)."
-        elif row and consent_ok(gid):
-            state = (f"🟢 **Accepted** by {_plain(row.get('username') or row.get('uid'))} "
-                     f"<t:{int(row.get('accepted_ts') or 0)}:D> (v{row.get('version')}). "
-                     f"Revoke any time with `/msglog revoke-terms`.")
-            if not pro_active(gid):
-                state += (f"\n⚪ No active Pro entitlement, so files follow the free {RECENT_HOURS}h "
-                          "window (text is kept regardless).")
-        elif row:
-            state = (f"⚠️ Accepted **v{row.get('version')}** — the terms have changed (now "
-                     f"v{TERMS_VERSION}). Re-accept with `/msglog accept-terms confirm:True`.")
-        else:
-            state = (f"⚪ **Not accepted** — files follow the free {RECENT_HOURS}h window (text is kept "
-                     "regardless). Anyone with "
-                     "**Manage Server** can accept with `/msglog accept-terms confirm:True` "
-                     "(takes effect with an active Pro entitlement — `/msglog pro`).")
-        await interaction.response.send_message(f"{TERMS_TEXT}\n\n{state}", ephemeral=True)
-
-    @msglog.command(name="accept-terms",
-                    description="Manage Server: agree to the retention terms and turn the archive on.")
-    @app_commands.describe(confirm="Yes, I've read /msglog terms and I accept on behalf of this server")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def accept_terms_cmd(self, interaction: discord.Interaction, confirm: bool = False):
-        # Manage Server is enough here (Paul, 2026-08-21: terms gate only AltGuard,
-        # whose consent covers member device/network data and stays owner-only).
-        # The acceptance is still recorded by name, version and time.
-        if not confirm:
-            await interaction.response.send_message(
-                f"{TERMS_TEXT}\n\nRe-run with `confirm:True` to accept.", ephemeral=True)
-            return
-        now = time.time()
-        with self._conn() as c:
-            c.execute(
-                "INSERT INTO archive_consent"
-                " (guild_id, guild_name, uid, username, accepted_ts, version, revoked_ts)"
-                " VALUES (?,?,?,?,?,?,NULL)"
-                " ON CONFLICT(guild_id) DO UPDATE SET guild_name=excluded.guild_name,"
-                " uid=excluded.uid, username=excluded.username,"
-                " accepted_ts=excluded.accepted_ts, version=excluded.version, revoked_ts=NULL",
-                (str(interaction.guild.id), interaction.guild.name, str(interaction.user.id),
-                 str(interaction.user), now, TERMS_VERSION))
-        self._load_consent()
-        gid = str(interaction.guild.id)
-        if archives_messages(gid):
-            msg = (f"✅ **Archive on** (terms v{TERMS_VERSION} accepted). Text is kept for good and "
-                   f"files {PRO_MEDIA_DAYS} days from now on. `/msglog deleted` and `/msglog history` "
-                   "now work here.\n"
-                   "↩️ `/msglog revoke-terms` stops it and deletes everything.")
-        else:
-            msg = (f"✅ **Terms v{TERMS_VERSION} accepted** and recorded. This server has no active "
-                   f"Logging Pro entitlement yet, so files still follow the free {RECENT_HOURS}h window "
-                   "(text is kept regardless); Pro switches on by itself the moment it is granted. "
-                   "`/msglog pro` for how to get it.")
-        await interaction.response.send_message(msg, ephemeral=True)
-
-    @msglog.command(name="revoke-terms",
-                    description="Manage Server: stop storing this server's data and delete what's stored.")
-    @app_commands.describe(confirm="Yes — stop retention and permanently delete this server's archive")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def revoke_terms_cmd(self, interaction: discord.Interaction, confirm: bool = False):
-        if not confirm:
-            await interaction.response.send_message(
-                "⚠️ This **permanently deletes** this server's stored messages, edit history and "
-                "member/identity records, and stops any further storage. Logging keeps working; "
-                "only the memory goes. Re-run with `confirm:True`.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        gid = str(interaction.guild.id)
-        self._flush()
-        counts = await asyncio.to_thread(self._purge_guild, gid)
-        with self._conn() as c:
-            c.execute("UPDATE archive_consent SET revoked_ts=? WHERE guild_id=?", (time.time(), gid))
-        self._load_consent()
-        note = ("\n⚠️ This server is on the operator's allowlist (`MSGLOG_ARCHIVE_GUILDS`), so "
-                "retention stays ON until that entry is removed — the data above was still deleted."
-                if gid in ARCHIVE_GUILDS else "")
-        await interaction.followup.send(
-            f"🗑️ **Archive revoked and purged.** Deleted {counts['messages']:,} messages, "
-            f"{counts['edits']:,} edit records, {counts['identity']:,} member events and "
-            f"{counts['files']:,} cached files. Nothing further is stored." + note,
-            ephemeral=True)
-
+    # `/msglog terms`, `/msglog accept-terms` and `/msglog revoke-terms` were
+    # REMOVED 2026-09-21 (Paul: "let them just do it when they purchase it.
+    # remove the commands"). Acceptance is taken at checkout and stamped by
+    # `/msglog pro-grant`; TERMS_TEXT above is the wording that flow must show.
+    # `_purge_guild` below is now operator-only — no command calls it, so a
+    # purge-on-request is a deliberate act, not something a remote admin can
+    # fire to erase the record of their own purges.
     def _purge_guild(self, gid):
         """Delete every stored row (and cached file) belonging to one guild.
 

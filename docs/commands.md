@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **228 commands** (98 top-level, the rest subcommands) across 41 cogs
+- **225 commands** (98 top-level, the rest subcommands) across 41 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -1116,20 +1116,6 @@ Remove a member's timeout early.
 
 <sub>`cogs/mod_log.py`</sub>
 
-#### `/msglog accept-terms`
-
-Manage Server: agree to the retention terms and turn the archive on.
-
-```
-/msglog accept-terms [confirm]
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `confirm` | boolean | No | Yes, I've read /msglog terms and I accept on behalf of this server |
-
 #### `/msglog audit`
 
 Server-change ledger: roles, channels, permissions, emoji, AutoMod rules, member roles.
@@ -1344,20 +1330,6 @@ Operator: grant/extend/revoke Logging Pro for a server (home guild only).
 | `days` | integer | Yes | Days to add from now (0 = no expiry, -1 = revoke) |
 | `note` | string | No | Why (order id, comp, trial…) |
 
-#### `/msglog revoke-terms`
-
-Manage Server: stop storing this server's data and delete what's stored.
-
-```
-/msglog revoke-terms [confirm]
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `confirm` | boolean | No | Yes — stop retention and permanently delete this server's archive |
-
 #### `/msglog roles`
 
 Toggle role-change logging on or off.
@@ -1378,18 +1350,6 @@ Archive totals + configuration.
 
 ```
 /msglog status
-```
-
-**Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
-
-*No parameters.*
-
-#### `/msglog terms`
-
-What the archive stores, and how to turn it on or off.
-
-```
-/msglog terms
 ```
 
 **Access:** Requires **Manage Server** &nbsp;·&nbsp; Server only
@@ -1680,15 +1640,17 @@ Turn join roles + welcome messages on or off.
 
 #### `/welcome preview`
 
-See exactly what the welcome looks like, as a card only you can see.
+See exactly what the welcome (or goodbye) looks like, as a card only you can see.
 
 ```
-/welcome preview
+/welcome preview [message]
 ```
 
 **Access:** Requires **Administrator**
 
-*No parameters.*
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `message` | string | No | Which one to preview — the welcome (default) or the goodbye. *(one of: `Welcome`, `Goodbye`)* |
 
 #### `/welcome status`
 

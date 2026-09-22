@@ -910,9 +910,20 @@
   },
   {
    "path": "welcome preview",
-   "description": "See exactly what the welcome looks like, as a card only you can see.",
-   "params": [],
-   "signature": "/welcome preview",
+   "description": "See exactly what the welcome (or goodbye) looks like, as a card only you can see.",
+   "params": [
+    {
+     "name": "message",
+     "type": "string",
+     "required": false,
+     "description": "Which one to preview — the welcome (default) or the goodbye.",
+     "choices": [
+      "Welcome",
+      "Goodbye"
+     ]
+    }
+   ],
+   "signature": "/welcome preview [message]",
    "root": "welcome",
    "cog": "automation",
    "permissions": [
@@ -2390,26 +2401,6 @@
    "dm_allowed": false
   },
   {
-   "path": "msglog accept-terms",
-   "description": "Manage Server: agree to the retention terms and turn the archive on.",
-   "params": [
-    {
-     "name": "confirm",
-     "type": "boolean",
-     "required": false,
-     "description": "Yes, I've read /msglog terms and I accept on behalf of this server"
-    }
-   ],
-   "signature": "/msglog accept-terms [confirm]",
-   "root": "msglog",
-   "cog": "mod_log",
-   "permissions": [
-    "Manage Server"
-   ],
-   "cooldown_seconds": null,
-   "dm_allowed": false
-  },
-  {
    "path": "msglog audit",
    "description": "Server-change ledger: roles, channels, permissions, emoji, AutoMod rules, member roles.",
    "params": [
@@ -2767,26 +2758,6 @@
    "dm_allowed": false
   },
   {
-   "path": "msglog revoke-terms",
-   "description": "Manage Server: stop storing this server's data and delete what's stored.",
-   "params": [
-    {
-     "name": "confirm",
-     "type": "boolean",
-     "required": false,
-     "description": "Yes — stop retention and permanently delete this server's archive"
-    }
-   ],
-   "signature": "/msglog revoke-terms [confirm]",
-   "root": "msglog",
-   "cog": "mod_log",
-   "permissions": [
-    "Manage Server"
-   ],
-   "cooldown_seconds": null,
-   "dm_allowed": false
-  },
-  {
    "path": "msglog roles",
    "description": "Toggle role-change logging on or off.",
    "params": [
@@ -2811,19 +2782,6 @@
    "description": "Archive totals + configuration.",
    "params": [],
    "signature": "/msglog status",
-   "root": "msglog",
-   "cog": "mod_log",
-   "permissions": [
-    "Manage Server"
-   ],
-   "cooldown_seconds": null,
-   "dm_allowed": false
-  },
-  {
-   "path": "msglog terms",
-   "description": "What the archive stores, and how to turn it on or off.",
-   "params": [],
-   "signature": "/msglog terms",
    "root": "msglog",
    "cog": "mod_log",
    "permissions": [
@@ -5844,30 +5802,6 @@
    "visibility_permissions": [],
    "runtime_permissions": [
     "administrator"
-   ],
-   "server_owner_only": false
-  },
-  "msglog terms": {
-   "cog": "mod_log",
-   "visibility_permissions": [],
-   "runtime_permissions": [
-    "manage_guild"
-   ],
-   "server_owner_only": false
-  },
-  "msglog accept-terms": {
-   "cog": "mod_log",
-   "visibility_permissions": [],
-   "runtime_permissions": [
-    "manage_guild"
-   ],
-   "server_owner_only": false
-  },
-  "msglog revoke-terms": {
-   "cog": "mod_log",
-   "visibility_permissions": [],
-   "runtime_permissions": [
-    "manage_guild"
    ],
    "server_owner_only": false
   },
