@@ -212,3 +212,27 @@ def test_mentioned_in_ignores_prose_urls_and_unknown_commands():
 def test_mentioned_in_missing_file_is_false():
     idx = CommandIndex("/nonexistent/commands.json")
     assert not idx.mentioned_in("how do I use /ask here")
+
+
+# --- self-identity header (cogs/ai.about_block) -----------------------------
+
+def test_model_display_name_formats_claude_ids():
+    from cogs.ai import model_display_name
+    assert model_display_name("anthropic/claude-haiku-4.5") == "Anthropic's Claude Haiku 4.5"
+    assert model_display_name("claude-haiku-4-5-20251001") == "Anthropic's Claude Haiku 4.5"
+    assert model_display_name("claude-sonnet-5") == "Anthropic's Claude Sonnet 5"
+
+
+def test_model_display_name_never_brands_other_models():
+    from cogs.ai import model_display_name
+    assert model_display_name("deepseek/deepseek-chat") == "deepseek-chat"
+    assert "Anthropic" not in model_display_name("google/gemini-2.5-flash-lite")
+
+
+def test_about_block_names_live_model_and_forbids_gpt():
+    from cogs.ai import about_block
+    b = about_block("anthropic/claude-haiku-4.5", "anthropic/claude-haiku-4.5")
+    assert "Claude Haiku 4.5" in b and "quick answers" not in b
+    assert "Never claim to be GPT" in b
+    assert "quick answers: Anthropic's Claude Haiku 4.5" in about_block(
+        "claude-sonnet-5", "claude-haiku-4-5")
