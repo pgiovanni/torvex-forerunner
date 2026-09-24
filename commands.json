@@ -696,5 +696,8 @@
     "recent-leaves",
     "stats-status",
     "invite"
+  ],
+  "listener_cogs": [
+    "auto_rules"
   ]
 }

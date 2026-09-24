@@ -60,13 +60,36 @@ async def setup_hook():
 
     bot.tree.add_command = _add_command
 
+    # A cog loads because it owns a command below — or because it's named in
+    # "listener_cogs". The second list is for cogs that only listen (auto_rules
+    # runs the dashboard's rules and owns no command since /automation left the
+    # tree 9/22); without it they drop out silently on the next restart, which
+    # is exactly what took every server's automation rules down 9/23.
     cogs = set(cmd["cog"] for cmd in schema["commands"])
+    cogs |= set(schema.get("listener_cogs", []))
     for cog in cogs:
         try:
             await bot.load_extension(f"cogs.{cog}")
             print(f"Loaded cog: {cog}")
         except Exception as e:
             print(f"[WARN] Could not load cog '{cog}': {e}")
+
+    # Say so, loudly, when a cog file with a setup() isn't on either list.
+    # Not loaded automatically — the VPS keeps stray files in cogs/ — just named,
+    # so the next command removal that orphans a cog shows up in the journal.
+    cog_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cogs")
+    for fn in sorted(os.listdir(cog_dir)):
+        name = fn[:-3]
+        if not fn.endswith(".py") or fn.startswith("_") or name in cogs:
+            continue
+        try:
+            with open(os.path.join(cog_dir, fn), encoding="utf-8") as f:
+                has_setup = "async def setup(" in f.read()
+        except OSError:
+            continue
+        if has_setup:
+            print(f"[WARN] cogs/{fn} has a setup() but is NOT loaded — "
+                  f"add it to commands.json \"listener_cogs\" if it should run")
 
     # Seed the home guild's per-guild security config from the legacy ALTGUARD_*/
     # ANTINUKE_* env vars on first run, so it keeps its exact current protection
