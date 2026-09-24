@@ -210,5 +210,40 @@ class FastDeleteTests(unittest.TestCase):
         self.assertIsNone(self.is_fast(2000.0, 1000.0))
 
 
+class EveryGuildRecordsTests(unittest.TestCase):
+    """Paul 9/24: "all logs should be in every server". The REAL
+    _record_identity (not the copy above) must write for a guild that is
+    neither the operator's nor Pro — until 9/24 it silently wrote nothing."""
+
+    def setUp(self):
+        import cogs.mod_log as ml
+        self.ml = ml
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        FakeLedger(self.path)  # creates the table
+        path = self.path
+
+        def _conn(_self):
+            c = sqlite3.connect(path, timeout=30)
+            c.row_factory = sqlite3.Row
+            return c
+        self.cog = SimpleNamespace(_conn=_conn.__get__(object()))
+
+    def tearDown(self):
+        try:
+            os.remove(self.path)
+        except OSError:
+            pass
+
+    def test_free_guild_is_recorded(self):
+        gid = 424242424242424242
+        self.assertEqual(self.ml.retention_tier(gid), "recent")  # a plain free server
+        self.ml.ModLog._record_identity(self.cog, gid, fake_user(), "leave",
+                                        before="nick", after="name")
+        with sqlite3.connect(self.path) as c:
+            rows = c.execute("SELECT guild_id, kind FROM identity_events").fetchall()
+        self.assertEqual(rows, [(str(gid), "leave")])
+
+
 if __name__ == "__main__":
     unittest.main()

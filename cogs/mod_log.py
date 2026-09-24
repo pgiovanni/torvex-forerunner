@@ -1407,6 +1407,15 @@ class ModLog(commands.Cog):
                or cfg.get("modlog_channel_id"))
         return guild.get_channel(int(cid)) if cid else None
 
+    def _post_channel(self, guild, cfg, kind="messages"):
+        """Where to POST an embed, or None. The msglog switch (and each kind's
+        own switch, checked by the caller) decides only what gets posted —
+        every ledger row is written regardless, in every guild (Paul 9/24:
+        "all logs should be in every server")."""
+        if not cfg.get("msglog_enabled", 1):
+            return None
+        return self._log_channel(guild, cfg, kind)
+
     def _media_channel(self, guild, cfg):
         """Separate destination for deleted-media re-posts (age-restricted staff
         channel). None = media stays attached to the log embeds as before."""
@@ -2074,7 +2083,7 @@ class ModLog(commands.Cog):
     @commands.Cog.listener()
     async def on_audit_log_entry_create(self, entry: discord.AuditLogEntry):
         guild = entry.guild
-        if guild is None or not is_enabled(guild.id, "msglog"):
+        if guild is None:
             return
         A = discord.AuditLogAction
         if entry.action is A.member_role_update:
@@ -2119,14 +2128,14 @@ class ModLog(commands.Cog):
             self._removals[target_id] = rec
         if entry.action is A.kick:
             return  # embed posted by on_member_remove — it still has roles/join date
-        log_ch, _ = self._members_log_channel(guild)
-        if log_ch is None:
-            return
         banned = entry.action is A.ban
         self._record_identity(guild.id, entry.target or target_id,
                               "ban" if banned else "unban",
                               by_uid=rec["by_id"], by_name=rec["by_name"],
                               reason=rec["reason"])
+        log_ch, _ = self._members_log_channel(guild)
+        if log_ch is None:
+            return
         embed = discord.Embed(
             title="🔨 Member banned" if banned else "♻️ Member unbanned",
             color=COLOR_BAN if banned else COLOR_JOIN,
@@ -2141,7 +2150,7 @@ class ModLog(commands.Cog):
         guild = entry.guild
         cfg = get_config(guild.id)
         # embed only if the kind is on and routed; the ledger row is written regardless
-        log_ch = self._log_channel(guild, cfg, "automod") if cfg.get("msglog_automod", 1) else None
+        log_ch = self._post_channel(guild, cfg, "automod") if cfg.get("msglog_automod", 1) else None
         A = discord.AuditLogAction
         if entry.action == getattr(A, "automod_rule_create", None):
             title, color = "🆕 AutoMod rule created", COLOR_JOIN
@@ -2180,12 +2189,11 @@ class ModLog(commands.Cog):
         Deliberately best-effort and swallowing: the ledger must never be able
         to break the embed that the mods actually see.
 
-        Scoped like the message archive (tier 2): a guild that hasn't accepted
-        the terms still gets every join/leave/ban/rename embed live, but we keep
-        no lasting history of their members.
+        Written for EVERY guild, like the message archive (Paul 9/24: "all logs
+        should be in every server"). Until then only Pro/operator guilds got
+        rows — every other server had live embeds and no history at all. Which
+        commands may READ it back is a separate question (archives_messages).
         """
-        if not archives_messages(guild_id):
-            return
         try:
             uid = getattr(user, "id", user)
             uname = getattr(user, "name", None) or str(user)
@@ -2306,16 +2314,12 @@ class ModLog(commands.Cog):
         if before.roles == after.roles:
             return
         guild = after.guild
-        if not is_enabled(guild.id, "msglog"):
-            return
         cfg = get_config(guild.id)
-        if not cfg.get("msglog_roles", 1):
-            return
         if after.bot and not cfg.get("msglog_log_bots", 0):
             return
-        log_ch = self._log_channel(guild, cfg, "member_roles")
-        if log_ch is None:
-            return
+        # None = don't post; the ledger row below is written either way
+        log_ch = (self._post_channel(guild, cfg, "member_roles")
+                  if cfg.get("msglog_roles", 1) else None)
         added = [r for r in after.roles if r not in before.roles]
         removed = [r for r in before.roles if r not in after.roles]
         if not added and not removed:
@@ -2332,17 +2336,22 @@ class ModLog(commands.Cog):
         hits = [t for t in self._rolelog_hits.get(after.id, ()) if now - t < ROLELOG_WINDOW]
         hits.append(now)
         self._rolelog_hits[after.id] = hits
-        if len(hits) >= ROLELOG_NUKE:
+        # A flood pauses the EMBEDS (and the per-change audit lookups), never the
+        # ledger: those rows are written below with WHO unknown.
+        paused = False
+        if log_ch is None:
+            paused = len(hits) > ROLELOG_LIMIT
+        elif len(hits) >= ROLELOG_NUKE:
             crec = self._role_changes.get(after.id)
             if crec and crec.get("by_id") == self.bot.user.id \
                     and "self-assign role menu" in (crec.get("reason") or "").lower():
                 await self._quarantine_role_spammer(after, log_ch, len(hits))
             self._rolelog_cd[after.id] = now + ROLELOG_COOLDOWN
             self._rolelog_hits[after.id] = []
-            return
-        if now < self._rolelog_cd.get(after.id, 0):
-            return  # in cooldown — suppress this member's role logs
-        if len(hits) > ROLELOG_LIMIT:
+            paused = True
+        elif now < self._rolelog_cd.get(after.id, 0):
+            paused = True  # in cooldown — suppress this member's role embeds
+        elif len(hits) > ROLELOG_LIMIT:
             self._rolelog_cd[after.id] = now + ROLELOG_COOLDOWN
             note = discord.Embed(
                 title="🎭 Role logs paused (rate limit)", color=COLOR_ROLE,
@@ -2351,21 +2360,21 @@ class ModLog(commands.Cog):
                             f"{int(ROLELOG_COOLDOWN)}s. No action taken.")
             note.set_footer(text=f"User ID {after.id}")
             await log_ch.send(embed=note, allowed_mentions=discord.AllowedMentions.none())
-            return
+            paused = True
 
         # WHO: the audit event usually lands within a second; check the cache
         # immediately, then briefly wait. Aggregated entries (same mod changing
         # the same member again inside Discord's merge window) don't re-dispatch
         # the gateway event, so a one-shot poll covers that gap.
         rec = None
-        for attempt in range(4):
+        for attempt in range(1 if paused else 4):
             if attempt:
                 await asyncio.sleep(1.0)
             r = self._role_changes.get(after.id)
             if r and time.time() - r["ts"] < 30:
                 rec = r
                 break
-        if rec is None or not (changed_ids & (rec["added"] | rec["removed"])):
+        if not paused and (rec is None or not (changed_ids & (rec["added"] | rec["removed"]))):
             try:
                 async for e in guild.audit_logs(limit=8, action=discord.AuditLogAction.member_role_update):
                     if getattr(e.target, "id", None) != after.id:
@@ -2402,6 +2411,8 @@ class ModLog(commands.Cog):
             reason=None if self_assign else (rec or {}).get("reason"),
             changes={"added": [f"{r.name} ({r.id})" for r in added],
                      "removed": [f"{r.name} ({r.id})" for r in removed]})
+        if paused or log_ch is None:
+            return
         embed = discord.Embed(title="🎭 Roles updated", color=COLOR_ROLE,
                               description=self._member_line(after))
         if added:
@@ -2424,11 +2435,7 @@ class ModLog(commands.Cog):
         what makes the chain reconstructable years later.
         """
         guild = member.guild
-        if not is_enabled(guild.id, "msglog"):
-            return
         cfg = get_config(guild.id)
-        if not cfg.get("msglog_names", 1):
-            return
         if member.bot and not cfg.get("msglog_log_bots", 0):
             return
         rec = None
@@ -2442,7 +2449,7 @@ class ModLog(commands.Cog):
                               by_uid=(rec or {}).get("by_id"),
                               by_name=(rec or {}).get("by_name"),
                               reason=(rec or {}).get("reason"))
-        log_ch = self._log_channel(guild, cfg, "users")
+        log_ch = self._post_channel(guild, cfg, "users") if cfg.get("msglog_names", 1) else None
         if log_ch is None:
             return
         title = {"nick": "🏷️ Nickname changed",
@@ -2505,17 +2512,13 @@ class ModLog(commands.Cog):
         a reused avatar is one of the strongest cheap alt signals there is, and
         the CDN copy vanishes the moment the account does."""
         guild = member.guild
-        if not is_enabled(guild.id, "msglog"):
-            return
         cfg = get_config(guild.id)
-        if not cfg.get("msglog_names", 1):
-            return
         if member.bot and not cfg.get("msglog_log_bots", 0):
             return
         old_hash = getattr(old_asset, "key", None) if old_asset else None
         new_hash = await self._store_avatar(member, new_asset)
         self._record_identity(guild.id, member, kind, old_hash, new_hash)
-        log_ch = self._log_channel(guild, cfg, "users")
+        log_ch = self._post_channel(guild, cfg, "users") if cfg.get("msglog_names", 1) else None
         if log_ch is None:
             return
         embed = discord.Embed(
@@ -2559,11 +2562,7 @@ class ModLog(commands.Cog):
         """Timeout applied / lifted. Previously invisible entirely — a mod
         timing someone out left no trace in our logs at all."""
         guild = after.guild
-        if not is_enabled(guild.id, "msglog"):
-            return
         cfg = get_config(guild.id)
-        if not cfg.get("msglog_names", 1):
-            return
         until = getattr(after, "timed_out_until", None)
         was = getattr(before, "timed_out_until", None)
         # Discord expires a timeout by leaving the (now past) stamp in place, so
@@ -2578,7 +2577,7 @@ class ModLog(commands.Cog):
             after=until.isoformat() if until else None,
             by_uid=(rec or {}).get("by_id"), by_name=(rec or {}).get("by_name"),
             reason=(rec or {}).get("reason"))
-        log_ch = self._log_channel(guild, cfg, "mod")
+        log_ch = self._post_channel(guild, cfg, "mod") if cfg.get("msglog_names", 1) else None
         if log_ch is None:
             return
         embed = discord.Embed(
@@ -2607,14 +2606,9 @@ class ModLog(commands.Cog):
         it. Also records a ledger row: repeat attempts are a pattern.
         """
         guild = self.bot.get_guild(execution.guild_id)
-        if guild is None or not is_enabled(guild.id, "msglog"):
+        if guild is None:
             return
         cfg = get_config(guild.id)
-        if not cfg.get("msglog_automod", 1):
-            return
-        log_ch = self._log_channel(guild, cfg, "automod")
-        if log_ch is None:
-            return
         member = guild.get_member(execution.user_id)
         action = getattr(getattr(execution, "action", None), "type", None)
         blocked = getattr(execution, "content", None) or getattr(execution, "matched_content", None)
@@ -2623,6 +2617,9 @@ class ModLog(commands.Cog):
             before=getattr(execution, "matched_keyword", None),
             after=_trunc(blocked or "", 400),
             reason=f"rule:{execution.rule_id} action:{getattr(action, 'name', action)}")
+        log_ch = self._post_channel(guild, cfg, "automod") if cfg.get("msglog_automod", 1) else None
+        if log_ch is None:
+            return
         embed = discord.Embed(
             title="🛡️ AutoMod blocked a message", color=COLOR_MOD_DELETE,
             description=(self._member_line(member) if member
@@ -2701,7 +2698,7 @@ class ModLog(commands.Cog):
         guild = entry.guild
         cfg = get_config(guild.id)
         # embed only if the kind is on and routed; the ledger row is written regardless
-        log_ch = self._log_channel(guild, cfg, "roles") if cfg.get("msglog_roles", 1) else None
+        log_ch = self._post_channel(guild, cfg, "roles") if cfg.get("msglog_roles", 1) else None
         A = discord.AuditLogAction
         role = entry.target  # discord.Role, or bare Object once deleted
         role_id = getattr(role, "id", "?")
@@ -2757,7 +2754,7 @@ class ModLog(commands.Cog):
         guild = entry.guild
         cfg = get_config(guild.id)
         # embed only if the kind is on and routed; the ledger row is written regardless
-        log_ch = self._log_channel(guild, cfg, "expressions") if cfg.get("msglog_expressions", 1) else None
+        log_ch = self._post_channel(guild, cfg, "expressions") if cfg.get("msglog_expressions", 1) else None
         A = discord.AuditLogAction
         is_sticker = entry.action in (A.sticker_create, A.sticker_delete, A.sticker_update)
         kind = "Sticker" if is_sticker else "Emoji"
@@ -2833,7 +2830,7 @@ class ModLog(commands.Cog):
         guild = entry.guild
         cfg = get_config(guild.id)
         # embed only if the kind is on and routed; the ledger row is written regardless
-        log_ch = self._log_channel(guild, cfg, "channels") if cfg.get("msglog_channels", 1) else None
+        log_ch = self._post_channel(guild, cfg, "channels") if cfg.get("msglog_channels", 1) else None
         A = discord.AuditLogAction
         target_id = getattr(entry.target, "id", None)
         chan = guild.get_channel(target_id) if target_id else None
@@ -2900,9 +2897,8 @@ class ModLog(commands.Cog):
         if member.id == self.bot.user.id:
             return
         log_ch, _ = self._members_log_channel(guild)
-        if log_ch is None:
-            return
-        # wait for the audit event to classify this removal (kick/ban/leave)
+        # classify + record even when nothing is posted: the leave/kick row is
+        # the ledger's whole point. Wait for the audit event (kick/ban/leave).
         rec = None
         for _ in range(3):
             await asyncio.sleep(1.5)
@@ -2929,8 +2925,8 @@ class ModLog(commands.Cog):
             before=member.nick, after=member.global_name or member.name,
             by_uid=(rec or {}).get("by_id"), by_name=(rec or {}).get("by_name"),
             reason=(rec or {}).get("reason"))
-        if is_quiet(member.id):
-            return  # silenced removal — the ledger row above is written either way
+        if log_ch is None or is_quiet(member.id):
+            return  # not posted — the ledger row above is written either way
         if rec and rec["action"] is discord.AuditLogAction.ban:
             return  # the ban embed (with reason) is posted from the audit event
         joined = f"<t:{int(member.joined_at.timestamp())}:R>" if member.joined_at else "?"
