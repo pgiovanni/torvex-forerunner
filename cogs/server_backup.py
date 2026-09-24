@@ -281,37 +281,6 @@ class ServerBackup(commands.Cog):
             body += f"\n… +{len(rows) - 25} more"
         await interaction.followup.send(f"📤 **{len(rows)}** departures in {hours}h — {summary}:\n{body}", ephemeral=True)
 
-    @app_commands.command(name="member-activity",
-                          description="Full join/leave/kick/ban log between snapshots (admin)")
-    @app_commands.describe(hours="how far back to look (default 24)")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
-    async def member_activity(self, interaction: discord.Interaction, hours: int = 24):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        cutoff = time.time() - max(1, hours) * 3600
-        with self._conn() as c:
-            rows = c.execute("SELECT ts, username, kind, by_uid FROM member_events "
-                             "WHERE guild_id=? AND ts>? ORDER BY ts DESC",
-                             (str(interaction.guild.id), cutoff)).fetchall()
-        if not rows:
-            await interaction.followup.send(f"No member activity in the last {hours}h.", ephemeral=True)
-            return
-        counts = {}
-        for r in rows:
-            counts[r["kind"]] = counts.get(r["kind"], 0) + 1
-        summary = ", ".join(f"{v} {k}{'s' if v > 1 else ''}" for k, v in counts.items())
-        emoji = {"join": "📥", "leave": "📤", "kick": "👢", "ban": "🔨"}
-        lines = []
-        for r in rows[:25]:
-            t = time.strftime("%m-%d %H:%M", time.localtime(r["ts"]))
-            by = f" by <@{r['by_uid']}>" if r["by_uid"] else ""
-            lines.append(f"`{t}` {emoji.get(r['kind'], '•')} **{r['kind']}** · {r['username']}{by}")
-        body = "\n".join(lines)
-        if len(rows) > 25:
-            body += f"\n… +{len(rows) - 25} more"
-        await interaction.followup.send(f"📊 **{len(rows)}** events in {hours}h — {summary}:\n{body}", ephemeral=True)
-
     @tasks.loop(hours=SNAPSHOT_HOURS)
     async def auto_snapshot(self):
         for gid in BACKUP_GUILDS:
