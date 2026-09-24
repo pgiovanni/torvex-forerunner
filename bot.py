@@ -212,10 +212,71 @@ def _record_guild_event(event: str, guild):
         print(f"[WARN] guild event record failed: {e}")
 
 
+# Operator-only alert when the bot is added to / removed from a server.
+# Delivered by email through Resend (the same provider torvex.app uses), so
+# nothing is posted in Discord — the server never sees it. All three env
+# values must be set or the alert is skipped silently; the ledger row above
+# is still written either way.
+GUILD_ALERT_EMAIL = (os.getenv("GUILD_ALERT_EMAIL") or "").strip()
+GUILD_ALERT_FROM = (os.getenv("GUILD_ALERT_FROM") or "").strip()
+RESEND_API_KEY = (os.getenv("RESEND_API_KEY") or "").strip()
+
+
+def _guild_alert_payload(event: str, guild, guild_count: int) -> dict:
+    """Build the Resend request body for a join/remove alert (pure, testable)."""
+    verb = "added to" if event == "join" else "removed from"
+    name = str(getattr(guild, "name", "") or "?")
+    members = getattr(guild, "member_count", None)
+    owner_id = getattr(guild, "owner_id", None)
+    owner = getattr(guild, "owner", None)
+    owner_txt = f"{owner} ({owner_id})" if owner and owner_id else str(owner_id or "?")
+    created = getattr(guild, "created_at", None)
+    created_txt = created.strftime("%Y-%m-%d") if created else "?"
+    lines = [
+        f"Torvex Forerunner was {verb} a server.",
+        "",
+        f"Server:   {name}",
+        f"Guild ID: {guild.id}",
+        f"Members:  {members if members is not None else '?'}",
+        f"Owner:    {owner_txt}",
+        f"Created:  {created_txt}",
+        f"Now in:   {guild_count} servers",
+    ]
+    if event == "join":
+        from utils.links import dashboard_url
+        lines += ["", f"Dashboard: {dashboard_url(guild.id)}"]
+    return {
+        "from": GUILD_ALERT_FROM,
+        "to": [GUILD_ALERT_EMAIL],
+        "subject": f"[Forerunner] {'Added to' if event == 'join' else 'Removed from'} {name} ({members if members is not None else '?'} members)",
+        "text": chr(10).join(lines),
+    }
+
+
+async def _send_guild_alert(event: str, guild):
+    if not (GUILD_ALERT_EMAIL and GUILD_ALERT_FROM and RESEND_API_KEY):
+        return
+    try:
+        payload = _guild_alert_payload(event, guild, len(bot.guilds))
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+            async with session.post(
+                "https://api.resend.com/emails",
+                json=payload,
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+            ) as r:
+                if r.status >= 300:
+                    body = (await r.text())[:300]
+                    print(f"[WARN] guild alert email failed: HTTP {r.status} {body}")
+    except Exception as e:
+        # Never let the alert take the bot down or delay the event handlers.
+        print(f"[WARN] guild alert email failed: {e}")
+
+
 @bot.event
 async def on_guild_join(guild):
     print(f"[GUILD] JOINED {guild.id} ({guild.name!r}) members={getattr(guild, 'member_count', '?')} — now in {len(bot.guilds)} guilds")
     _record_guild_event("join", guild)
+    bot.loop.create_task(_send_guild_alert("join", guild))
 
 
 @bot.event
@@ -224,6 +285,7 @@ async def on_guild_remove(guild):
     # guild being deleted outright — Discord does not tell us which.
     print(f"[GUILD] REMOVED FROM {guild.id} ({guild.name!r}) members={getattr(guild, 'member_count', '?')} — now in {len(bot.guilds)} guilds")
     _record_guild_event("remove", guild)
+    bot.loop.create_task(_send_guild_alert("remove", guild))
 
 
 @bot.event
