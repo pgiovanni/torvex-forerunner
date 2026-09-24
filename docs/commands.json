@@ -4438,26 +4438,6 @@
    "dm_allowed": false
   },
   {
-   "path": "member-activity",
-   "description": "Full join/leave/kick/ban log between snapshots (admin)",
-   "params": [
-    {
-     "name": "hours",
-     "type": "integer",
-     "required": false,
-     "description": "how far back to look (default 24)"
-    }
-   ],
-   "signature": "/member-activity [hours]",
-   "root": "member-activity",
-   "cog": "server_backup",
-   "permissions": [
-    "Administrator"
-   ],
-   "cooldown_seconds": null,
-   "dm_allowed": false
-  },
-  {
    "path": "structure-restore",
    "description": "Recreate roles/channels deleted since the last backup (admin)",
    "params": [
@@ -6437,16 +6417,6 @@
    "server_owner_only": false
   },
   "recent-leaves": {
-   "cog": "server_backup",
-   "visibility_permissions": [
-    "administrator"
-   ],
-   "runtime_permissions": [
-    "administrator"
-   ],
-   "server_owner_only": false
-  },
-  "member-activity": {
    "cog": "server_backup",
    "visibility_permissions": [
     "administrator"

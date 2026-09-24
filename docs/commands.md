@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **223 commands** (97 top-level, the rest subcommands) across 40 cogs
+- **222 commands** (96 top-level, the rest subcommands) across 40 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -23,7 +23,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 ## Index
 
-**Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/honeypot`, `/member-activity`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recon-status`, `/recon-unblock`, `/security-ai`, `/security`, `/simpleverify`, `/structure-restore`, `/unquarantine`, `/verify`
+**Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/honeypot`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recon-status`, `/recon-unblock`, `/security-ai`, `/security`, `/simpleverify`, `/structure-restore`, `/unquarantine`, `/verify`
 
 **Moderation** — `/ban`, `/clear-warning`, `/clear-warnings`, `/conduct-forget`, `/evidence`, `/kick`, `/lock`, `/msglog`, `/note`, `/prune-messages`, `/quiet-kick`, `/timeout`, `/unban`, `/unlock`, `/untimeout`, `/warn`, `/warnings`
 
@@ -887,20 +887,6 @@ Show the honeypot settings for this server.
 ### Server backup
 
 <sub>`cogs/server_backup.py`</sub>
-
-#### `/member-activity`
-
-Full join/leave/kick/ban log between snapshots (admin)
-
-```
-/member-activity [hours]
-```
-
-**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `hours` | integer | No | how far back to look (default 24) |
 
 #### `/structure-restore`
 
