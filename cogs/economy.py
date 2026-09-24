@@ -12,7 +12,7 @@ import logging
 from datetime import date
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from utils import security_config, level_notify, leaderboard  # noqa: E402
+from utils import security_config, level_notify, leaderboard, perm_failures  # noqa: E402
 
 log = logging.getLogger("economy")
 
@@ -902,7 +902,8 @@ class Economy(commands.Cog):
 
 
     # ── /check-perms ──────────────────────────────────────────────────────────
-    @app_commands.command(name="check-perms", description="[Admin] Show and fix channels the bot can't read.")
+    @app_commands.command(name="check-perms",                     # description: Discord caps it at 100 chars
+                          description="[Admin] What the bot can't do in this server and why — channels, perms, recent failures.")
     @app_commands.describe(fix="Show a picker to fix channel permissions")
     @app_commands.checks.has_permissions(administrator=True)
     async def check_perms(self, interaction: discord.Interaction, fix: bool = False):
@@ -919,22 +920,48 @@ class Economy(commands.Cog):
             if not perms.view_channel or not perms.read_message_history:
                 blocked.append(channel)
 
-        if not blocked:
-            await interaction.edit_original_response(
-                content=f"✅ Bot can read all {len(guild.text_channels)} text channels in this server."
-            )
-            return
+        # Three answers, worst first: the channels the admin CHOSE that the bot
+        # can't post into, what actually failed in the last day (with the
+        # permission that was missing), then the general "can't read" sweep.
+        # Before 9/24 this command only had the sweep, so a broken log channel
+        # was invisible here too.
+        cfg = security_config.get_config(guild.id)
+        rows = perm_failures.audit(guild, cfg)
+        bad = [(label, cid, problem) for label, _k, cid, problem in rows if problem]
+        parts = []
+        if bad:
+            parts.append("**⚠️ Configured channels the bot can't use:**\n"
+                         + "\n".join(f"• **{label}** → <#{cid}>: {problem}" for label, cid, problem in bad))
+        elif rows:
+            parts.append(f"✅ All {len(rows)} configured channels (logs, welcome, verify…) are usable.")
+
+        failures = perm_failures.recent(guild.id)
+        if failures:
+            lines = []
+            for f in failures[:8]:
+                n = f"×{f['count']}" if f["count"] > 1 else ""
+                lines.append(f"• <t:{int(f['last_ts'])}:R> {n} — {f['detail']}")
+            parts.append("**🧾 Failures in the last 24h:**\n" + "\n".join(lines)
+                         + (f"\n… and {len(failures) - 8} more" if len(failures) > 8 else ""))
 
         readable = sum(1 for c in guild.text_channels if c.permissions_for(me).view_channel)
-        summary = (
-            f"**{len(blocked)} channel(s) the bot can't fully read:**\n"
-            + "\n".join(f"• #{c.name}" for c in blocked[:20])
-            + (f"\n… and {len(blocked) - 20} more" if len(blocked) > 20 else "")
-            + f"\n\n📊 {readable}/{len(guild.text_channels)} visible."
-        )
+        if blocked:
+            parts.append(
+                f"**{len(blocked)} channel(s) the bot can't fully read:**\n"
+                + "\n".join(f"• #{c.name}" for c in blocked[:20])
+                + (f"\n… and {len(blocked) - 20} more" if len(blocked) > 20 else "")
+                + f"\n📊 {readable}/{len(guild.text_channels)} visible."
+            )
+        else:
+            parts.append(f"✅ Bot can read all {len(guild.text_channels)} text channels in this server.")
+        summary = "\n\n".join(parts)[:1900]
+
+        if not blocked:
+            await interaction.edit_original_response(content=summary)
+            return
 
         if not fix:
-            summary += "\n\nRun `/check-perms fix:True` to fix these."
+            summary += "\n\nRun `/check-perms fix:True` to fix the unreadable ones."
             await interaction.edit_original_response(content=summary)
             return
 

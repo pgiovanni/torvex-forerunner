@@ -45,6 +45,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils import perm_failures  # noqa: E402
 from utils.security_config import get_config, set_config, is_enabled, all_enabled  # noqa: E402
 from utils.quiet_removals import is_quiet  # noqa: E402
 from utils import mentions as mention_index  # noqa: E402
@@ -1405,7 +1406,35 @@ class ModLog(commands.Cog):
         key = self.KIND_KEYS.get(kind)
         cid = ((cfg.get(key) if key else None) or cfg.get("msglog_channel_id")
                or cfg.get("modlog_channel_id"))
-        return guild.get_channel(int(cid)) if cid else None
+        if not cid:
+            return None
+        ch = guild.get_channel(int(cid))
+        if ch is None:
+            # Configured but gone (deleted, or hidden from the bot). Recorded so
+            # /check-perms can say so — before this, the log just stopped.
+            perm_failures.note(guild, cid, f"find the {kind} log channel")
+        return ch
+
+    async def _post(self, log_ch, what, **kw):
+        """Every log embed goes out through here. A channel the bot can't post
+        into used to be a 16-line traceback per event (~50/day) and nothing
+        the admin could see; now it's one journal line, a ledger row that
+        /check-perms reads, and a once-a-day DM to the alert contact saying
+        which permission is missing where."""
+        try:
+            msg = await log_ch.send(**kw)
+        except discord.Forbidden as e:
+            await perm_failures.report(self.bot, log_ch.guild, log_ch, what, e)
+            return None
+        except discord.HTTPException as e:
+            if e.code == 10003:                         # Unknown Channel
+                await perm_failures.report(self.bot, log_ch.guild, log_ch, what, e)
+            else:
+                perm_failures.log.warning("guild %s: couldn't %s in #%s: %s",
+                                          log_ch.guild.id, what, log_ch.name, e)
+            return None
+        perm_failures.ok(log_ch.guild.id, log_ch.id, what)
+        return msg
 
     def _post_channel(self, guild, cfg, kind="messages"):
         """Where to POST an embed, or None. The msglog switch (and each kind's
@@ -1604,7 +1633,7 @@ class ModLog(commands.Cog):
             who = cfg.get("msglog_alert_ping", guild.owner_id)
             if who:
                 ping = f"<@&{who}>" if str(who) in {str(r.id) for r in guild.roles} else f"<@{who}>"
-        await log_ch.send(
+        await self._post(log_ch, "post the message-delete log", 
             content=ping, embed=embed,
             files=discord.utils.MISSING if route_media else (files or discord.utils.MISSING),
             allowed_mentions=discord.AllowedMentions(users=True, roles=True))
@@ -1678,7 +1707,7 @@ class ModLog(commands.Cog):
                   "full transcript posts when the run stops. The archive keeps everything.",
             inline=False)
         embed.set_footer(text=f"User ID {row['author_id']}")
-        await log_ch.send(content=self._alert_ping(guild, cfg), embed=embed,
+        await self._post(log_ch, "post the self-delete alert", content=self._alert_ping(guild, cfg), embed=embed,
                           allowed_mentions=discord.AllowedMentions(users=True, roles=True))
         asyncio.create_task(self._selfdel_summary(guild, row["author_id"], key))
         return True
@@ -1731,7 +1760,7 @@ class ModLog(commands.Cog):
         if rows:
             buf = io.BytesIO(build_transcript(rows, guild.name).encode("utf-8"))
             files = [discord.File(buf, filename=f"self_delete_{author_id}.txt")]
-        await log_ch.send(embed=embed, files=files,
+        await self._post(log_ch, "post the self-delete summary", embed=embed, files=files,
                           allowed_mentions=discord.AllowedMentions.none())
 
     @commands.Cog.listener()
@@ -1786,7 +1815,7 @@ class ModLog(commands.Cog):
         if rows:
             buf = io.BytesIO(build_transcript(rows, guild.name).encode("utf-8"))
             files = [discord.File(buf, filename=f"bulk_delete_{payload.channel_id}.txt")]
-        await log_ch.send(embed=embed, files=files,
+        await self._post(log_ch, "post the bulk-delete log", embed=embed, files=files,
                           allowed_mentions=discord.AllowedMentions.none())
 
     @commands.Cog.listener()
@@ -1852,7 +1881,7 @@ class ModLog(commands.Cog):
                 embed.add_field(name="📣 Pings edited out",
                                 value=_trunc("\n".join(gone)), inline=False)
         embed.set_footer(text=f"Message ID {payload.message_id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the message-edit log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     # ------------------------------------------------------------- retention sweep
     def _guild_windows(self, guild_id, now):
@@ -2078,7 +2107,7 @@ class ModLog(commands.Cog):
             embed.add_field(name="Invite used", value=inv, inline=False)
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.set_footer(text=f"User ID {member.id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the join log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @commands.Cog.listener()
     async def on_audit_log_entry_create(self, entry: discord.AuditLogEntry):
@@ -2143,7 +2172,7 @@ class ModLog(commands.Cog):
         embed.add_field(name="By", value=self._mod_line(rec), inline=True)
         embed.add_field(name="Reason", value=_trunc(rec["reason"] or "No reason provided"), inline=False)
         embed.set_footer(text=f"User ID {target_id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the kick/ban log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def _log_automod_rule_event(self, entry):
         """AutoMod rule created / edited / deleted, with the diff."""
@@ -2180,7 +2209,7 @@ class ModLog(commands.Cog):
             inline=True)
         if entry.reason:
             embed.add_field(name="Reason", value=_trunc(entry.reason), inline=False)
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the AutoMod-rule log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     def _record_identity(self, guild_id, user, kind, before=None, after=None,
                          by_uid=None, by_name=None, reason=None):
@@ -2359,7 +2388,7 @@ class ModLog(commands.Cog):
                             f"in ~{int(ROLELOG_WINDOW)}s — pausing their role logs for "
                             f"{int(ROLELOG_COOLDOWN)}s. No action taken.")
             note.set_footer(text=f"User ID {after.id}")
-            await log_ch.send(embed=note, allowed_mentions=discord.AllowedMentions.none())
+            await self._post(log_ch, "post the member-update log", embed=note, allowed_mentions=discord.AllowedMentions.none())
             paused = True
 
         # WHO: the audit event usually lands within a second; check the cache
@@ -2425,7 +2454,7 @@ class ModLog(commands.Cog):
         if rec and rec.get("reason") and not self_assign:
             embed.add_field(name="Reason", value=_trunc(rec["reason"]), inline=False)
         embed.set_footer(text=f"User ID {after.id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the member-update log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def _log_name_event(self, member, kind, old, new):
         """Nickname / username / global-name change → embed + ledger row.
@@ -2464,7 +2493,7 @@ class ModLog(commands.Cog):
             if rec.get("reason"):
                 embed.add_field(name="Reason", value=_trunc(rec["reason"]), inline=False)
         embed.set_footer(text=f"User ID {member.id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the name-change log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def _store_avatar(self, user, asset):
         """Persist an avatar's bytes once, keyed by Discord's asset hash.
@@ -2555,7 +2584,7 @@ class ModLog(commands.Cog):
             embed.set_image(url=after_url)
         short = lambda h: (h[:12] + "…") if h and len(h) > 14 else (h or "default")  # noqa: E731
         embed.set_footer(text=f"User ID {member.id} · {short(old_hash)} → {short(new_hash)}")
-        await log_ch.send(embed=embed, files=files or discord.utils.MISSING,
+        await self._post(log_ch, "post the avatar-change log", embed=embed, files=files or discord.utils.MISSING,
                           allowed_mentions=discord.AllowedMentions.none())
 
     async def _log_timeout_event(self, before, after):
@@ -2593,7 +2622,7 @@ class ModLog(commands.Cog):
         if rec and rec.get("reason"):
             embed.add_field(name="Reason", value=_trunc(rec["reason"]), inline=False)
         embed.set_footer(text=f"User ID {after.id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the timeout log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @commands.Cog.listener()
     async def on_automod_action(self, execution: discord.AutoModAction):
@@ -2634,7 +2663,7 @@ class ModLog(commands.Cog):
             # the payload Discord refused to deliver — kept verbatim, escaped
             embed.add_field(name="Blocked content", value=_trunc(_plain(blocked)), inline=False)
         embed.set_footer(text=f"User ID {execution.user_id} · rule {execution.rule_id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the AutoMod-action log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @commands.Cog.listener()
     async def on_user_update(self, before: discord.User, after: discord.User):
@@ -2690,7 +2719,7 @@ class ModLog(commands.Cog):
                            if done else
                            "\n⚠️ Could not auto-quarantine (anti-nuke off or no quarantine role set) — review manually."))
         embed.set_footer(text=f"User ID {member.id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the role-spam notice", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def _log_guild_role_event(self, entry):
         """Role created / deleted / edited — straight from the audit event, which
@@ -2743,7 +2772,7 @@ class ModLog(commands.Cog):
         if entry.reason:
             embed.add_field(name="Reason", value=_trunc(entry.reason), inline=False)
         embed.set_footer(text=f"Role ID {role_id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the role-change log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def _log_expression_event(self, entry):
         """Custom emoji / sticker created, deleted or edited — audit event
@@ -2796,7 +2825,7 @@ class ModLog(commands.Cog):
         elif entry.action in (A.emoji_delete, A.sticker_delete):
             embed.add_field(name="Image", value="not recoverable (CDN no longer serves it)",
                             inline=False)
-        await log_ch.send(embed=embed, file=file,
+        await self._post(log_ch, "post the emoji/sticker log", embed=embed, file=file,
                           allowed_mentions=discord.AllowedMentions.none())
 
     async def _fetch_expression_asset(self, target_id, is_sticker):
@@ -2889,7 +2918,7 @@ class ModLog(commands.Cog):
         if entry.reason:
             embed.add_field(name="Reason", value=_trunc(entry.reason), inline=False)
         embed.set_footer(text=f"Channel ID {target_id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the channel-change log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
@@ -2947,7 +2976,7 @@ class ModLog(commands.Cog):
         if roles:
             embed.add_field(name="Roles", value=_trunc(" ".join(roles), 1024), inline=False)
         embed.set_footer(text=f"User ID {member.id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the leave log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
@@ -2995,7 +3024,7 @@ class ModLog(commands.Cog):
         embed = discord.Embed(title=title, color=color, description=self._member_line(member))
         embed.add_field(name="Channel", value=channel, inline=False)
         embed.set_footer(text=f"User ID {member.id}")
-        await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        await self._post(log_ch, "post the voice log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def _log_server_voice_state(self, member, before, after, log_ch):
         """Server mute/deafen applied or lifted by a moderator (Quark Pro's
@@ -3017,7 +3046,7 @@ class ModLog(commands.Cog):
             if rec and rec.get("reason"):
                 embed.add_field(name="Reason", value=_trunc(rec["reason"]), inline=False)
             embed.set_footer(text=f"User ID {member.id}")
-            await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            await self._post(log_ch, "post the voice mute/deafen log", embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     # ------------------------------------------------------------- commands
     msglog = app_commands.Group(
@@ -3170,7 +3199,7 @@ class ModLog(commands.Cog):
                     embed = discord.Embed(title="⭐ Logging Pro is active on this server",
                                           color=COLOR_EDIT,
                                           description="\n".join(self._pro_state_lines(target)))
-                    await log_ch.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                    await self._post(log_ch, "post the Logging Pro notice", embed=embed, allowed_mentions=discord.AllowedMentions.none())
                 except discord.HTTPException:
                     pass
 

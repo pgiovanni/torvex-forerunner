@@ -44,6 +44,7 @@ from discord.ext import commands
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.security_config import get_config  # noqa: E402
 from utils.quiet_removals import is_quiet  # noqa: E402
+from utils import perm_failures  # noqa: E402
 
 MAX_RULES = 25              # mirrors the dashboard's cap; re-applied here because
 MAX_ACTIONS = 5             # this process is the one holding the permissions
@@ -295,9 +296,20 @@ class AutoRules(commands.Cog):
                 self._breaker_hit(guild)
             try:
                 await self._do(t, act, guild, cfg, rule, member, message, channel)
-            except (discord.Forbidden, discord.HTTPException, ValueError, TypeError):
-                pass                                   # a permission we don't have
-                                                       # is not worth a traceback
+            except discord.Forbidden as e:
+                # Not a traceback — but not silence either. The admin who built
+                # the rule gets told which permission is missing where, and
+                # /check-perms lists it (Paul 9/24).
+                where = channel
+                if t in ("send",) and act.get("w"):
+                    where = guild.get_channel(int(act.get("w"))) or act.get("w")
+                elif message is not None:
+                    where = message.channel
+                await perm_failures.report(self.bot, guild, where,
+                                           f"run rule “{rule.get('name') or rule.get('id')}” ({t})", e)
+            except (discord.HTTPException, ValueError, TypeError):
+                pass                                   # a bad value is not worth
+                                                       # a traceback
 
     async def _do(self, t, act, guild, cfg, rule, member, message, channel):
         v, w = act.get("v"), act.get("w")
