@@ -65,6 +65,34 @@ check("plain session duration", act.session_seconds(100.0, 160.0) == 60.0)
 check("session clipped to window", act.session_seconds(100.0, 160.0, cutoff=130.0) == 30.0)
 check("window after session = 0", act.session_seconds(100.0, 160.0, cutoff=200.0) == 0.0)
 
+# ---- reconcile_voice (sessions surviving a restart) ----
+T = 10_000.0
+A, B, C, D = (1, 11), (1, 12), (1, 13), (1, 14)
+saved = {
+    A: (500, 1_000.0, T - 30),     # still in the same channel, short restart
+    B: (500, 2_000.0, T - 30),     # left while we were down
+    C: (500, 3_000.0, T - 30),     # moved channels while we were down
+    D: (500, 4_000.0, T - 3_600),  # same channel, but we were down an hour
+}
+live = {A: 500, C: 600, D: 500, (1, 15): 700}   # 15 = in voice, never tracked
+close, keep = act.reconcile_voice(saved, live, T)
+closed = {(g, u): (cid, j, l) for g, u, cid, j, l in close}
+check("restart blip keeps the session whole", keep[A] == (500, 1_000.0) and A not in closed)
+check("left during downtime closes at last stamp", closed[B] == (500, 2_000.0, T - 30) and B not in keep)
+check("moved during downtime: old closed, new opens now",
+      closed[C] == (500, 3_000.0, T - 30) and keep[C] == (600, T))
+check("long outage isn't counted as voice time",
+      closed[D] == (500, 4_000.0, T - 3_600) and keep[D] == (500, T))
+check("already in voice at startup opens now", keep[(1, 15)] == (700, T))
+check("nothing saved, nobody live = nothing", act.reconcile_voice({}, {}, T) == ([], {}))
+# idempotent: a second READY right after sees fresh stamps and changes nothing
+again = {k: (cid, j, T) for k, (cid, j) in keep.items()}
+close2, keep2 = act.reconcile_voice(again, live, T + 5)
+check("second READY is a no-op", close2 == [] and keep2 == keep)
+# a guild that switched voice tracking off is absent from live -> its saved row closes
+close3, keep3 = act.reconcile_voice({A: (500, 1_000.0, T - 30)}, {}, T)
+check("voice switched off closes open sessions", len(close3) == 1 and keep3 == {})
+
 # ---- render smoke tests (Agg — just prove a PNG comes out) ----
 d, n = act.fill_days({"2026-07-05": 5}, 30, NOW)
 png = act.render_daily_line(d, n, "t", "s").getvalue()

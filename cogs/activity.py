@@ -31,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import matplotlib
 matplotlib.use("Agg")
@@ -40,6 +40,8 @@ from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.dates import ConciseDateFormatter, AutoDateLocator
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from utils.security_config import get_config  # noqa: E402
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 MSG_DB = os.path.join(ROOT, "messages.db")
@@ -123,6 +125,38 @@ def session_seconds(joined_ts, left_ts, cutoff=0):
     """Billable seconds of a voice session clipped to a window start."""
     start = max(joined_ts, cutoff)
     return max(0.0, left_ts - start)
+
+
+# Open voice sessions are stamped every HEARTBEAT seconds. On startup a saved
+# session is treated as unbroken only if its last stamp is younger than
+# RESUME_GAP — a normal restart (~30 s) keeps the session whole; a long outage
+# closes it at the last stamp and starts a fresh one, so downtime is never
+# counted as time in voice.
+HEARTBEAT = 60
+RESUME_GAP = 180
+
+
+def reconcile_voice(saved, live, now, gap=RESUME_GAP):
+    """Match sessions saved before a restart against who is in voice now.
+
+    saved: {(gid, uid): (channel_id, joined_ts, seen_ts)}
+    live:  {(gid, uid): channel_id}   (only guilds where voice tracking is on)
+    Returns (close, keep):
+      close: [(gid, uid, channel_id, joined_ts, left_ts)] sessions that ended
+             while we were down (or broke across a long outage)
+      keep:  {(gid, uid): (channel_id, joined_ts)} sessions open from now on
+    Total over its inputs, no I/O — the cog does the reads and writes."""
+    close, keep = [], {}
+    for key, (cid, joined, seen) in saved.items():
+        still = live.get(key)
+        if still is not None and str(still) == str(cid) and now - seen <= gap:
+            keep[key] = (cid, joined)                  # restart blip: unbroken
+        else:
+            close.append((key[0], key[1], cid, joined, min(seen, now)))
+    for key, cid in live.items():
+        if key not in keep:
+            keep[key] = (cid, now)                     # in voice, not tracked yet
+    return close, keep
 
 
 # --------------------------------------------------------------------------- rendering
@@ -256,6 +290,16 @@ class Activity(commands.Cog):
                        user_name TEXT, joined_ts REAL, left_ts REAL, seconds REAL
                    )""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_vs_guild ON voice_sessions(guild_id, left_ts)")
+            # Sessions still in progress. In memory alone they died with every
+            # restart — and a session that spans a restart was lost WHOLE, so
+            # the longest sessions (most of the voice time) were the ones missing.
+            c.execute(
+                """CREATE TABLE IF NOT EXISTS voice_open (
+                       guild_id TEXT, user_id TEXT, channel_id TEXT, user_name TEXT,
+                       joined_ts REAL, seen_ts REAL,
+                       PRIMARY KEY (guild_id, user_id)
+                   )""")
+        self._voice_heartbeat.start()
 
     def _msg_conn(self):
         c = sqlite3.connect(MSG_DB, timeout=30)
@@ -277,17 +321,33 @@ class Activity(commands.Cog):
         await interaction.followup.send(embed=embed, file=discord.File(buf, "chart.png"))
 
     # ------------------------------------------------------------- voice tracking
-    def _close_voice(self, gid, uid, name, now):
-        open_ = self._voice_open.pop((gid, uid), None)
-        if not open_:
-            return
-        cid, joined = open_
-        secs = session_seconds(joined, now)
+    @staticmethod
+    def _voice_on(gid) -> bool:
+        """The dashboard's Stats switches: stats off, or voice off, = no voice."""
+        cfg = get_config(gid)
+        return bool(cfg.get("stats_enabled", 1)) and bool(cfg.get("stats_voice", 1))
+
+    def _save_session(self, c, gid, uid, cid, name, joined, left):
+        secs = session_seconds(joined, left)
         if secs < 5:
             return  # join-blips aren't sessions
+        c.execute("INSERT INTO voice_sessions VALUES (?,?,?,?,?,?,?)",
+                  (str(gid), str(cid), str(uid), name, joined, left, secs))
+
+    def _open_voice(self, gid, uid, cid, name, now):
+        self._voice_open[(gid, uid)] = (cid, now)
         with self._stats_conn() as c:
-            c.execute("INSERT INTO voice_sessions VALUES (?,?,?,?,?,?,?)",
-                      (str(gid), str(cid), str(uid), name, joined, now, secs))
+            c.execute("INSERT OR REPLACE INTO voice_open VALUES (?,?,?,?,?,?)",
+                      (str(gid), str(uid), str(cid), name, now, now))
+
+    def _close_voice(self, gid, uid, name, now):
+        open_ = self._voice_open.pop((gid, uid), None)
+        with self._stats_conn() as c:
+            c.execute("DELETE FROM voice_open WHERE guild_id=? AND user_id=?",
+                      (str(gid), str(uid)))
+            if open_:
+                cid, joined = open_
+                self._save_session(c, gid, uid, cid, name, joined, now)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
@@ -297,15 +357,60 @@ class Activity(commands.Cog):
         if b == a:
             return  # mute/deafen/stream toggle, not a move
         now = time.time()
+        gid = member.guild.id
         if b is not None:
-            self._close_voice(member.guild.id, member.id, str(member), now)
-        if a is not None:
-            self._voice_open[(member.guild.id, member.id)] = (a.id, now)
+            self._close_voice(gid, member.id, str(member), now)
+        if a is not None and self._voice_on(gid):
+            self._open_voice(gid, member.id, a.id, str(member), now)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Pick up where the last process left off. Runs on every READY (a
+        reconnect too) and is idempotent: sessions already open in memory are
+        in voice_open with a fresh stamp, so they come straight back as keep."""
+        now = time.time()
+        live = {}
+        for g in self.bot.guilds:
+            if not self._voice_on(g.id):
+                continue
+            for vc in list(g.voice_channels) + list(g.stage_channels):
+                for m in vc.members:
+                    if not m.bot:
+                        live[(g.id, m.id)] = vc.id
+        with self._stats_conn() as c:
+            rows = c.execute("SELECT * FROM voice_open").fetchall()
+            saved = {(int(r["guild_id"]), int(r["user_id"])):
+                     (int(r["channel_id"]), r["joined_ts"], r["seen_ts"]) for r in rows}
+            names = {(int(r["guild_id"]), int(r["user_id"])): r["user_name"] for r in rows}
+            close, keep = reconcile_voice(saved, live, now)
+            for gid, uid, cid, joined, left in close:
+                self._save_session(c, gid, uid, cid, names.get((gid, uid)), joined, left)
+            c.execute("DELETE FROM voice_open")
+            self._voice_open = {}
+            for (gid, uid), (cid, joined) in keep.items():
+                g = self.bot.get_guild(gid)
+                m = g.get_member(uid) if g else None
+                name = str(m) if m else names.get((gid, uid))
+                self._voice_open[(gid, uid)] = (cid, joined)
+                c.execute("INSERT INTO voice_open VALUES (?,?,?,?,?,?)",
+                          (str(gid), str(uid), str(cid), name, joined, now))
+        print(f"[activity] voice resumed: {len(keep)} open, "
+              f"{len(close)} closed from before the restart")
+
+    @tasks.loop(seconds=HEARTBEAT)
+    async def _voice_heartbeat(self):
+        if not self._voice_open:
+            return
+        with self._stats_conn() as c:
+            c.execute("UPDATE voice_open SET seen_ts=?", (time.time(),))
 
     async def cog_unload(self):
-        now = time.time()
-        for (gid, uid) in list(self._voice_open):
-            self._close_voice(gid, uid, None, now)
+        # Leave the rows in voice_open: a reload or restart resumes them in
+        # on_ready. Closing here would split every session in two.
+        self._voice_heartbeat.cancel()
+        if self._voice_open:
+            with self._stats_conn() as c:
+                c.execute("UPDATE voice_open SET seen_ts=?", (time.time(),))
 
     # ------------------------------------------------------------- data pulls
     def _daily(self, gid, since, extra="", params=()):
