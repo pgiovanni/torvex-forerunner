@@ -983,6 +983,10 @@
       "Field hospital — heal someone else 3 (needs a player)",
       "Patch — heal yourself 1",
       "Medkit — heal yourself 2, skip this round's vote",
+      "Extra shot — +1 shot this round",
+      "Full heal — back to max lives, skip this round's vote",
+      "Arsenal — +3 shots this round",
+      "Nuke — arm it: everyone else takes 1 at round close",
       "Small revive — bring someone back with 1 life (needs a player)",
       "Medium revive — bring someone back with 2 lives (needs a player)",
       "Full revive — bring someone back at full lives (needs a player)",
@@ -1500,7 +1504,7 @@
   },
   {
    "path": "check-perms",
-   "description": "[Admin] Show and fix channels the bot can't read.",
+   "description": "[Admin] What the bot can't do in this server and why — channels, perms, recent failures.",
    "params": [
     {
      "name": "fix",

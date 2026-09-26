@@ -2007,7 +2007,7 @@ Top 10 members by chat level and XP, with their bucks.
 
 #### `/check-perms`
 
-[Admin] Show and fix channels the bot can't read.
+[Admin] What the bot can't do in this server and why — channels, perms, recent failures.
 
 ```
 /check-perms [fix]
@@ -2353,7 +2353,7 @@ Last to survive: your power-ups — or aim an Overload / a heal.
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `use` | string | No | Which power-up to use (leave empty to see what you hold) *(one of: `Overload — take 1 damage to deal 2 (needs a player)`, `Transfuse — heal someone else 1, lose 1 yourself (needs a player)`, `Blood bag — heal someone else 1, costs you nothing (needs a player)`, `Paramedic — heal someone else 2 (needs a player)`, `Field hospital — heal someone else 3 (needs a player)`, `Patch — heal yourself 1`, `Medkit — heal yourself 2, skip this round's vote`, `Small revive — bring someone back with 1 life (needs a player)`, `Medium revive — bring someone back with 2 lives (needs a player)`, `Full revive — bring someone back at full lives (needs a player)`, `Extra revive — bring someone back one life ABOVE max (needs a player)`)* |
+| `use` | string | No | Which power-up to use (leave empty to see what you hold) *(one of: `Overload — take 1 damage to deal 2 (needs a player)`, `Transfuse — heal someone else 1, lose 1 yourself (needs a player)`, `Blood bag — heal someone else 1, costs you nothing (needs a player)`, `Paramedic — heal someone else 2 (needs a player)`, `Field hospital — heal someone else 3 (needs a player)`, `Patch — heal yourself 1`, `Medkit — heal yourself 2, skip this round's vote`, `Extra shot — +1 shot this round`, `Full heal — back to max lives, skip this round's vote`, `Arsenal — +3 shots this round`, `Nuke — arm it: everyone else takes 1 at round close`, `Small revive — bring someone back with 1 life (needs a player)`, `Medium revive — bring someone back with 2 lives (needs a player)`, `Full revive — bring someone back at full lives (needs a player)`, `Extra revive — bring someone back one life ABOVE max (needs a player)`)* |
 | `player` | user | No | Who it's aimed at |
 
 #### `/race channel`
