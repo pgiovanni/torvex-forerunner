@@ -72,6 +72,10 @@ USE_CHOICES = [
     app_commands.Choice(name="Field hospital — heal someone else 3 (needs a player)", value="fieldhosp"),
     app_commands.Choice(name="Patch — heal yourself 1", value="patch"),
     app_commands.Choice(name="Medkit — heal yourself 2, skip this round's vote", value="medkit"),
+    app_commands.Choice(name="Extra shot — +1 shot this round", value="extrashot"),
+    app_commands.Choice(name="Full heal — back to max lives, skip this round's vote", value="fullheal"),
+    app_commands.Choice(name="Arsenal — +3 shots this round", value="arsenal"),
+    app_commands.Choice(name="Nuke — arm it: everyone else takes 1 at round close", value="nuke"),
     app_commands.Choice(name="Small revive — bring someone back with 1 life (needs a player)", value="revive_small"),
     app_commands.Choice(name="Medium revive — bring someone back with 2 lives (needs a player)", value="revive_medium"),
     app_commands.Choice(name="Full revive — bring someone back at full lives (needs a player)", value="revive_full"),
@@ -240,9 +244,9 @@ class _PowerupView(discord.ui.View):
                 self.add_item(b)
         for kind in engine.SELF_USE:
             if p.get(kind, 0) > 0:
-                emoji, name, _ = engine.POWERUPS[kind]
-                b = discord.ui.Button(label=f"Use {name} ×{p[kind]}", emoji=emoji,
-                                      style=discord.ButtonStyle.success)
+                emoji, name = engine.item_face("shot" if kind == "extrashot" else kind)
+                style = discord.ButtonStyle.danger if kind == "nuke" else discord.ButtonStyle.success
+                b = discord.ui.Button(label=f"Use {name} ×{p[kind]}", emoji=emoji, style=style)
                 b.callback = self._mk_self(kind)
                 self.add_item(b)
 
@@ -1188,19 +1192,28 @@ class BanRace(commands.Cog):
                 + self._slate(race_id, race["round_no"], shooter_id))
 
     async def _do_use_self(self, race_id, uid, kind):
-        """Patch / Medkit from /powerup or the inventory button."""
+        """Any SELF_USE kind from /powerup or the kit button: Patch, Medkit,
+        Extra shot, Full heal, Arsenal, Nuke."""
         race = engine.get_race(race_id)
         if not race or race["status"] != "running":
             return "There's no round open right now."
         p = engine.player(race_id, uid)
         rn = race["round_no"]
-        voted = any(s["shooter_id"] == str(uid) and s["kind"] in ("shot", "overload")
-                    for s in engine.shots(race_id, rn))
-        ok, text = engine.use_self(p, kind, rn, race["settings"]["lives"], voted)
+        mine = [s for s in engine.shots(race_id, rn) if s["shooter_id"] == str(uid)]
+        voted = any(s["kind"] in ("shot", "overload") for s in mine)
+        nuked = any(s["kind"] == "nuke" for s in mine)
+        st = race["settings"]
+        ok, text = engine.use_self(p, kind, rn, st["lives"], voted,
+                                   shot_cap=st.get("shot_cap", engine.DEFAULTS["shot_cap"]),
+                                   nuked_this_round=nuked)
         if ok:
-            engine.update_player(race_id, uid, lives=p["lives"], patch=p["patch"], medkit=p["medkit"],
-                                 skip_round=p.get("skip_round"))
-            engine.log(race_id, rn, f"{engine.m(uid)} used a **{engine.POWERUPS[kind][1]}** — {text}",
+            engine.update_player(race_id, uid, lives=p["lives"], shots=p["shots"],
+                                 skip_round=p.get("skip_round"),
+                                 **{k: p.get(k, 0) for k in engine.ITEM_COLS})
+            if kind == "nuke":
+                engine.cast(race_id, rn, str(uid), str(uid), "nuke")
+            _, label = engine.item_face("shot" if kind == "extrashot" else kind)
+            engine.log(race_id, rn, f"{engine.m(uid)} used a **{label}** — {text}",
                        kind="use", user_id=uid)
         return text
 
@@ -1880,16 +1893,20 @@ class BanRace(commands.Cog):
         e.add_field(name="Lives", value=_lives_bar(p["lives"], race["settings"]["lives"]), inline=True)
         e.add_field(name="Shots this round", value=str(p["shots"]), inline=True)
         e.add_field(name="Defense", value=f"🛡️ ×{p['shield']} · 🪞 ×{p.get('reflect', 0)}", inline=True)
-        e.add_field(name="Overload", value=f"💥 ×{p['overload']}", inline=True)
+        e.add_field(name="Shooting", inline=True,
+                    value=f"💥 Overload ×{p['overload']} · 🔫 Extra shot ×{p.get('extrashot', 0)} · "
+                          f"🔫 Arsenal ×{p.get('arsenal', 0)} · 🧨 Nuke ×{p.get('nuke', 0)}")
         e.add_field(name="Heal an ALLY", inline=True,
                     value=" ".join(f"{em}×{p.get(k, 0)}" for k, (em, *_) in engine.HEALS.items()))
-        e.add_field(name="Heal YOURSELF", value=f"🩹 ×{p.get('patch', 0)} · 🏥 ×{p.get('medkit', 0)}", inline=True)
+        e.add_field(name="Heal YOURSELF", inline=True,
+                    value=f"🩹 ×{p.get('patch', 0)} · 🏥 ×{p.get('medkit', 0)} · 💖 ×{p.get('fullheal', 0)}")
         e.add_field(name="Revives", value=" ".join(f"{em}×{p.get(k, 0)}" for k, (em, _, _) in engine.REVIVES.items()),
                     inline=True)
         e.add_field(name="Kills", value=str(p["kills"]), inline=True)
-        e.set_footer(text="Shields and extra shots work on their own. Overload, the ally heals "
-                          "(💉🩸🚑⛑️) and revives need a target. Patch and Medkit are the only ones that heal "
-                          "YOU, and they're instant. Everything stays with you until the race ends.")
+        e.set_footer(text="Shields and mirrors trigger on their own when you're hit. Everything else is "
+                          "used from here: Overload, the ally heals (💉🩸🚑⛑️) and revives need a target; "
+                          "Patch, Medkit, Full heal, Extra shot, Arsenal and Nuke are one press. "
+                          "Everything stays with you until the race ends.")
         # Same order and the same group fields as the /powerup card, guarded:
         # the kit already carries nine stat fields of its own, and a kit that
         # 400s reads to the player as "didn't respond in time".
@@ -2150,16 +2167,11 @@ class BanRace(commands.Cog):
         st = race["settings"]
         if d.get("super"):
             emoji, name, _ = engine.SUPER[d["kind"]]
-            if d["kind"] == "nuke":
-                engine.cast(race["id"], race["round_no"], p["user_id"], p["user_id"], "nuke")
-                line = f"🧨 {p['name']} armed a **NUKE** — everyone else takes 1 when the round closes."
-                engine.log(race["id"], race["round_no"], f"🧨 {engine.m(p['user_id'])} armed a **NUKE**.",
-                           kind="use", user_id=p["user_id"])
-            else:
-                line = engine.grant_super(p, d["kind"], st["shot_cap"], st["lives"])
-                engine.update_player(race["id"], p["user_id"], shots=p["shots"], lives=p["lives"],
-                                     **{k: p.get(k, 0) for k in engine.ITEM_COLS})
-                engine.log(race["id"], race["round_no"], line, kind="grab", user_id=p["user_id"])
+            # 9/26: every super but the golden apple goes to the kit now
+            line = engine.grant_super(p, d["kind"], st["shot_cap"], st["lives"])
+            engine.update_player(race["id"], p["user_id"], shots=p["shots"], lives=p["lives"],
+                                 **{k: p.get(k, 0) for k in engine.ITEM_COLS})
+            engine.log(race["id"], race["round_no"], line, kind="grab", user_id=p["user_id"])
             title, color = f"🌟 {emoji} {name} — taken", COLOR_SUPER
         else:
             emoji, name, _ = engine.POWERUPS[d["kind"]]

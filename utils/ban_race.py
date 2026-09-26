@@ -37,8 +37,10 @@ Round model (all resolution is SIMULTANEOUS at round close):
     `drop_window`), spread evenly over the middle of the timer — twenty
     players get a busy channel, three get one drop; sudden death adds a
     SUPER drop each round: nuke (everyone else takes 1 at close), full
-    heal, arsenal (+3 shots) — instant on grab — and, one super in ten, the
-    GOLDEN APPLE: a full heal PLUS 2 lives ABOVE max (you land on max+2,
+    heal, arsenal (+3 shots) — all three go to your KIT and are used from
+    Power-ups (Paul 9/26: "only item i've been okay with auto working is
+    golden apple") — and, one super in ten, the GOLDEN APPLE, the ONE thing
+    that fires on grab: a full heal PLUS 2 lives ABOVE max (you land on max+2,
     never lower), the only way past the cap (Paul 9/12, Minecraft
     reference; 9/26: "it should heal more points than the item below it");
   * killing blows pay a shield (or a shot if you already hold one) — unless
@@ -99,8 +101,9 @@ POWERUPS = {
                   "❌ One at a time (a second becomes a Patch); OFF in sudden death; a nuke is a blast, "
                   "not an aimed shot, so it goes straight through."),
     "shot":      ("🔫", "Extra shot",
-                  "✅ One more shot this round — fire twice. "
-                  "❌ Still 1 damage each, and it's gone when the round closes — use it or lose it."),
+                  "✅ Goes to your kit: use it and you get one more shot THAT round — fire twice. "
+                  "❌ Still 1 damage each, and the shot it gives dies at round close — use it the "
+                  "round you mean to fire."),
     "overload":  ("💥", "Overload",
                   "✅ Your shot deals 2 instead of 1 — a full-health kill in two rounds, or a finisher now. "
                   "❌ Burns 1 of YOUR lives the moment it fires (it can kill you), rides on a banked shot, and "
@@ -148,7 +151,7 @@ REVIVE_COLS = tuple(REVIVES)
 # kind -> (emoji, label, lives given, lives it costs the giver).
 #
 # They are deliberately unmistakable for the SELF heals (🩹 Patch, 🏥 Medkit,
-# 💖 Full heal), which are instant and only ever touch your own bar:
+# 💖 Full heal), which land the moment you USE them and only touch your own bar:
 #   * you AIM them at another player (never at yourself — the engine refuses),
 #   * they land when the ROUND CLOSES, with the shots, so the target can die
 #     first ("too late") — a self-heal never misses,
@@ -277,29 +280,41 @@ def overkill_reward(over):
 USABLE = ("overload",                                       # the ones a player has to aim
           "transfuse", "bloodbag", "paramedic", "fieldhosp", "ambrosia",  # (heals aim at the living)
           "revive_small", "revive_medium", "revive_full", "revive_extra")   # (revives aim at the dead)
-SELF_USE = ("patch", "medkit")       # used on yourself, instantly
+# Used on yourself from the kit, no target, lands the moment you press it.
+# Paul 9/26: "make extra shot not auto use. it's gotta be strategic … same with
+# healing items. only item i've been okay with auto working is golden apple."
+# So 🔫 Extra shot, 💖 Full heal, 🔫 Arsenal and 🧨 Nuke all WAIT in the kit
+# now; only the 🍎 golden apple fires on grab. Shield/Reflect are held defense
+# that triggers when you're hit — nothing to press.
+SELF_USE = ("patch", "medkit", "extrashot", "fullheal", "arsenal", "nuke")
+KIT_SUPERS = ("fullheal", "arsenal", "nuke")   # supers that go to the kit instead of firing on grab
 ITEM_COLS = ("overload", "transfuse", "patch", "medkit",
-             "bloodbag", "paramedic", "fieldhosp", "ambrosia", "reflect", "reflect",
-             "revive_small", "revive_medium", "revive_full", "revive_extra")
+             "bloodbag", "paramedic", "fieldhosp", "ambrosia", "reflect",
+             "revive_small", "revive_medium", "revive_full", "revive_extra",
+             "extrashot", "fullheal", "arsenal", "nuke")
 # Power-ups STAY with a player until the race ends (Paul 9/13, final: "unused
 # power ups should stay until RACE end not round close"). Only shots reset each
 # round. resolve_round(expire_items=True) still exists for a mode that wants
 # use-it-or-lose-it; nothing sets it today.
 EXPIRING = ("shield", "overload", "transfuse", "patch", "medkit",
             "bloodbag", "paramedic", "fieldhosp", "ambrosia",
-            "revive_small", "revive_medium", "revive_full", "revive_extra")
+            "revive_small", "revive_medium", "revive_full", "revive_extra",
+            "extrashot", "fullheal", "arsenal", "nuke")
 
-# SUPER drops: sudden death only, one per round on top of the regular ones,
-# and they fire the moment they're grabbed — no inventory, no aiming.
+# SUPER drops: sudden death only, one per round on top of the regular ones.
+# Since 9/26 they go to the KIT like everything else (KIT_SUPERS + the super
+# revives + the super heals); the 🍎 golden apple is the one that fires on grab.
 SUPER = {
     "nuke":     ("🧨", "NUKE",
-                 "✅ Every other survivor takes 1 when the round closes — every kill is yours. "
+                 "✅ Goes to your kit: arm it and every other survivor takes 1 when that round closes — "
+                 "every kill is yours. "
                  "❌ It's your shot for the round, it lands at close (not now), and it makes you everyone's target."),
     "fullheal": ("💖", "Full heal",
-                 "✅ Straight back to max lives. "
-                 "❌ No shields exist in sudden death — lives are all you've got."),
+                 "✅ Goes to your kit: use it and you're straight back to max lives. "
+                 "❌ Costs you this round's vote, like a Medkit — refused once you've fired. "
+                 "No shields exist in sudden death — lives are all you've got."),
     "arsenal":  ("🔫", "Arsenal",
-                 "✅ +3 shots, right now. "
+                 "✅ Goes to your kit: use it for +3 shots THAT round. "
                  "❌ Still one target per shot, and unfired shots die with you."),
     "goldapple": ("🍎", "Golden apple",
                   "✅ Full heal PLUS 2 lives ABOVE max — you land on max+2, the only thing in the race "
@@ -448,10 +463,12 @@ BRIEF = {
     "overload":   ("your shot deals 2 instead of 1",
                    "burns 1 of YOUR lives; needs an unfired shot — arm it instead of shooting; the only "
                    "shot that can backfire"),
-    "shot":       ("one more shot this round", "1 damage each, and it's gone at round close"),
-    "nuke":       ("1 damage to every other survivor at round close",
+    "shot":       ("from your kit: +1 shot the round you use it",
+                   "1 damage each, and that shot is gone at round close"),
+    "nuke":       ("from your kit: 1 damage to every other survivor when that round closes",
                    "it IS your shot for the round, and it paints a target on you"),
-    "arsenal":    ("+3 shots, right now", "one target per shot; unfired shots die with you"),
+    "arsenal":    ("from your kit: +3 shots the round you use it",
+                   "one target per shot; unfired shots die with you"),
     "reflect":    ("the next shot at you bounces back and hits whoever fired it",
                    "one at a time (a second becomes a Patch); OFF in sudden death; a nuke goes through it"),
     "shield":     ("eats the next shot at you, whole",
@@ -461,7 +478,8 @@ BRIEF = {
                    "a shot still takes 1: a buffer, not armour"),
     "patch":      ("heal 1", "wasted at full lives"),
     "medkit":     ("heal 2", "costs you this round's vote; refused once you've fired"),
-    "fullheal":   ("straight back to max lives", ""),
+    "fullheal":   ("from your kit: straight back to max lives",
+                   "costs you this round's vote; refused once you've fired; wasted at full lives"),
     "transfuse":  ("heals them 1", "costs you 1 life; refused on your last one"),
     "bloodbag":   ("heals them 1, free", ""),
     "paramedic":  ("heals them 2", ""),
@@ -594,6 +612,10 @@ def init(db=None):
                          ("bloodbag", "INTEGER NOT NULL DEFAULT 0"),
                          ("paramedic", "INTEGER NOT NULL DEFAULT 0"),
                          ("fieldhosp", "INTEGER NOT NULL DEFAULT 0"),
+                         ("extrashot", "INTEGER NOT NULL DEFAULT 0"),   # 9/26: kit items, used from Power-ups
+                         ("fullheal", "INTEGER NOT NULL DEFAULT 0"),
+                         ("arsenal", "INTEGER NOT NULL DEFAULT 0"),
+                         ("nuke", "INTEGER NOT NULL DEFAULT 0"),
                          ("ambrosia", "INTEGER NOT NULL DEFAULT 0"),
                          ("reflect", "INTEGER NOT NULL DEFAULT 0"))),
             ("shots", (("seq", "INTEGER"),
@@ -788,7 +810,8 @@ def save_players(race_id, rows, db=None):
                 "UPDATE players SET lives=?, shots=?, shield=?, overload=?, transfuse=?, kills=?,"
                 " bounty=?, alive=?, died_round=?, banned=?, patch=?, medkit=?, skip_round=?,"
                 " revived=?, revive_small=?, revive_medium=?, revive_full=?, revive_extra=?,"
-                " overkill=?, bloodbag=?, paramedic=?, fieldhosp=?"
+                " overkill=?, bloodbag=?, paramedic=?, fieldhosp=?,"
+                " extrashot=?, fullheal=?, arsenal=?, nuke=?"
                 " WHERE race_id=? AND user_id=?",
                 (p["lives"], p["shots"], p["shield"], p["overload"], p["transfuse"], p["kills"],
                  p["bounty"], p["alive"], p["died_round"], p["banned"], p.get("patch", 0),
@@ -796,6 +819,7 @@ def save_players(race_id, rows, db=None):
                  p.get("revive_small", 0), p.get("revive_medium", 0), p.get("revive_full", 0),
                  p.get("revive_extra", 0), p.get("overkill", 0) or 0,
                  p.get("bloodbag", 0), p.get("paramedic", 0), p.get("fieldhosp", 0),
+                 p.get("extrashot", 0), p.get("fullheal", 0), p.get("arsenal", 0), p.get("nuke", 0),
                  race_id, str(p["user_id"])))
 
 
@@ -1177,11 +1201,14 @@ def drop_schedule(rng, round_secs, alive, per_player, sudden, drop_window=10, de
 
 
 def grant_super(p, kind, shot_cap, max_lives):
-    """Instant super effects. `nuke` is not handled here — it's a cast, the
-    caller records the shot row. Returns the feed line."""
-    if kind == "fullheal":
-        p["lives"] = max(p["lives"], max_lives)      # never lowers a golden-appled player
-        return f"💖 {m(p['user_id'])} grabbed **Full heal** — back to {p['lives']} lives."
+    """Hand a super to a player. Only the 🍎 golden apple fires on grab; the
+    rest go to the kit (Paul 9/26). Returns the feed line."""
+    if kind in KIT_SUPERS:
+        p[kind] = p.get(kind, 0) + 1
+        emoji, label, _ = SUPER[kind]
+        tail = {"fullheal": "use it for a full heal", "arsenal": "use it for +3 shots that round",
+                "nuke": "arm it and everyone else takes 1 at that round's close"}[kind]
+        return f"{emoji} {m(p['user_id'])} grabbed **{label}** — it's in their kit: {tail}."
     if kind == "goldapple":
         # Paul 9/26: "it should heal more points than the item below it" — the
         # item below it on the card is Full heal (to max), so the apple is a
@@ -1191,9 +1218,6 @@ def grant_super(p, kind, shot_cap, max_lives):
         p["lives"] = max(p["lives"], max_lives + GOLDAPPLE_OVER)
         return (f"🍎 {m(p['user_id'])} bit the **GOLDEN APPLE** — **{p['lives']}** lives, "
                 f"{GOLDAPPLE_OVER} above the cap of {max_lives}.")
-    if kind == "arsenal":
-        p["shots"] = min(shot_cap + 3, p["shots"] + 3)
-        return f"🔫 {m(p['user_id'])} grabbed **Arsenal** — three more shots."
     if kind in REVIVES:                       # the two super revives go to the kit, not instant
         p[kind] = p.get(kind, 0) + 1
         emoji, label, _ = REVIVES[kind]
@@ -1224,8 +1248,9 @@ def grant(p, kind, shot_cap):
         p["reflect"] = 1
         return f"🪞 {m(p['user_id'])} grabbed a **Reflect**."
     if kind == "shot":
-        p["shots"] = min(shot_cap + 1, p["shots"] + 1)
-        return f"🔫 {m(p['user_id'])} grabbed an **extra shot**."
+        # 9/26: to the kit, not the bank — "it's gotta be strategic"
+        p["extrashot"] = p.get("extrashot", 0) + 1
+        return f"🔫 {m(p['user_id'])} grabbed an **Extra shot** — it's in their kit."
     if kind == "overload":
         p["overload"] += 1
         return f"💥 {m(p['user_id'])} grabbed **Overload** — take 1 to deal 2."
@@ -1249,10 +1274,52 @@ def grant(p, kind, shot_cap):
     raise ValueError(kind)
 
 
-def use_self(p, kind, round_no, max_lives, voted_this_round):
-    """Patch / Medkit: instant, on yourself. Returns (ok, text). Mutates p."""
+def use_self(p, kind, round_no, max_lives, voted_this_round, shot_cap=3, nuked_this_round=False):
+    """The SELF_USE kinds: on yourself, no target, land the moment you press
+    them. Returns (ok, text). Mutates p — the caller persists it (and for a
+    nuke, records the cast row)."""
     if p is None or not p["alive"]:
         return False, "You're out of the race."
+    if kind in ("extrashot", "arsenal", "nuke") and p.get("skip_round") == round_no:
+        return False, "You sat this round out (Medkit / Full heal) — no shooting until the next one."
+    if kind == "extrashot":
+        if p.get("extrashot", 0) <= 0:
+            return False, "You don't hold an Extra shot."
+        if p["shots"] >= shot_cap + 1:
+            return False, f"You're already at **{p['shots']}** shots this round — save it."
+        p["extrashot"] -= 1
+        p["shots"] = min(shot_cap + 1, p["shots"] + 1)
+        return True, f"🔫 Extra shot loaded — **{p['shots']}** shot(s) this round. It dies at round close, so fire it."
+    if kind == "arsenal":
+        if p.get("arsenal", 0) <= 0:
+            return False, "You don't hold an Arsenal."
+        if p["shots"] >= shot_cap + 3:
+            return False, f"You're already at **{p['shots']}** shots this round — save it."
+        p["arsenal"] -= 1
+        p["shots"] = min(shot_cap + 3, p["shots"] + 3)
+        return True, f"🔫 Arsenal opened — **{p['shots']}** shot(s) this round. They die at round close, so fire them."
+    if kind == "fullheal":
+        # Paul 9/26: "i do like healing items making u lose a vote" — the big
+        # self-heal costs the round's vote exactly like a Medkit does.
+        if p.get("fullheal", 0) <= 0:
+            return False, "You don't hold a Full heal."
+        if p.get("skip_round") == round_no:
+            return False, "You already sat this round out."
+        if voted_this_round:
+            return False, "You've already voted this round — a Full heal costs the vote, so it's next round or never."
+        if p["lives"] >= max_lives:
+            return False, "You're at full lives — save it."
+        p["fullheal"] -= 1
+        p["lives"] = max_lives
+        p["skip_round"] = round_no
+        return True, f"💖 Full heal — back to **{p['lives']}** lives. No shooting for you this round."
+    if kind == "nuke":
+        if p.get("nuke", 0) <= 0:
+            return False, "You don't hold a Nuke."
+        if nuked_this_round:
+            return False, "You've already armed a Nuke this round — one blast per round."
+        p["nuke"] -= 1
+        return True, "🧨 **NUKE armed** — every other survivor takes 1 when this round closes. You're everyone's target now."
     if kind == "patch":
         if p.get("patch", 0) <= 0:
             return False, "You don't hold a Patch."
@@ -1294,7 +1361,7 @@ def cast_error(p, target, kind="shot", round_no=None):
             return f"{target['name']} already came back once — nobody returns twice."
         return None
     if kind in ("shot", "overload") and round_no is not None and p.get("skip_round") == round_no:
-        return "You used a Medkit this round — no shooting until the next one."
+        return "You sat this round out (Medkit / Full heal) — no shooting until the next one."
     if target is None or not target["alive"]:
         return "That player isn't in the race (or is already gone)."
     if target["user_id"] == p["user_id"]:

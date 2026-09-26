@@ -612,12 +612,70 @@ class Drops(unittest.TestCase):
         self.assertIn(str(E.LATE_ALIVE), E.ITEM_GROUPS["revive"][2])
         self.assertIn(str(E.ALLY_ALIVE), E.ITEM_GROUPS["heal_ally"][2])
 
-    def test_super_effects(self):
+    def test_supers_go_to_the_kit_except_the_golden_apple(self):
+        # Paul 9/26: "only item i've been okay with auto working is golden apple."
         p = P(1, lives=1, shots=0)
         E.grant_super(p, "fullheal", 3, 3)
-        self.assertEqual(p["lives"], 3)
+        self.assertEqual(p["lives"], 1)                 # nothing happened yet
+        self.assertEqual(p["fullheal"], 1)
         E.grant_super(p, "arsenal", 3, 3)
-        self.assertEqual(p["shots"], 3)
+        self.assertEqual(p["shots"], 0)
+        self.assertEqual(p["arsenal"], 1)
+        E.grant_super(p, "nuke", 3, 3)
+        self.assertEqual(p["nuke"], 1)
+        E.grant_super(p, "goldapple", 3, 3)
+        self.assertEqual(p["lives"], 5)                 # the ONE that fires on grab
+        for kind in ("fullheal", "arsenal", "nuke", "extrashot"):
+            self.assertIn(kind, E.ITEM_COLS)            # or they'd never persist
+            self.assertIn(kind, E.SELF_USE)
+        # used from the kit
+        ok, _ = E.use_self(p, "arsenal", 1, 3, False, shot_cap=3)
+        self.assertTrue(ok)
+        self.assertEqual((p["shots"], p["arsenal"]), (3, 0))
+        ok, _ = E.use_self(p, "nuke", 1, 3, False)
+        self.assertTrue(ok)
+        self.assertEqual(p["nuke"], 0)
+        ok, _ = E.use_self(p, "fullheal", 1, 3, False)
+        self.assertFalse(ok)                            # above max already (apple) — save it
+        p["lives"] = 1
+        # Paul 9/26: "i do like healing items making u lose a vote" — a Full heal
+        # costs the vote like a Medkit: refused after you've fired, and once used
+        # the shooting items are locked for the round
+        self.assertFalse(E.use_self(p, "fullheal", 1, 3, True)[0])
+        ok, _ = E.use_self(p, "fullheal", 1, 3, False)
+        self.assertTrue(ok)
+        self.assertEqual((p["lives"], p["fullheal"], p["skip_round"]), (3, 0, 1))
+        p["arsenal"], p["extrashot"] = 1, 1
+        self.assertFalse(E.use_self(p, "arsenal", 1, 3, False, shot_cap=3)[0])
+        self.assertFalse(E.use_self(p, "extrashot", 1, 3, False, shot_cap=3)[0])
+        self.assertIn("sat this round out", E.cast_error(p, P(9), "shot", round_no=1))
+        ok, text = E.use_self(P(2, nuke=1), "nuke", 1, 3, False, nuked_this_round=True)
+        self.assertFalse(ok)                            # one blast per round
+        self.assertIn("already armed", text)
+
+    def test_extra_shot_is_a_kit_item_used_the_round_you_mean_to_fire(self):
+        # Paul 9/26: "make extra shot not auto use. it's gotta be strategic. i
+        # clicked it and automatically got the shot.. it should have to be
+        # picked in powerups."
+        p = P(1, shots=1)
+        line = E.grant(p, "shot", 3)
+        self.assertEqual(p["shots"], 1)                 # the bank did NOT move
+        self.assertEqual(p["extrashot"], 1)
+        self.assertIn("kit", line)
+        ok, text = E.use_self(p, "extrashot", 2, 3, False, shot_cap=3)
+        self.assertTrue(ok, text)
+        self.assertEqual((p["shots"], p["extrashot"]), (2, 0))
+        # held past a round close like every other item; the SHOT it gives does not
+        rows = [p, P(2)]
+        E.grant(p, "shot", 3)
+        E.open_round(rows)
+        self.assertEqual((p["shots"], p["extrashot"]), (1, 1))
+        # capped at shot_cap + 1, refused after a Medkit, refused when empty
+        p["shots"] = 4
+        self.assertFalse(E.use_self(p, "extrashot", 3, 3, False, shot_cap=3)[0])
+        p["shots"], p["skip_round"] = 1, 3
+        self.assertFalse(E.use_self(p, "extrashot", 3, 3, False, shot_cap=3)[0])
+        self.assertFalse(E.use_self(P(3), "extrashot", 3, 3, False)[0])
 
     def test_golden_apple_goes_above_max_and_nothing_pulls_you_back_down(self):
         # Paul 9/26: the apple heals MORE than the item below it (Full heal, to
@@ -634,11 +692,12 @@ class Drops(unittest.TestCase):
         E.grant_super(p, "goldapple", 3, 3)
         self.assertEqual(p["lives"], 5)                 # a second apple never stacks past max + 2
         # and it beats every self-heal below it from 1 life
-        r = P(4, lives=1)
-        E.grant_super(r, "fullheal", 3, 3)
+        r = P(4, lives=1, fullheal=1)
+        E.use_self(r, "fullheal", 1, 3, False)
         self.assertLess(r["lives"], p["lives"])
-        E.grant_super(p, "fullheal", 3, 3)
-        self.assertEqual(p["lives"], 5)                 # full heal never lowers
+        p["fullheal"] = 1
+        self.assertFalse(E.use_self(p, "fullheal", 1, 3, False)[0])   # full heal never lowers: refused above max
+        self.assertEqual(p["lives"], 5)
         # patch / medkit refuse at or above max; transfuse never lowers the target
         self.assertFalse(E.use_self(p, "patch", 1, 3, False)[0])
         a = P(2, transfuse=1)
