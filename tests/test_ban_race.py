@@ -620,15 +620,23 @@ class Drops(unittest.TestCase):
         self.assertEqual(p["shots"], 3)
 
     def test_golden_apple_goes_above_max_and_nothing_pulls_you_back_down(self):
+        # Paul 9/26: the apple heals MORE than the item below it (Full heal, to
+        # max) — it is a full heal plus GOLDAPPLE_OVER over the cap, from any
+        # lives. Race 20: at 1 of 5 the old +2 rule landed him on 3 and the
+        # card still said "above the cap".
         p = P(1, lives=1)
         line = E.grant_super(p, "goldapple", 3, 3)
-        self.assertEqual(p["lives"], 3)                 # 1 + 2 = the cap, NOT above it
-        self.assertNotIn("above the cap", line)         # race 20 said "above the cap" at 3 of 5
-        line = E.grant_super(p, "goldapple", 3, 3)
-        self.assertEqual(p["lives"], 5)                 # 3 + 2, above the cap of 3
-        self.assertIn("2 above the cap", line)
+        self.assertEqual(p["lives"], 3 + E.GOLDAPPLE_OVER)   # 1 -> 5: full heal + 2 over
+        self.assertIn("2 above the cap of 3", line)
+        q = P(3, lives=3)
+        E.grant_super(q, "goldapple", 3, 3)
+        self.assertEqual(q["lives"], 5)                 # from full: still max + 2
         E.grant_super(p, "goldapple", 3, 3)
-        self.assertEqual(p["lives"], 5)                 # capped at max + 2
+        self.assertEqual(p["lives"], 5)                 # a second apple never stacks past max + 2
+        # and it beats every self-heal below it from 1 life
+        r = P(4, lives=1)
+        E.grant_super(r, "fullheal", 3, 3)
+        self.assertLess(r["lives"], p["lives"])
         E.grant_super(p, "fullheal", 3, 3)
         self.assertEqual(p["lives"], 5)                 # full heal never lowers
         # patch / medkit refuse at or above max; transfuse never lowers the target

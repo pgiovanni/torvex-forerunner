@@ -38,8 +38,9 @@ Round model (all resolution is SIMULTANEOUS at round close):
     players get a busy channel, three get one drop; sudden death adds a
     SUPER drop each round: nuke (everyone else takes 1 at close), full
     heal, arsenal (+3 shots) — instant on grab — and, one super in ten, the
-    GOLDEN APPLE: +2 lives that go ABOVE max (capped at max+2), the only
-    way past the cap (Paul 9/12, Minecraft reference);
+    GOLDEN APPLE: a full heal PLUS 2 lives ABOVE max (you land on max+2,
+    never lower), the only way past the cap (Paul 9/12, Minecraft
+    reference; 9/26: "it should heal more points than the item below it");
   * killing blows pay a shield (or a shot if you already hold one) — unless
     the victim was AFK that round: no shield, no shot, no kill credit, no
     bounty. Shooting someone who isn't playing is free, so it pays nothing.
@@ -301,7 +302,8 @@ SUPER = {
                  "✅ +3 shots, right now. "
                  "❌ Still one target per shot, and unfired shots die with you."),
     "goldapple": ("🍎", "Golden apple",
-                  "✅ +2 lives that go ABOVE max — the only thing in the race that does. "
+                  "✅ Full heal PLUS 2 lives ABOVE max — you land on max+2, the only thing in the race "
+                  "that passes the cap. "
                   "❌ SUPER RARE: one super in ten, sudden death only; a shot still takes 1 (it's a buffer, "
                   "not armor), heals can't stack past max+2."),
     "revive_full": ("🌟", "Full revive",
@@ -455,7 +457,7 @@ BRIEF = {
     "shield":     ("eats the next shot at you, whole",
                    "one at a time (a second becomes a Patch); OFF in sudden death; no help against "
                    "the AFK penalty or the storm"),
-    "goldapple":  ("+2 lives ABOVE max (the only thing that passes the cap)",
+    "goldapple":  ("full heal PLUS 2 lives ABOVE max — you land on max+2 (the only thing that passes the cap)",
                    "a shot still takes 1: a buffer, not armour"),
     "patch":      ("heal 1", "wasted at full lives"),
     "medkit":     ("heal 2", "costs you this round's vote; refused once you've fired"),
@@ -1181,10 +1183,14 @@ def grant_super(p, kind, shot_cap, max_lives):
         p["lives"] = max(p["lives"], max_lives)      # never lowers a golden-appled player
         return f"💖 {m(p['user_id'])} grabbed **Full heal** — back to {p['lives']} lives."
     if kind == "goldapple":
-        p["lives"] = min(max_lives + GOLDAPPLE_OVER, p["lives"] + 2)
-        over = p["lives"] - max_lives
-        tail = f"{over} above the cap" if over > 0 else f"the cap is {max_lives}, and this can pass it"
-        return f"🍎 {m(p['user_id'])} bit the **GOLDEN APPLE** — **{p['lives']}** lives ({tail})."
+        # Paul 9/26: "it should heal more points than the item below it" — the
+        # item below it on the card is Full heal (to max), so the apple is a
+        # full heal AND the only thing that passes the cap: max + GOLDAPPLE_OVER,
+        # never lower. (Until 9/26 it was +2 to CURRENT lives, which at 1 of 5
+        # healed less than a Full heal and exactly what a common Medkit does.)
+        p["lives"] = max(p["lives"], max_lives + GOLDAPPLE_OVER)
+        return (f"🍎 {m(p['user_id'])} bit the **GOLDEN APPLE** — **{p['lives']}** lives, "
+                f"{GOLDAPPLE_OVER} above the cap of {max_lives}.")
     if kind == "arsenal":
         p["shots"] = min(shot_cap + 3, p["shots"] + 3)
         return f"🔫 {m(p['user_id'])} grabbed **Arsenal** — three more shots."
