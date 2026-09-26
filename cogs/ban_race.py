@@ -195,11 +195,24 @@ class _ShotView(_TargetSelect):
     banked) plus a "Change shot N" button per shot already fired this round
     (Paul 9/12: "need a way to edit them tho (change shot)")."""
 
-    def __init__(self, cog, race_id, me, rows, fired, label=None, with_select=True):
+    def __init__(self, cog, race_id, me, rows, fired, label=None, with_select=True, overload=0):
         super().__init__(cog, race_id, "shot", me, rows, label=label)
         self.rows, self.me = rows, me
         if not with_select:
             self.clear_items()
+        elif overload > 0:
+            # Paul 9/26: an Overload lived only in the kit, so people fired their
+            # plain shot first, THEN found it, and it was refused ("needs a banked
+            # shot") - cost him a life twice in race 20. Offer it where the shot
+            # is actually fired.
+            b = discord.ui.Button(label=f"Fire as Overload x{overload} (take 1, deal 2)"[:80], emoji="💥",
+                                  style=discord.ButtonStyle.danger)
+            b.callback = self._overload
+            self.add_item(b)
+
+    async def _overload(self, interaction):
+        v = _TargetSelect(self.cog, self.race_id, "overload", self.me, self.rows)
+        await interaction.response.edit_message(content=engine.blurb("overload"), embed=None, view=v)
         for sh in fired[:5]:
             name = next((p["name"] for p in rows if p["user_id"] == sh["target_id"]), "?")
             emoji = "💥" if sh["kind"] == "overload" else "🎯"
@@ -2122,18 +2135,22 @@ class BanRace(commands.Cog):
             n, total = len(fired) + 1, len(fired) + p["shots"]
             head = (f"🔫 **Fire shot {n} of {total}** — pick a target." +
                     (f"\n{done}\n⚠️ Picking a target here fires a NEW shot — it does not move the one(s) above. "
-                     f"To move one, use its **Change shot** button." if fired else "") + note)
+                     f"To move one, use its **Change shot** button." if fired else "") +
+                    (f"\n💥 You hold **Overload x{p['overload']}** - the red button fires this shot as an "
+                     f"Overload: you take 1, they take 2." if p["overload"] > 0 else "") + note)
             label = f"Fire shot {n} of {total} — who are you going for?"
         elif fired:
             head = (f"All **{len(fired)}** of your shots are placed this round.\n{done}\n"
-                    f"Use a **Change shot** button to move one.{note}")
+                    f"Use a **Change shot** button to move one." +
+                    (f"\n💥 Your **Overload** needs a shot to ride on and you've fired - next round, "
+                     f"arm it BEFORE you shoot." if p["overload"] > 0 else "") + note)
             label = None
         else:
             return await interaction.response.send_message(
                 f"No shots banked this round. Grab a drop.{note}", ephemeral=True)
         await interaction.response.send_message(
             head, view=_ShotView(self, race["id"], interaction.user.id, rows, fired, label=label,
-                                 with_select=p["shots"] > 0),
+                                 with_select=p["shots"] > 0, overload=p["overload"]),
             ephemeral=True)
 
     async def _btn_powerup(self, interaction, race, _):
