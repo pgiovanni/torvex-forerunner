@@ -462,10 +462,13 @@ class Drops(unittest.TestCase):
         common = [k for k, t in E.POWERUP_TIER.items() if t == "common"]
         uncommon = [k for k, t in E.POWERUP_TIER.items() if t == "uncommon"]
         rare = [k for k, t in E.POWERUP_TIER.items() if t == "rare"]
-        self.assertEqual(sorted(common), ["medkit", "overload", "revive_small", "transfuse"])
+        # 9/26: the revives moved OUT of common — a revive has no strings
+        self.assertEqual(sorted(common), ["medkit", "overload", "transfuse"])
         self.assertEqual(sorted(uncommon), ["bloodbag"])
         self.assertEqual(sorted(rare),
-                         ["paramedic", "patch", "reflect", "revive_medium", "shield", "shot"])
+                         ["paramedic", "patch", "reflect", "revive_medium", "revive_small", "shield", "shot"])
+        self.assertEqual(E.DROP_WEIGHTS["revive_small"], E.DROP_WEIGHTS["shield"])
+        self.assertEqual(E.DROP_WEIGHTS["revive_medium"], E.DROP_WEIGHTS["revive_small"] / 2)
         # common > uncommon > rare, always
         self.assertGreater(E.TIERS["common"][2], E.TIERS["uncommon"][2])
         self.assertGreater(E.TIERS["uncommon"][2], E.TIERS["rare"][2])
@@ -486,15 +489,21 @@ class Drops(unittest.TestCase):
         import collections
         rng = random.Random(7)
         n = collections.Counter(E.roll_drop(rng) for _ in range(6000))
-        self.assertGreater(sum(n[k] for k in common), 0.60 * 6000)
-        self.assertGreater(sum(n[k] for k in common), 2 * sum(n[k] for k in rare))
+        # (9/26: the revives left the common tier, so commons are ~55 % of the
+        # full table rather than ~65 % — still the plurality, still each one
+        # heavier than every rare; and with nobody out the revives are not in
+        # the table at all, which puts commons back over 60 %)
+        self.assertGreater(sum(n[k] for k in common), 0.50 * 6000)
+        self.assertGreater(sum(n[k] for k in common), 1.25 * sum(n[k] for k in rare))
+        n0 = collections.Counter(E.roll_drop(rng, E.drop_weights(12)) for _ in range(6000))
+        self.assertGreater(sum(n0[k] for k in common), 0.60 * 6000)
 
     def test_heads_up_drops_favour_attack_and_self_heal(self):
         # Paul 9/21: "when there's two people left make it more likely to get
         # self heal and attack items." A full field's table is untouched.
-        self.assertEqual(E.drop_weights(E.ALLY_ALIVE + 1), E.DROP_WEIGHTS)
-        self.assertEqual(E.drop_weights(E.ALLY_ALIVE + 1, supers=True), E.SUPER_WEIGHTS)
-        duel = E.drop_weights(2)
+        self.assertEqual(E.drop_weights(E.ALLY_ALIVE + 1, dead=1), E.DROP_WEIGHTS)
+        self.assertEqual(E.drop_weights(E.ALLY_ALIVE + 1, supers=True, dead=1), E.SUPER_WEIGHTS)
+        duel = E.drop_weights(2, dead=1)
         self.assertLessEqual(set(duel), set(E.POWERUPS))
         attack = sum(duel[k] for k in ("overload", "shot"))
         self_heal = sum(duel[k] for k in ("patch", "medkit"))
@@ -507,7 +516,7 @@ class Drops(unittest.TestCase):
         for k in ("shield", "reflect", "transfuse", "bloodbag", "paramedic"):
             self.assertNotIn(k, duel, k)
         # supers: the ally heals go too, the golden apple stays ~one in ten
-        sup = E.drop_weights(2, supers=True)
+        sup = E.drop_weights(2, supers=True, dead=1)
         self.assertLessEqual(set(sup), set(E.SUPER))
         for k in ("fieldhosp", "ambrosia"):
             self.assertNotIn(k, sup, k)
@@ -546,13 +555,13 @@ class Drops(unittest.TestCase):
         allies = set(E.HEALS)
         self.assertTrue(allies & set(E.drop_weights(E.ALLY_ALIVE + 1)))       # crowd: they drop
         self.assertTrue(allies & set(E.drop_weights(E.ALLY_ALIVE + 1, supers=True)))
-        for alive in range(1, E.ALLY_ALIVE + 1):                              # thin field: none of them
+        for alive in range(1, E.ALLY_ALIVE + 1):                              # thin field, nobody out: none of them
             self.assertFalse(allies & set(E.drop_weights(alive)), alive)
             self.assertFalse(allies & set(E.drop_weights(alive, supers=True)), alive)
         # their weight goes back to the items people actually fire, and nothing
-        # else about the table moves
-        full, thin = E.drop_weights(E.ALLY_ALIVE + 1), E.drop_weights(E.ALLY_ALIVE)
-        self.assertEqual(set(full) - set(thin), allies & set(E.POWERUPS))
+        # else about the table moves (revives held out: they need someone dead)
+        full, thin = E.drop_weights(E.ALLY_ALIVE + 1, dead=1), E.drop_weights(E.ALLY_ALIVE, dead=1)
+        self.assertEqual(set(full) - set(thin), (allies | set(E.REVIVES)) & set(E.POWERUPS))
         for k in thin:
             self.assertEqual(thin[k], full[k], k)                             # raw weights unchanged
             self.assertGreater(thin[k] / sum(thin.values()), full[k] / sum(full.values()), k)
@@ -563,6 +572,46 @@ class Drops(unittest.TestCase):
         # the guide says so once, in the ally group header, from the constant
         self.assertIn(str(E.ALLY_ALIVE), E.ITEM_GROUPS["heal_ally"][2])
 
+    def test_revives_and_ally_items_wait_for_the_endgame_in_a_small_field(self):
+        # Paul 9/26 after race 20 (three players, two Small revives in round 2 with
+        # nobody out): revives and ally items "should be only towards the end of
+        # small races". A revive needs someone to revive, any race size.
+        revives = set(E.REVIVES)
+        allies = set(E.HEALS)
+        for alive in (2, 3, 5, 8, 20):
+            self.assertFalse(revives & set(E.drop_weights(alive)), alive)              # nobody out
+            self.assertFalse(revives & set(E.drop_weights(alive, supers=True)), alive)
+        # a crowd with someone out: revives drop, at the rare weight
+        crowd = E.drop_weights(E.ALLY_ALIVE + 1, dead=1)
+        self.assertTrue(revives & set(crowd))
+        self.assertLess(sum(crowd.get(k, 0) for k in revives) / sum(crowd.values()), 0.15)
+        # small field, someone out, but still more than LATE_ALIVE standing: wait
+        for alive in range(E.LATE_ALIVE + 1, E.ALLY_ALIVE + 1):
+            table = E.drop_weights(alive, dead=1)
+            self.assertFalse((revives | allies) & set(table), alive)
+            self.assertFalse((revives | allies) & set(E.drop_weights(alive, supers=True, dead=1)), alive)
+        # endgame: someone out and LATE_ALIVE standing — both families come in
+        late = E.drop_weights(E.LATE_ALIVE, dead=1)
+        self.assertTrue(revives & set(late))
+        self.assertTrue(allies & set(late))
+        self.assertTrue(allies & set(E.drop_weights(E.LATE_ALIVE, supers=True, dead=2)))
+        self.assertLess(max(late.get(k, 0) for k in allies), min(late[k] for k in late if k not in allies))
+        # heads-up still rules on top: ally heals out, revives thinned but legal
+        duel = E.drop_weights(E.DUEL_ALIVE, dead=1)
+        self.assertFalse(allies & set(duel))
+        self.assertTrue(revives & set(duel))
+        self.assertLess(sum(duel.get(k, 0) for k in revives) / sum(duel.values()), 0.10)
+        # the scheduler passes the count through: round 1 of a 3-player race never
+        # offers a revive; the rows helper counts only the still-revivable dead
+        kinds = [k for _, k, _ in E.drop_schedule(random.Random(2), 90, 3, 0.5, sudden=False, dead=0)]
+        self.assertFalse(revives & set(kinds), kinds)
+        rows = [P(1), P(2, alive=0, lives=0, died_round=1), P(3, alive=0, lives=0, revived=1)]
+        self.assertEqual([p["user_id"] for p in E.revivable(rows)], ["2"])
+        # the guide states both rules from the constants
+        self.assertIn(str(E.LATE_ALIVE), E.ITEM_GROUPS["heal_ally"][2])
+        self.assertIn(str(E.LATE_ALIVE), E.ITEM_GROUPS["revive"][2])
+        self.assertIn(str(E.ALLY_ALIVE), E.ITEM_GROUPS["heal_ally"][2])
+
     def test_super_effects(self):
         p = P(1, lives=1, shots=0)
         E.grant_super(p, "fullheal", 3, 3)
@@ -571,13 +620,15 @@ class Drops(unittest.TestCase):
         self.assertEqual(p["shots"], 3)
 
     def test_golden_apple_goes_above_max_and_nothing_pulls_you_back_down(self):
-        p = P(1, lives=2)
-        E.grant_super(p, "goldapple", 3, 3)
-        self.assertEqual(p["lives"], 4)                 # above the cap of 3
+        p = P(1, lives=1)
+        line = E.grant_super(p, "goldapple", 3, 3)
+        self.assertEqual(p["lives"], 3)                 # 1 + 2 = the cap, NOT above it
+        self.assertNotIn("above the cap", line)         # race 20 said "above the cap" at 3 of 5
+        line = E.grant_super(p, "goldapple", 3, 3)
+        self.assertEqual(p["lives"], 5)                 # 3 + 2, above the cap of 3
+        self.assertIn("2 above the cap", line)
         E.grant_super(p, "goldapple", 3, 3)
         self.assertEqual(p["lives"], 5)                 # capped at max + 2
-        E.grant_super(p, "goldapple", 3, 3)
-        self.assertEqual(p["lives"], 5)
         E.grant_super(p, "fullheal", 3, 3)
         self.assertEqual(p["lives"], 5)                 # full heal never lowers
         # patch / medkit refuse at or above max; transfuse never lowers the target

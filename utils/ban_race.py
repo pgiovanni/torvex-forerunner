@@ -215,7 +215,7 @@ TIERS = {
 POWERUP_TIER = {
     "overload": "common", "transfuse": "common", "medkit": "common",
     "shield": "rare", "shot": "rare", "patch": "rare", "reflect": "rare",
-    "revive_small": "common", "revive_medium": "rare",
+    "revive_small": "rare", "revive_medium": "rare",
     "bloodbag": "uncommon", "paramedic": "rare",
 }
 # Within a tier a kind can be rarer still. Extra shots also arrive from
@@ -225,7 +225,12 @@ POWERUP_TIER = {
 # rare enough that Paul never saw one drop (9/21: "literally no one has used a
 # reflect yet. they haven't even appeared"). 0.75 is ~5% of drops, still under
 # 🛡️ Shield's 7%.
-KIND_WEIGHT = {"shot": 0.5, "reflect": 0.75}
+# 💫/✨ Revives sat in the COMMON tier from 9/13 to 9/26 and were ~30 % of every
+# drop, with nobody out to use them on (Paul 9/25: "why are revives still
+# appearing so much"). A revive has no strings, so it is a rare, and the medium
+# one is half of that again. They also never drop while nobody is out — see
+# drop_weights.
+KIND_WEIGHT = {"shot": 0.5, "reflect": 0.75, "revive_medium": 0.5}
 # Paul 9/21: "ally items should be less common than everything else." The rungs
 # keep their ladder against each other (the cheap one is the common one) but the
 # whole family is scaled UNDER the rarest thing anyone else can grab, so an ally
@@ -333,12 +338,12 @@ SUPER_WEIGHTS.update({k: v * ALLY_SCARCITY for k, v in SUPER_WEIGHTS.items() if 
 #
 # Multipliers on the normal weights, not a second table, so re-tiering a
 # power-up still carries its duel weight with it. 0 = it cannot drop heads-up.
-# Resulting regular table: 💥 Overload 6 · 🏥 Medkit 4.5 · 🩹 Patch 4 ·
-# 🔫 Extra shot 3 · revives 1.25 — attack 48 %, self-heal 45 %.
+# Resulting regular table: 💥 Overload 6 · 🏥 Medkit 6 · 🩹 Patch 4 ·
+# 🔫 Extra shot 3 · revives 0.5 — attack 46 %, self-heal 51 %.
 DUEL_ALIVE = 2
 DUEL_MULT = {
     "overload": 2, "shot": 6,                          # attack (shot is halved at source)
-    "patch": 4, "medkit": 1.5,                         # stay up
+    "patch": 4, "medkit": 2,                           # stay up
     "shield": 0, "reflect": 0,                         # off in sudden death — dead drops
     "transfuse": 0, "bloodbag": 0, "paramedic": 0,     # would heal your only opponent
     "revive_small": 0.25, "revive_medium": 0.5,        # still legal, just not the story here
@@ -363,19 +368,44 @@ DUEL_SUPER_MULT = {"fieldhosp": 0, "ambrosia": 0, "revive_full": 1 / 3, "revive_
 ALLY_ALIVE = 5
 SMALL_FIELD_MULT = {kind: 0 for kind in HEALS}
 
+# ── small-field ENDGAME (Paul 9/26: revives and ally items "should be only
+# towards the end of small races") ───────────────────────────────────────────
+# Race 20 (three players) dropped two Small revives in round 2 with nobody out.
+# So: a revive never drops while there is nobody to bring back — any race size.
+# And in a thin field (<= ALLY_ALIVE alive) the whole revive + heal-an-ally
+# family waits for the endgame: someone is out AND at most LATE_ALIVE are
+# standing. Heads-up still applies on top (ally heals gone, revives thinned).
+# A crowd (> ALLY_ALIVE alive) keeps the standard table — ally heals drop, and
+# revives drop as soon as someone is out.
+LATE_ALIVE = 3
 
-def drop_weights(alive, supers=False):
-    """The drop table a round rolls against, given the survivors it opens with.
-    Thin fields (`alive` <= ALLY_ALIVE) drop the heal-an-ally family; heads-up
-    (`alive` <= DUEL_ALIVE) also tilts to attack and self-heal and drops the
-    kinds that do nothing there. Above that it's the standard table."""
+
+def drop_weights(alive, supers=False, dead=0):
+    """The drop table a round rolls against, given the survivors it opens with
+    and `dead` = eliminated players who could still be revived.
+    Revives need someone to revive. Thin fields (`alive` <= ALLY_ALIVE) hold
+    the revive + heal-an-ally family back until the endgame (`dead` >= 1 and
+    `alive` <= LATE_ALIVE); heads-up (`alive` <= DUEL_ALIVE) also tilts to
+    attack and self-heal and drops the kinds that do nothing there. Above
+    ALLY_ALIVE it's the standard table."""
     base = SUPER_WEIGHTS if supers else DROP_WEIGHTS
-    if alive > ALLY_ALIVE:
-        return dict(base)
-    mult = dict(SMALL_FIELD_MULT)
-    if alive <= DUEL_ALIVE:
-        mult.update(DUEL_SUPER_MULT if supers else DUEL_MULT)
-    return {k: v * mult.get(k, 1) for k, v in base.items() if v * mult.get(k, 1) > 0}
+    mult = {k: 1 for k in base}                       # the bands COMPOSE: a 0 stays a 0
+
+    def scale(factors):
+        for k, f in factors.items():
+            if k in mult:
+                mult[k] *= f
+
+    if dead <= 0:
+        scale({kind: 0 for kind in REVIVES})
+    if alive <= ALLY_ALIVE:
+        late = dead >= 1 and alive <= LATE_ALIVE
+        if not late:
+            scale(SMALL_FIELD_MULT)
+            scale({kind: 0 for kind in REVIVES})
+        if alive <= DUEL_ALIVE:
+            scale(DUEL_SUPER_MULT if supers else DUEL_MULT)
+    return {k: v * mult[k] for k, v in base.items() if v * mult[k] > 0}
 
 # ── the guide's shape: BY TYPE, one short line each ───────────────────────────
 # Paul 9/20: "the powerups should be grouped by type … healing items, shooting
@@ -394,10 +424,13 @@ ITEM_GROUPS = {
                   "instant, and you are capped at max unless you get the 🍎 Golden apple"),
     "heal_ally": ("💉", "Healing — an ally",
                   f"aimed at another player, lands at round close, and never your vote — you still owe "
-                  f"a shot. Only 🍯 Ambrosia can take them above max. **They only drop while more "
-                  f"than {ALLY_ALIVE} are alive**"),
+                  f"a shot. Only 🍯 Ambrosia can take them above max. **They drop with a crowd (more "
+                  f"than {ALLY_ALIVE} alive) or in a small field's endgame (someone out, {LATE_ALIVE} or "
+                  f"fewer alive)**"),
     "revive":    ("💫", "Revives",
-                  "aimed at someone already out, land at round close, nobody comes back twice"),
+                  f"aimed at someone already out, land at round close, nobody comes back twice. "
+                  f"**They only drop once someone is out** — in a small field, only in the endgame "
+                  f"({LATE_ALIVE} or fewer alive)"),
 }
 ITEM_GROUP = {
     "overload": "shoot", "shot": "shoot", "nuke": "shoot", "arsenal": "shoot",
@@ -1026,6 +1059,11 @@ def alive(rows):
     return [p for p in rows if p["alive"]]
 
 
+def revivable(rows):
+    """Eliminated players a revive could still bring back (nobody returns twice)."""
+    return [p for p in rows if not p["alive"] and not p.get("revived")]
+
+
 def is_sudden_death(rows, at):
     return len(alive(rows)) <= at
 
@@ -1115,7 +1153,7 @@ def drop_count(alive, per_player, round_secs, drop_window):
     return max(1, min(cap, n))
 
 
-def drop_schedule(rng, round_secs, alive, per_player, sudden, drop_window=10):
+def drop_schedule(rng, round_secs, alive, per_player, sudden, drop_window=10, dead=0):
     """When this round's drops appear: a list of (seconds_into_round, kind,
     is_super). Regular drops are guaranteed and scale with the players still
     alive (see drop_count). They're spread over the middle of the timer in
@@ -1127,7 +1165,7 @@ def drop_schedule(rng, round_secs, alive, per_player, sudden, drop_window=10):
     lo, hi = 0.10 * round_secs, 0.85 * round_secs
     slot = (hi - lo) / n
     out = []
-    regular, supers = drop_weights(alive), drop_weights(alive, supers=True)
+    regular, supers = drop_weights(alive, dead=dead), drop_weights(alive, supers=True, dead=dead)
     for i in range(n):
         out.append((lo + slot * (i + rng.random()), roll_drop(rng, regular), False))
     if sudden:
@@ -1144,7 +1182,9 @@ def grant_super(p, kind, shot_cap, max_lives):
         return f"💖 {m(p['user_id'])} grabbed **Full heal** — back to {p['lives']} lives."
     if kind == "goldapple":
         p["lives"] = min(max_lives + GOLDAPPLE_OVER, p["lives"] + 2)
-        return f"🍎 {m(p['user_id'])} bit the **GOLDEN APPLE** — **{p['lives']}** lives, above the cap."
+        over = p["lives"] - max_lives
+        tail = f"{over} above the cap" if over > 0 else f"the cap is {max_lives}, and this can pass it"
+        return f"🍎 {m(p['user_id'])} bit the **GOLDEN APPLE** — **{p['lives']}** lives ({tail})."
     if kind == "arsenal":
         p["shots"] = min(shot_cap + 3, p["shots"] + 3)
         return f"🔫 {m(p['user_id'])} grabbed **Arsenal** — three more shots."

@@ -615,6 +615,7 @@ class BanRace(commands.Cog):
         self._msgs = defaultdict(int)     # (race_id, user_id) -> messages this round
         self._chatter = defaultdict(int)  # race_id -> human messages since the panel was last (re)posted
         self._last_bump = {}              # race_id -> time of the last re-post
+        self._panel_lock = defaultdict(asyncio.Lock)   # race_id -> serialises "post the round card" vs "bump the panel"
         self._chan_cache = {}             # guild_id -> (expires, race dict | None) for on_message's channel check
         self._last_card = {}              # race_id -> when its lobby card was last re-posted
         self._drops = {}                  # nonce -> {kind, race_id, claimed}
@@ -1247,10 +1248,20 @@ class BanRace(commands.Cog):
                     for k in [k for k in self._msgs if k[0] == race_id]:
                         del self._msgs[k]
                     engine.update_race(race_id, round_no=round_no, round_ends_at=ends)
-                    msg = await channel.send(embed=round_embed(race, rows, round_no, ends, sudden, extra),
-                                             view=round_view(race_id))
-                    engine.update_race(race_id, round_msg_id=str(msg.id))
-                    self._chatter[race_id] = 0
+                    # Race 20 (9/26): the card's own MESSAGE_CREATE reaches on_message
+                    # BEFORE channel.send() returns, so a bump could read the OLD
+                    # round_msg_id, re-post the previous round's card and then write
+                    # its id over this round's — every later bump copied round 1.
+                    # Hold the panel lock across send+save so a bump waits and
+                    # re-reads; zero the chatter first so the card itself can't
+                    # trip the threshold.
+                    async with self._panel_lock[race_id]:
+                        self._chatter[race_id] = 0
+                        msg = await channel.send(embed=round_embed(race, rows, round_no, ends, sudden, extra),
+                                                 view=round_view(race_id))
+                        engine.update_race(race_id, round_msg_id=str(msg.id))
+                        self._chatter[race_id] = 0
+                        self._chan_cache.pop(int(race["guild_id"]), None)   # on_message must see the new panel id
 
                     # every round drops, scaled to the players still alive (Paul 9/12:
                     # "powerups should scale with the amount of active users");
@@ -1260,7 +1271,8 @@ class BanRace(commands.Cog):
                     queue = [(opened + at, kind, is_super) for at, kind, is_super in
                              engine.drop_schedule(self._rng, secs, len(engine.alive(rows)),
                                                   s.get("drops_per_player", engine.DEFAULTS["drops_per_player"]),
-                                                  sudden, s.get("drop_window", engine.DEFAULTS["drop_window"]))]
+                                                  sudden, s.get("drop_window", engine.DEFAULTS["drop_window"]),
+                                                  dead=len(engine.revivable(rows)))]
                 while True:
                     race = engine.get_race(race_id)
                     if race["status"] != "running":
@@ -2212,6 +2224,15 @@ class BanRace(commands.Cog):
         is updated so joins / round-close edits target the fresh copy."""
         if not race or race["status"] not in ("lobby", "running"):
             return
+        async with self._panel_lock[race["id"]]:
+            # Re-read under the lock: a round may have opened while we waited,
+            # and the panel is whatever the row says NOW (race 20, 9/26).
+            race = engine.get_race(race["id"])
+            if not race or race["status"] not in ("lobby", "running"):
+                return
+            await self._bump_panel_locked(race, channel)
+
+    async def _bump_panel_locked(self, race, channel):
         key = "lobby_msg_id" if race["status"] == "lobby" else "round_msg_id"
         old_id = race.get(key)
         if not old_id:
