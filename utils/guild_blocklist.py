@@ -40,8 +40,17 @@ MAX_REASON = 300
 def _conn(db=None):
     """Open, create-if-needed, commit on clean exit, always close (Windows
     tests can't delete a db with a dangling handle)."""
-    c = sqlite3.connect(db or DB_PATH, timeout=30)
+    path = db or DB_PATH
+    fresh = not os.path.exists(path)
+    c = sqlite3.connect(path, timeout=30)
     c.row_factory = sqlite3.Row
+    if fresh:
+        # Shared with the dashboard (group torvexcfg): sqlite creates 0644 under
+        # the default umask, which locks the dashboard out of writing it.
+        try:
+            os.chmod(path, 0o660)
+        except OSError:
+            pass
     c.execute("""CREATE TABLE IF NOT EXISTS blocked_guilds (
         guild_id   TEXT PRIMARY KEY,
         guild_name TEXT,
