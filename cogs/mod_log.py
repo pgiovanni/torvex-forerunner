@@ -3210,8 +3210,21 @@ class ModLog(commands.Cog):
     # `_purge_guild` below is now operator-only — no command calls it, so a
     # purge-on-request is a deliberate act, not something a remote admin can
     # fire to erase the record of their own purges.
-    def _purge_guild(self, gid):
-        """Delete every stored row (and cached file) belonging to one guild.
+    # identity_events kinds that are ABOUT a person (what they were called, what
+    # they looked like) rather than about what happened to them. A content-only
+    # purge drops these and keeps the action kinds (timeout/kick/ban/roles/
+    # join/leave) — those are the record of what the bot and the mods did.
+    _IDENTITY_PERSONAL_KINDS = ("nick", "username", "global_name", "avatar")
+
+    def _purge_guild(self, gid, content_only=False):
+        """Delete what the archive holds for one guild.
+
+        Default: every row and cached file. `content_only=True` (the blocklist
+        purge, Paul 9/27: "not purge all records just the bad ones so we can
+        keep bug tracking alive") drops what was SAID and WHO people were —
+        messages, edits, media, personal identity rows — and keeps the
+        operational record: command_log, the structural guild_events ledger,
+        and identity rows for actions (timeout/kick/ban/roles/join/leave).
 
         Blocking on purpose — the caller runs it off the event loop. Media files
         are named by message id, so the ids have to be read before the rows go.
@@ -3220,11 +3233,18 @@ class ModLog(commands.Cog):
         with self._conn() as c:
             ids = [r[0] for r in c.execute("SELECT message_id FROM messages WHERE guild_id=?", (gid,))]
             counts["edits"] = c.execute("DELETE FROM edits WHERE guild_id=?", (gid,)).rowcount
-            counts["events"] = c.execute("DELETE FROM guild_events WHERE guild_id=?", (gid,)).rowcount
-            counts["commands"] = c.execute("DELETE FROM command_log WHERE guild_id=?", (gid,)).rowcount
+            if not content_only:
+                counts["events"] = c.execute("DELETE FROM guild_events WHERE guild_id=?", (gid,)).rowcount
+                counts["commands"] = c.execute("DELETE FROM command_log WHERE guild_id=?", (gid,)).rowcount
             counts["messages"] = c.execute("DELETE FROM messages WHERE guild_id=?", (gid,)).rowcount
-            counts["identity"] = c.execute("DELETE FROM identity_events WHERE guild_id=?",
-                                           (gid,)).rowcount
+            if content_only:
+                marks = ",".join("?" * len(self._IDENTITY_PERSONAL_KINDS))
+                counts["identity"] = c.execute(
+                    f"DELETE FROM identity_events WHERE guild_id=? AND kind IN ({marks})",
+                    (gid, *self._IDENTITY_PERSONAL_KINDS)).rowcount
+            else:
+                counts["identity"] = c.execute("DELETE FROM identity_events WHERE guild_id=?",
+                                               (gid,)).rowcount
             # A requested purge takes the hash/metadata index with it too —
             # "delete everything held for this server" means everything.
             c.execute("DELETE FROM media_index WHERE guild_id=?", (gid,))

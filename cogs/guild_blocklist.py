@@ -19,14 +19,14 @@ Enforcement points:
     a pending notice, and gives up at the cap; role/channel listeners retry
     the instant the bot's permissions change so the stay is as short as it
     can be.
-Clean-up: `on_guild_remove` purges everything stored for a blocked server —
-the message archive (mod-log cog's own purge: messages, edits, identity
-ledger, command log, media index, cached files) PLUS what that purge never
-covered and BlackNova left behind: message mentions, stats rows, the stats
-summary, and the guild's security/config row (which also kills any automation
-rule the server wrote, so a pending stay can't be made to moderate for them).
-That is what torvex.app/TrustSafety promises: "everything it stored for that
-server is deleted".
+Clean-up: `on_guild_remove` purges the CONTENT stored for a blocked server —
+messages, edits, mentions, media, and who-people-were identity rows (mod-log
+purge in content_only mode) — and KEEPS the operational record: command log,
+structural guild events, action identity rows (timeout/kick/ban/roles), stats
+counts, and the guild's config row. Paul, 9/27: "not purge all records just
+the bad ones so we can keep bug tracking alive." While a pending stay runs,
+cogs/auto_rules.py refuses to run that guild's rules (blocklist check), so the
+kept config cannot be used to moderate for them.
 """
 
 import asyncio
@@ -40,61 +40,31 @@ from discord.ext import commands, tasks
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils import guild_blocklist as store  # noqa: E402
-from utils import security_config, stats_jobs  # noqa: E402
 
 SWEEP_SECONDS = 60
 
 
 def _purge_extras(gid: str) -> dict:
-    """Blocking. Rows outside the mod-log purge that still name the guild.
-    Each (db, table) is skipped when the file or table doesn't exist."""
-    targets = []
+    """Blocking. Content-derived rows outside the mod-log purge: the mention
+    index (who was mentioned in which message). Stats counts, the stats
+    summary and the guild's config row are operational and stay."""
     ml = sys.modules.get("cogs.mod_log")
-    if ml is not None and hasattr(ml, "DB_PATH"):
-        targets.append((ml.DB_PATH, "message_mentions"))
-    st = sys.modules.get("cogs.stats")
-    if st is not None and hasattr(st, "DB_PATH"):
-        targets += [(st.DB_PATH, "message_counts"), (st.DB_PATH, "member_daily"),
-                    (st.DB_PATH, "voice_sessions")]
-    targets.append((stats_jobs.DB_PATH, "stats_summary"))
-    targets.append((security_config.DB_PATH, "guild_security"))
-    counts = {}
-    for path, table in targets:
-        if not os.path.exists(path):
-            continue
-        try:
-            con = sqlite3.connect(path, timeout=30)
-            try:
-                cols = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
-                if "guild_id" not in cols:
-                    continue
-                n = con.execute(f"DELETE FROM {table} WHERE guild_id=? OR guild_id=?",
-                                (str(gid), int(gid))).rowcount
-                con.commit()
-                if n:
-                    counts[table] = counts.get(table, 0) + n
-            finally:
-                con.close()
-        except Exception as e:
-            print(f"[WARN] blocklist extra purge {table} failed for {gid}: {e}")
-    return counts
-
-
-def _purge_config(gid: str) -> int:
-    """Blocking. Drop the guild's security/config row only — used the moment a
-    re-added blocked server is kept pending, so its automation rules, welcome
-    cards and the rest cannot run while the bot waits for a channel."""
-    path = security_config.DB_PATH
-    if not os.path.exists(path):
-        return 0
-    con = sqlite3.connect(path, timeout=30)
+    if ml is None or not hasattr(ml, "DB_PATH") or not os.path.exists(ml.DB_PATH):
+        return {}
     try:
-        n = con.execute("DELETE FROM guild_security WHERE guild_id=? OR guild_id=?",
-                        (str(gid), int(gid))).rowcount
-        con.commit()
-        return n
-    finally:
-        con.close()
+        con = sqlite3.connect(ml.DB_PATH, timeout=30)
+        try:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(message_mentions)")}
+            if "guild_id" not in cols:
+                return {}
+            n = con.execute("DELETE FROM message_mentions WHERE guild_id=?", (str(gid),)).rowcount
+            con.commit()
+            return {"message_mentions": n} if n else {}
+        finally:
+            con.close()
+    except Exception as e:
+        print(f"[WARN] blocklist mention purge failed for {gid}: {e}")
+        return {}
 
 
 class GuildBlocklist(commands.Cog):
@@ -102,28 +72,20 @@ class GuildBlocklist(commands.Cog):
         self.bot = bot
         if not hasattr(bot, "blocked_pending"):
             bot.blocked_pending = {}
-        bot.blocklist_neutralize = self._neutralize
         self.sweep.start()
-
-    async def _neutralize(self, gid: int):
-        try:
-            n = await asyncio.to_thread(_purge_config, str(gid))
-            if n:
-                print(f"[GUILD] BLOCKED config dropped for {gid} while pending (rules/welcome off)")
-        except Exception as e:
-            print(f"[WARN] blocklist neutralize failed for {gid}: {e}")
 
     def cog_unload(self):
         self.sweep.cancel()
 
     # ────────────────────────────────────────────────────────────── helpers
     async def _purge(self, gid: int) -> dict:
-        """Everything stored for the guild, off the event loop."""
+        """The content stored for the guild, off the event loop; the operational
+        record stays (see the module docstring)."""
         counts = {}
         modlog = self.bot.get_cog("ModLog")
         if modlog is not None and hasattr(modlog, "_purge_guild"):
             try:
-                counts.update(await asyncio.to_thread(modlog._purge_guild, str(gid)) or {})
+                counts.update(await asyncio.to_thread(modlog._purge_guild, str(gid), True) or {})
             except Exception as e:  # never let a purge failure hide the block itself
                 print(f"[WARN] blocklist purge failed for {gid}: {e}")
         try:
@@ -199,8 +161,7 @@ class GuildBlocklist(commands.Cog):
     @sweep.before_loop
     async def _wait_ready(self):
         await self.bot.wait_until_ready()
-        # Leftovers: rows for blocked servers the bot is no longer in (the
-        # extras above were not purged before this cog learned about them).
+        # Leftovers: content rows for blocked servers the bot is no longer in.
         try:
             inside = {g.id for g in self.bot.guilds}
             for e in await asyncio.to_thread(store.all_blocked):

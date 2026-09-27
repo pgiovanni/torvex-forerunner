@@ -42,7 +42,8 @@ import discord
 from discord.ext import commands
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from utils.security_config import get_config  # noqa: E402
+from utils.security_config import get_config
+from utils import guild_blocklist  # noqa: E402
 from utils.quiet_removals import is_quiet  # noqa: E402
 from utils import perm_failures  # noqa: E402
 
@@ -192,7 +193,10 @@ class AutoRules(commands.Cog):
     # ── config ──────────────────────────────────────────────────────────────
     def _rules(self, guild, trigger):
         cfg = get_config(guild.id)
-        if not cfg.get("rules_enabled"):
+        # A blocklisted server the bot is still inside (waiting to post the
+        # do-not-serve notice, see cogs/guild_blocklist.py) gets no rules run
+        # for it — its config is kept for the record, not for use.
+        if not cfg.get("rules_enabled") or guild_blocklist.is_blocked(guild.id):
             return cfg, []
         out = []
         for r in (cfg.get("rules") or [])[:MAX_RULES]:

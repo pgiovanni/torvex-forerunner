@@ -412,11 +412,6 @@ async def _enforce_blocklist(guild, readd: bool = False) -> bool:
         return True
     import time as _time
     bot.blocked_pending[guild.id] = _time.time()
-    # Their config (automation rules, welcome cards…) must not run while we
-    # wait for a channel: drop the row now, not just on the way out.
-    neutralize = getattr(bot, "blocklist_neutralize", None)
-    if neutralize is not None:
-        await neutralize(guild.id)
     print(f"[GUILD] BLOCKED {guild.id} ({guild.name!r}) — {entry['reason']!r}; re-add #{prior}, "
           f"notice NOT posted (no channel) — staying up to {guild_blocklist.NOTICE_MAX_WAIT // 60} min for perms")
     bot.loop.create_task(_send_guild_alert("blocked", guild, reason=entry["reason"], readd=prior,
