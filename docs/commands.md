@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **222 commands** (96 top-level, the rest subcommands) across 40 cogs
+- **225 commands** (97 top-level, the rest subcommands) across 41 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -37,7 +37,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Help** — `/dashboard`, `/help`
 
-**Other** — `/deadchat`, `/userinfo`
+**Other** — `/blocklist`, `/deadchat`, `/userinfo`
 
 ---
 
@@ -3326,6 +3326,51 @@ Ping the Dead Chat role to wake the server up — add a question if you like
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `message` | string | No | What do you want to talk about? (optional) *(length 1–200)* |
+
+### guild_blocklist
+
+<sub>`cogs/guild_blocklist.py`</sub>
+
+#### `/blocklist add`
+
+Block a server: the bot leaves it, purges its archive, and refuses to be re-added.
+
+```
+/blocklist add <guild_id> <reason>
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `guild_id` | string | Yes | The server's id |
+| `reason` | string | Yes | Why — this is the record |
+
+#### `/blocklist list`
+
+Every blocked server, newest first.
+
+```
+/blocklist list
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+*No parameters.*
+
+#### `/blocklist remove`
+
+Unblock a server (it can add the bot again).
+
+```
+/blocklist remove <guild_id>
+```
+
+**Access:** Requires **Administrator** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `guild_id` | string | Yes | The server's id |
 
 ### user_info
 

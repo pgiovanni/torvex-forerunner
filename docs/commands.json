@@ -1862,6 +1862,65 @@
    "dm_allowed": true
   },
   {
+   "path": "blocklist add",
+   "description": "Block a server: the bot leaves it, purges its archive, and refuses to be re-added.",
+   "params": [
+    {
+     "name": "guild_id",
+     "type": "string",
+     "required": true,
+     "description": "The server's id"
+    },
+    {
+     "name": "reason",
+     "type": "string",
+     "required": true,
+     "description": "Why — this is the record"
+    }
+   ],
+   "signature": "/blocklist add <guild_id> <reason>",
+   "root": "blocklist",
+   "cog": "guild_blocklist",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "blocklist list",
+   "description": "Every blocked server, newest first.",
+   "params": [],
+   "signature": "/blocklist list",
+   "root": "blocklist",
+   "cog": "guild_blocklist",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
+   "path": "blocklist remove",
+   "description": "Unblock a server (it can add the bot again).",
+   "params": [
+    {
+     "name": "guild_id",
+     "type": "string",
+     "required": true,
+     "description": "The server's id"
+    }
+   ],
+   "signature": "/blocklist remove <guild_id>",
+   "root": "blocklist",
+   "cog": "guild_blocklist",
+   "permissions": [
+    "Administrator"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "dashboard",
    "description": "Open the web dashboard to configure the bot.",
    "params": [],
@@ -5514,6 +5573,30 @@
    "cog": "gifts",
    "visibility_permissions": [],
    "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "blocklist add": {
+   "cog": "guild_blocklist",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "blocklist remove": {
+   "cog": "guild_blocklist",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
+   "server_owner_only": false
+  },
+  "blocklist list": {
+   "cog": "guild_blocklist",
+   "visibility_permissions": [],
+   "runtime_permissions": [
+    "administrator"
+   ],
    "server_owner_only": false
   },
   "help": {
