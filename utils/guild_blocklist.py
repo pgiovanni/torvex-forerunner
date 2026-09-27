@@ -35,6 +35,27 @@ DB_PATH = os.environ.get("TORVEX_BLOCKLIST_DB") or (
 
 MAX_REASON = 300
 
+# Posted into a blocked server the moment it re-adds the bot, right before the
+# bot leaves again. One line, no reason, no names: the first exit is silent
+# (nothing to argue with), but a re-add means they read the silence as a
+# glitch and will keep trying — the notice is what makes them stop. Decided
+# 9/27 after BlackNova re-added the bot three times in 26 minutes.
+NOTICE_TEXT = ("This server is on Torvex's do-not-serve list, so the bot will not stay here. "
+               "https://torvex.app/TrustSafety")
+
+
+def alert_wanted(prior_blocked_rows: int) -> bool:
+    """Email the operator for a refused join?
+
+    `prior_blocked_rows` = how many `blocked` departures the ledger already
+    holds for this guild. 0 = the server was pre-blocked and this is the first
+    refusal; 1 = it was blocked while the bot was inside and this is the first
+    re-add. Both are news. From the second re-add on, the ledger row is the
+    record and the inbox stays quiet — a server spamming the invite must not
+    be able to spam the operator.
+    """
+    return prior_blocked_rows <= 1
+
 
 @contextlib.contextmanager
 def _conn(db=None):

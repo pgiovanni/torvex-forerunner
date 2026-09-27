@@ -61,5 +61,19 @@ class GuildBlocklistStore(unittest.TestCase):
         self.assertIsNone(store.parse_guild_id("<@1394876181739995226>"))  # a user mention, not an id
 
 
+
+class ReaddPolicy(unittest.TestCase):
+    def test_alert_only_while_it_is_news(self):
+        self.assertTrue(store.alert_wanted(0))    # pre-blocked server, first refusal
+        self.assertTrue(store.alert_wanted(1))    # blocked while inside, first re-add
+        self.assertFalse(store.alert_wanted(2))   # second re-add: ledger only
+        self.assertFalse(store.alert_wanted(9))
+
+    def test_notice_is_one_line_with_the_policy_link(self):
+        self.assertNotIn("\n", store.NOTICE_TEXT)
+        self.assertIn("torvex.app/TrustSafety", store.NOTICE_TEXT)
+        self.assertLess(len(store.NOTICE_TEXT), 200)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -276,7 +276,10 @@ async def _send_guild_alert(event: str, guild, reason: str = None):
     if not (GUILD_ALERT_EMAIL and GUILD_ALERT_FROM and RESEND_API_KEY):
         return
     try:
-        payload = _guild_alert_payload(event, guild, len(bot.guilds), reason=reason)
+        # A blocked alert is built while the bot is still inside the server it
+        # is about to leave — don't count that one ("Now in: 29" was wrong).
+        count = len(bot.guilds) - (1 if event == "blocked" else 0)
+        payload = _guild_alert_payload(event, guild, count, reason=reason)
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
             async with session.post(
                 "https://api.resend.com/emails",
@@ -291,12 +294,54 @@ async def _send_guild_alert(event: str, guild, reason: str = None):
         print(f"[WARN] guild alert email failed: {e}")
 
 
-async def _enforce_blocklist(guild) -> bool:
+def _blocked_departures(guild_id) -> int:
+    """How many `blocked` rows the ledger already holds for this guild — the
+    re-add counter. Read-only; a failure counts as 0 so the alert still goes."""
+    try:
+        import sqlite3
+        con = sqlite3.connect(GUILD_EVENTS_DB, timeout=5)
+        try:
+            row = con.execute("SELECT COUNT(*) FROM guild_events WHERE guild_id=? AND event='blocked'",
+                              (str(guild_id),)).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            con.close()
+    except Exception:
+        return 0
+
+
+async def _post_blocked_notice(guild) -> bool:
+    """One line into the server's system channel (or the first text channel
+    the bot can speak in) before leaving. Best-effort with a short timeout —
+    the notice must never delay or block the exit."""
+    import asyncio
+    me = getattr(guild, "me", None)
+    candidates = [guild.system_channel] + list(getattr(guild, "text_channels", []))
+    for ch in candidates:
+        if ch is None or me is None:
+            continue
+        try:
+            perms = ch.permissions_for(me)
+            if not (perms.view_channel and perms.send_messages):
+                continue
+            await asyncio.wait_for(ch.send(guild_blocklist.NOTICE_TEXT), timeout=5)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+async def _enforce_blocklist(guild, readd: bool = False) -> bool:
     """Leave `guild` if it is on the operator blocklist. True when it was.
 
     The public rule is torvex.app/TrustSafety ("Servers we don't serve"); the
-    list itself is managed with `/blocklist` (cogs/guild_blocklist.py), which
-    also purges the archive on the way out via on_guild_remove.
+    list itself is managed on the dashboard (/operator/blocklist), and
+    cogs/guild_blocklist.py purges the archive on the way out via on_guild_remove.
+
+    `readd=True` is the join-time path: the server just added the bot again.
+    That gets the one-line notice, and an email only while it is news
+    (utils.guild_blocklist.alert_wanted) — BlackNova re-added three times in
+    26 minutes on 9/27 and each one mailed the operator.
     """
     try:
         entry = guild_blocklist.get(guild.id)
@@ -305,9 +350,15 @@ async def _enforce_blocklist(guild) -> bool:
         return False
     if not entry:
         return False
-    print(f"[GUILD] BLOCKED {guild.id} ({guild.name!r}) — {entry['reason']!r}; leaving")
+    prior = _blocked_departures(guild.id) if readd else 0
+    print(f"[GUILD] BLOCKED {guild.id} ({guild.name!r}) — {entry['reason']!r}; "
+          f"{'re-add #%d, ' % prior if readd and prior else ''}leaving")
     bot.blocked_leaving.add(guild.id)
-    bot.loop.create_task(_send_guild_alert("blocked", guild, reason=entry["reason"]))
+    if not readd or guild_blocklist.alert_wanted(prior):
+        bot.loop.create_task(_send_guild_alert("blocked", guild, reason=entry["reason"]))
+    if readd:
+        posted = await _post_blocked_notice(guild)
+        print(f"[GUILD] BLOCKED notice {'posted' if posted else 'NOT posted (no channel)'} in {guild.id}")
     try:
         await guild.leave()
     except Exception as e:
@@ -319,7 +370,7 @@ async def _enforce_blocklist(guild) -> bool:
 async def on_guild_join(guild):
     print(f"[GUILD] JOINED {guild.id} ({guild.name!r}) members={getattr(guild, 'member_count', '?')} — now in {len(bot.guilds)} guilds")
     _record_guild_event("join", guild)
-    if await _enforce_blocklist(guild):
+    if await _enforce_blocklist(guild, readd=True):
         return   # the departure is recorded as `blocked` below; one alert, not two
     bot.loop.create_task(_send_guild_alert("join", guild))
 
