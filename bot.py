@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from utils import guild_blocklist  # noqa: E402  (needs the env loaded first)
+
 TORVEX_API_URL = os.getenv("TORVEX_API_URL", "http://localhost:5000")
 TORVEX_BOT_KEY = os.getenv("TORVEX_BOT_KEY", "")
 
@@ -16,6 +18,10 @@ intents.members = True
 
 # strip_after_prefix: "! slime" works the same as "!slime" (Paul, 9/8).
 bot = commands.Bot(command_prefix="!", intents=intents, strip_after_prefix=True)
+# Guild ids the bot is leaving BECAUSE they are blocklisted (join-time refusal
+# below, or `/blocklist add`). on_guild_remove reads it to record the departure
+# as `blocked` instead of `remove` and to skip the operator alert.
+bot.blocked_leaving = set()
 
 @bot.event
 async def on_message(message):
@@ -140,6 +146,14 @@ async def on_ready():
 
     await _post_status("✅ Torvex Forerunner is back online and ready!")
 
+    # Blocklist sweep: a server blocked while the bot was in it (or by hand in
+    # the db) is left now, not the next time it re-adds the bot.
+    for g in list(bot.guilds):
+        try:
+            await _enforce_blocklist(g)
+        except Exception as e:
+            print(f"[WARN] blocklist sweep failed for {g.id}: {e}")
+
 async def _post_status(msg: str):
     """Post a status message to every guild's configured status channel."""
     for guild in bot.guilds:
@@ -222,9 +236,10 @@ GUILD_ALERT_FROM = (os.getenv("GUILD_ALERT_FROM") or "").strip()
 RESEND_API_KEY = (os.getenv("RESEND_API_KEY") or "").strip()
 
 
-def _guild_alert_payload(event: str, guild, guild_count: int) -> dict:
-    """Build the Resend request body for a join/remove alert (pure, testable)."""
-    verb = "added to" if event == "join" else "removed from"
+def _guild_alert_payload(event: str, guild, guild_count: int, reason: str = None) -> dict:
+    """Build the Resend request body for a join/remove/blocked alert (pure, testable)."""
+    verb = {"join": "added to", "remove": "removed from"}.get(
+        event, "added to a BLOCKED server, and left")
     name = str(getattr(guild, "name", "") or "?")
     members = getattr(guild, "member_count", None)
     owner_id = getattr(guild, "owner_id", None)
@@ -242,22 +257,26 @@ def _guild_alert_payload(event: str, guild, guild_count: int) -> dict:
         f"Created:  {created_txt}",
         f"Now in:   {guild_count} servers",
     ]
+    if event == "blocked":
+        lines += [f"Blocked:  {reason or '?'}", "",
+                  "The bot left immediately; its archive for that server is being purged."]
     if event == "join":
         from utils.links import dashboard_url
         lines += ["", f"Dashboard: {dashboard_url(guild.id)}"]
+    subject_verb = {"join": "Added to", "remove": "Removed from"}.get(event, "BLOCKED — left")
     return {
         "from": GUILD_ALERT_FROM,
         "to": [GUILD_ALERT_EMAIL],
-        "subject": f"[Forerunner] {'Added to' if event == 'join' else 'Removed from'} {name} ({members if members is not None else '?'} members)",
+        "subject": f"[Forerunner] {subject_verb} {name} ({members if members is not None else '?'} members)",
         "text": chr(10).join(lines),
     }
 
 
-async def _send_guild_alert(event: str, guild):
+async def _send_guild_alert(event: str, guild, reason: str = None):
     if not (GUILD_ALERT_EMAIL and GUILD_ALERT_FROM and RESEND_API_KEY):
         return
     try:
-        payload = _guild_alert_payload(event, guild, len(bot.guilds))
+        payload = _guild_alert_payload(event, guild, len(bot.guilds), reason=reason)
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
             async with session.post(
                 "https://api.resend.com/emails",
@@ -272,20 +291,51 @@ async def _send_guild_alert(event: str, guild):
         print(f"[WARN] guild alert email failed: {e}")
 
 
+async def _enforce_blocklist(guild) -> bool:
+    """Leave `guild` if it is on the operator blocklist. True when it was.
+
+    The public rule is torvex.app/TrustSafety ("Servers we don't serve"); the
+    list itself is managed with `/blocklist` (cogs/guild_blocklist.py), which
+    also purges the archive on the way out via on_guild_remove.
+    """
+    try:
+        entry = guild_blocklist.get(guild.id)
+    except Exception as e:
+        print(f"[WARN] blocklist lookup failed for {guild.id}: {e}")
+        return False
+    if not entry:
+        return False
+    print(f"[GUILD] BLOCKED {guild.id} ({guild.name!r}) — {entry['reason']!r}; leaving")
+    bot.blocked_leaving.add(guild.id)
+    bot.loop.create_task(_send_guild_alert("blocked", guild, reason=entry["reason"]))
+    try:
+        await guild.leave()
+    except Exception as e:
+        print(f"[WARN] could not leave blocked guild {guild.id}: {e}")
+    return True
+
+
 @bot.event
 async def on_guild_join(guild):
     print(f"[GUILD] JOINED {guild.id} ({guild.name!r}) members={getattr(guild, 'member_count', '?')} — now in {len(bot.guilds)} guilds")
     _record_guild_event("join", guild)
+    if await _enforce_blocklist(guild):
+        return   # the departure is recorded as `blocked` below; one alert, not two
     bot.loop.create_task(_send_guild_alert("join", guild))
 
 
 @bot.event
 async def on_guild_remove(guild):
     # Fires for a kick, a ban, an admin removing the integration, AND for the
-    # guild being deleted outright — Discord does not tell us which.
-    print(f"[GUILD] REMOVED FROM {guild.id} ({guild.name!r}) members={getattr(guild, 'member_count', '?')} — now in {len(bot.guilds)} guilds")
-    _record_guild_event("remove", guild)
-    bot.loop.create_task(_send_guild_alert("remove", guild))
+    # guild being deleted outright — Discord does not tell us which. A departure
+    # WE caused (blocklist) is the one case we do know, so it gets its own row
+    # and no alert — the operator either did it or was already emailed.
+    blocked = guild.id in bot.blocked_leaving
+    bot.blocked_leaving.discard(guild.id)
+    print(f"[GUILD] {'LEFT BLOCKED' if blocked else 'REMOVED FROM'} {guild.id} ({guild.name!r}) members={getattr(guild, 'member_count', '?')} — now in {len(bot.guilds)} guilds")
+    _record_guild_event("blocked" if blocked else "remove", guild)
+    if not blocked:
+        bot.loop.create_task(_send_guild_alert("remove", guild))
 
 
 @bot.event
