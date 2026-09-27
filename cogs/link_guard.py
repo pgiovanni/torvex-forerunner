@@ -403,6 +403,19 @@ def invite_mode(cfg):
     return m if m in INVITE_MODES else "log"
 
 
+def invite_exempt(cfg, member_role_ids, is_staff):
+    """Who a foreign invite is never actioned for. The rule is the CONFIGURED
+    role list (`linkguard_invite_exempt_roles`, set on the AutoMod card); the
+    permission-based staff exemption is a separate switch a server may turn
+    off so only the listed roles pass — Paul, 9/26: "a list of roles that are
+    exempt, ours just happened to be all staff roles". The owner and the
+    whitelist are handled before this by the caller."""
+    roles = {str(r) for r in (cfg.get("linkguard_invite_exempt_roles") or [])}
+    if roles and any(str(r) in roles for r in member_role_ids):
+        return True
+    return bool(cfg.get("linkguard_invite_exempt_staff", 1)) and bool(is_staff)
+
+
 def invite_spam_hit(times, now, count, window):
     """Sliding-window spam check for one member. `times` is their mutable list of
     prior post stamps: `now` is appended, stale stamps pruned, and True returned
@@ -1214,11 +1227,8 @@ class LinkGuard(commands.Cog):
         member = guild.get_member(author.id)
         if member is None:
             return
-        if cfg.get("linkguard_invite_exempt_staff", 1) and _is_staff(member, cfg):
-            return  # staff share invites deliberately (partnerships) — table only
-        inv_exempt_roles = {str(r) for r in (cfg.get("linkguard_invite_exempt_roles") or [])}
-        if inv_exempt_roles and any(str(r.id) in inv_exempt_roles for r in member.roles):
-            return  # partner/ambassador roles that aren't staff — table only
+        if invite_exempt(cfg, [r.id for r in member.roles], _is_staff(member, cfg)):
+            return  # the configured exempt-role list (or staff perms, if that switch is on) — table only
 
         enforce = bool(cfg.get("linkguard_enforce"))
         key = (guild.id, author.id)

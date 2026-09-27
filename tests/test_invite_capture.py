@@ -122,6 +122,24 @@ check("mode: None falls back to log",
 check("mode: empty falls back to log",
       lg.invite_mode({"linkguard_invite_mode": ""}) == "log")
 check("mode: ban is not a mode", lg.invite_mode({"linkguard_invite_mode": "ban"}) == "log")
+# ------------------------------------------------- invite_exempt (9/26)
+# Home's real shape: the four staff roles listed, the permission-based switch OFF.
+HOME = {"linkguard_invite_exempt_staff": 0,
+        "linkguard_invite_exempt_roles": ["1514724003992961165", "1215150451234963466",
+                                          "1500624978129719437", "1215294456199254147"]}
+check("exempt: Senior Moderator is on the list -> exempt",
+      lg.invite_exempt(HOME, [1500624978129719437, 1231962924793335900], is_staff=True))
+check("exempt: Mod is on the list -> exempt", lg.invite_exempt(HOME, [1215294456199254147], True))
+check("exempt: plain member -> actioned", not lg.invite_exempt(HOME, [1231962924793335900], False))
+check("exempt: Trial Mod has perms but is NOT listed -> actioned (switch off)",
+      not lg.invite_exempt(HOME, [1544109004261957764], is_staff=True))
+check("exempt: int and str ids compare equal",
+      lg.invite_exempt(HOME, ["1215294456199254147"], False))
+check("exempt: default config = staff perms exempt, list empty",
+      lg.invite_exempt({}, [1], True) and not lg.invite_exempt({}, [1], False))
+check("exempt: switch on + list -> either passes",
+      lg.invite_exempt({"linkguard_invite_exempt_roles": ["5"]}, [1], True)
+      and lg.invite_exempt({"linkguard_invite_exempt_roles": ["5"]}, [5], False))
 # the AutoMod card's master switch (9/26): card off -> a single invite is only logged;
 # a missing key means on, so servers that never saved the new card are unchanged.
 check("mode: card off reads delete as log",
