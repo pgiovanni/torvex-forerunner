@@ -190,6 +190,9 @@ DEFAULTS = {
     # malicious-domain hitlist is LinkGuard's job and runs first). Staff,
     # exempt roles/channels, Discord/Tenor/Giphy domains and members holding a
     # `/hitlist pass` are let through.
+    "automod_enabled": 1,                  # the AutoMod card's master switch (ON by default);
+                                           # off reads every mode below as off/log without
+                                           # wiping what the server configured
     "automod_links_mode": "off",           # off | delete | timeout
     "automod_links_exempt_staff": 1,      # staff are above the link policy
     "automod_staff_perms": [],            # [] = the built-in staff perm set

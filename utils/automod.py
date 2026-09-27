@@ -75,7 +75,16 @@ def blocked_urls(content, allow):
     return [u for u in extract_urls(content) if not host_allowed(host_of(u), allow)]
 
 
+def enabled(cfg):
+    """The AutoMod card's master switch. Missing = on: the key arrived after
+    the modes it governs, so a server that never saved the new card keeps
+    whatever policy it already had."""
+    return bool(cfg.get("automod_enabled", 1))
+
+
 def link_mode(cfg):
+    if not enabled(cfg):
+        return "off"
     m = str(cfg.get("automod_links_mode") or "off").lower()
     return m if m in LINK_MODES else "off"
 

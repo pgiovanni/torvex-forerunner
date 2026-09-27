@@ -397,6 +397,8 @@ INVITE_MODES = ("log", "delete", "timeout")
 def invite_mode(cfg):
     """What a SINGLE foreign invite from a normal member earns. Unknown values
     read as `log`: a typo in config must never start deleting people's posts."""
+    if not am.enabled(cfg):
+        return "log"   # the AutoMod card is off: capture + card only, as before it existed
     m = str(cfg.get("linkguard_invite_mode", "log") or "log").strip().lower()
     return m if m in INVITE_MODES else "log"
 

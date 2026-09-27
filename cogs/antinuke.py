@@ -895,8 +895,8 @@ class AntiNuke(commands.Cog):
         inside the cooldown after a trip get the same response."""
         guild = member.guild
         cfg = get_config(guild.id)
-        if not cfg.get("automod_raid_enabled"):
-            return
+        if not cfg.get("automod_enabled", 1) or not cfg.get("automod_raid_enabled"):
+            return   # the AutoMod card's master switch gates raid detection too
         gid, now = guild.id, time.time()
         count, window = am.raid_window(cfg)
         action = am.raid_action(cfg)

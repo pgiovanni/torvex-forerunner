@@ -122,6 +122,14 @@ check("mode: None falls back to log",
 check("mode: empty falls back to log",
       lg.invite_mode({"linkguard_invite_mode": ""}) == "log")
 check("mode: ban is not a mode", lg.invite_mode({"linkguard_invite_mode": "ban"}) == "log")
+# the AutoMod card's master switch (9/26): card off -> a single invite is only logged;
+# a missing key means on, so servers that never saved the new card are unchanged.
+check("mode: card off reads delete as log",
+      lg.invite_mode({"automod_enabled": 0, "linkguard_invite_mode": "delete"}) == "log")
+check("mode: card off reads timeout as log",
+      lg.invite_mode({"automod_enabled": 0, "linkguard_invite_mode": "timeout"}) == "log")
+check("mode: card on keeps delete",
+      lg.invite_mode({"automod_enabled": 1, "linkguard_invite_mode": "delete"}) == "delete")
 
 # ---------------------------------------- staff exemption is CONFIG (9/19)
 # Paul: "exemptions need to be boiled into configuration not hard coded."

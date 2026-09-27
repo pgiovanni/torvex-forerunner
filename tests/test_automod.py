@@ -45,6 +45,17 @@ class Links(unittest.TestCase):
         self.assertEqual(am.link_mode({"automod_links_mode": "TIMEOUT"}), "timeout")
         self.assertEqual(am.link_mode({"automod_links_mode": "garbage"}), "off")
 
+    def test_master_switch_reads_every_mode_as_off(self):
+        # The AutoMod card (9/26) has its own enable toggle. Missing = on, so a
+        # server that never opened the new card keeps the policy it already had.
+        on = {"automod_links_mode": "timeout"}
+        self.assertTrue(am.enabled(on))
+        self.assertEqual(am.link_mode(on), "timeout")
+        off = {"automod_enabled": 0, "automod_links_mode": "timeout"}
+        self.assertFalse(am.enabled(off))
+        self.assertEqual(am.link_mode(off), "off")
+        self.assertEqual(am.link_mode({"automod_enabled": 1, "automod_links_mode": "delete"}), "delete")
+
     def test_pass_expiry(self):
         self.assertTrue(am.pass_active({"expires_ts": 1000}, now=999))
         self.assertFalse(am.pass_active({"expires_ts": 1000}, now=1000))
