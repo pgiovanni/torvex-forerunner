@@ -236,7 +236,7 @@ GUILD_ALERT_FROM = (os.getenv("GUILD_ALERT_FROM") or "").strip()
 RESEND_API_KEY = (os.getenv("RESEND_API_KEY") or "").strip()
 
 
-def _guild_alert_payload(event: str, guild, guild_count: int, reason: str = None) -> dict:
+def _guild_alert_payload(event: str, guild, guild_count: int, reason: str = None, readd: int = 0) -> dict:
     """Build the Resend request body for a join/remove/blocked alert (pure, testable)."""
     verb = {"join": "added to", "remove": "removed from"}.get(
         event, "added to a BLOCKED server, and left")
@@ -258,8 +258,10 @@ def _guild_alert_payload(event: str, guild, guild_count: int, reason: str = None
         f"Now in:   {guild_count} servers",
     ]
     if event == "blocked":
-        lines += [f"Blocked:  {reason or '?'}", "",
-                  "The bot left immediately; its archive for that server is being purged."]
+        lines += [f"Blocked:  {reason or '?'}"]
+        if readd:
+            lines += [f"Re-add:   attempt #{readd} since it was blocked — a notice was posted there before leaving"]
+        lines += ["", "The bot left immediately; its archive for that server is being purged."]
     if event == "join":
         from utils.links import dashboard_url
         lines += ["", f"Dashboard: {dashboard_url(guild.id)}"]
@@ -272,14 +274,14 @@ def _guild_alert_payload(event: str, guild, guild_count: int, reason: str = None
     }
 
 
-async def _send_guild_alert(event: str, guild, reason: str = None):
+async def _send_guild_alert(event: str, guild, reason: str = None, readd: int = 0):
     if not (GUILD_ALERT_EMAIL and GUILD_ALERT_FROM and RESEND_API_KEY):
         return
     try:
         # A blocked alert is built while the bot is still inside the server it
         # is about to leave — don't count that one ("Now in: 29" was wrong).
         count = len(bot.guilds) - (1 if event == "blocked" else 0)
-        payload = _guild_alert_payload(event, guild, count, reason=reason)
+        payload = _guild_alert_payload(event, guild, count, reason=reason, readd=readd)
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
             async with session.post(
                 "https://api.resend.com/emails",
@@ -339,9 +341,8 @@ async def _enforce_blocklist(guild, readd: bool = False) -> bool:
     cogs/guild_blocklist.py purges the archive on the way out via on_guild_remove.
 
     `readd=True` is the join-time path: the server just added the bot again.
-    That gets the one-line notice, and an email only while it is news
-    (utils.guild_blocklist.alert_wanted) — BlackNova re-added three times in
-    26 minutes on 9/27 and each one mailed the operator.
+    That gets the one-line notice and an email that names the attempt number
+    (BlackNova re-added three times in 26 minutes on 9/27).
     """
     try:
         entry = guild_blocklist.get(guild.id)
@@ -354,8 +355,9 @@ async def _enforce_blocklist(guild, readd: bool = False) -> bool:
     print(f"[GUILD] BLOCKED {guild.id} ({guild.name!r}) — {entry['reason']!r}; "
           f"{'re-add #%d, ' % prior if readd and prior else ''}leaving")
     bot.blocked_leaving.add(guild.id)
-    if not readd or guild_blocklist.alert_wanted(prior):
-        bot.loop.create_task(_send_guild_alert("blocked", guild, reason=entry["reason"]))
+    # Every refusal emails the operator (Paul, 9/27: "send me the notification
+    # email"); the attempt number in the body is what tells them apart.
+    bot.loop.create_task(_send_guild_alert("blocked", guild, reason=entry["reason"], readd=prior))
     if readd:
         posted = await _post_blocked_notice(guild)
         print(f"[GUILD] BLOCKED notice {'posted' if posted else 'NOT posted (no channel)'} in {guild.id}")

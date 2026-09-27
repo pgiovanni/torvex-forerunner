@@ -63,12 +63,6 @@ class GuildBlocklistStore(unittest.TestCase):
 
 
 class ReaddPolicy(unittest.TestCase):
-    def test_alert_only_while_it_is_news(self):
-        self.assertTrue(store.alert_wanted(0))    # pre-blocked server, first refusal
-        self.assertTrue(store.alert_wanted(1))    # blocked while inside, first re-add
-        self.assertFalse(store.alert_wanted(2))   # second re-add: ledger only
-        self.assertFalse(store.alert_wanted(9))
-
     def test_notice_is_one_line_with_the_policy_link(self):
         self.assertNotIn("\n", store.NOTICE_TEXT)
         self.assertIn("torvex.app/TrustSafety", store.NOTICE_TEXT)
