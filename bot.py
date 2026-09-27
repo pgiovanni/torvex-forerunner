@@ -22,6 +22,10 @@ bot = commands.Bot(command_prefix="!", intents=intents, strip_after_prefix=True)
 # below, or `/blocklist add`). on_guild_remove reads it to record the departure
 # as `blocked` instead of `remove` and to skip the operator alert.
 bot.blocked_leaving = set()
+# Blocked guilds the bot is deliberately still inside, waiting for a channel it
+# can post the notice in: {guild_id: since_ts}. cogs/guild_blocklist.py retries
+# and enforces the cap; bot.py owns the exit (blocklist_finish).
+bot.blocked_pending = {}
 
 @bot.event
 async def on_message(message):
@@ -150,7 +154,10 @@ async def on_ready():
     # the db) is left now, not the next time it re-adds the bot.
     for g in list(bot.guilds):
         try:
-            await _enforce_blocklist(g)
+            # Last ledger row `blocked` = we left this server before and it
+            # re-added the bot while we were down → the notice path, not a
+            # silent exit.
+            await _enforce_blocklist(g, readd=(_last_guild_event(g.id) == "blocked"))
         except Exception as e:
             print(f"[WARN] blocklist sweep failed for {g.id}: {e}")
 
@@ -237,7 +244,7 @@ RESEND_API_KEY = (os.getenv("RESEND_API_KEY") or "").strip()
 
 
 def _guild_alert_payload(event: str, guild, guild_count: int, reason: str = None, readd: int = 0,
-                         notice_posted: bool = None) -> dict:
+                         notice_posted: bool = None, waiting: bool = False) -> dict:
     """Build the Resend request body for a join/remove/blocked alert (pure, testable)."""
     verb = {"join": "added to", "remove": "removed from"}.get(
         event, "added to a BLOCKED server, and left")
@@ -264,8 +271,13 @@ def _guild_alert_payload(event: str, guild, guild_count: int, reason: str = None
             lines += [f"Re-add:   attempt #{readd} since it was blocked"]
             # Only claim what the journal can back up: the notice is attempted
             # BEFORE this email is built, and the result travels with it.
-            lines += ["Notice:   " + ("posted in the server before leaving" if notice_posted
-                                      else "NOT posted — no channel the bot could speak in; left silently")]
+            if waiting:
+                mins = guild_blocklist.NOTICE_MAX_WAIT // 60
+                lines += [f"Notice:   could not post yet — no channel the bot can speak in. STAYING up to "
+                          f"{mins} min for a role/channel, then posting and leaving (another email follows)."]
+            else:
+                lines += ["Notice:   " + ("posted in the server; left" if notice_posted
+                                          else "NOT posted — no channel the bot could speak in; left")]
         lines += ["", "The bot left immediately; its archive for that server is being purged."]
     if event == "join":
         from utils.links import dashboard_url
@@ -280,7 +292,7 @@ def _guild_alert_payload(event: str, guild, guild_count: int, reason: str = None
 
 
 async def _send_guild_alert(event: str, guild, reason: str = None, readd: int = 0,
-                            notice_posted: bool = None):
+                            notice_posted: bool = None, waiting: bool = False):
     if not (GUILD_ALERT_EMAIL and GUILD_ALERT_FROM and RESEND_API_KEY):
         return
     try:
@@ -288,7 +300,7 @@ async def _send_guild_alert(event: str, guild, reason: str = None, readd: int = 
         # is about to leave — don't count that one ("Now in: 29" was wrong).
         count = len(bot.guilds) - (1 if event == "blocked" else 0)
         payload = _guild_alert_payload(event, guild, count, reason=reason, readd=readd,
-                                       notice_posted=notice_posted)
+                                       notice_posted=notice_posted, waiting=waiting)
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
             async with session.post(
                 "https://api.resend.com/emails",
@@ -319,37 +331,61 @@ def _blocked_departures(guild_id) -> int:
         return 0
 
 
-async def _post_blocked_notice(guild) -> bool:
-    """One line into the server's system channel (or the first text channel
-    the bot can speak in) before leaving. Best-effort with a short timeout —
-    the notice must never delay or block the exit."""
-    import asyncio
-    me = getattr(guild, "me", None)
-    candidates = [guild.system_channel] + list(getattr(guild, "text_channels", []))
-    for ch in candidates:
-        if ch is None or me is None:
-            continue
+def _last_guild_event(guild_id):
+    """The newest ledger event for a guild ('join' / 'remove' / 'blocked'), or
+    None. Lets the startup sweep tell a re-add that landed while the bot was
+    down (last row `blocked`) from a dashboard block on a server it was in."""
+    try:
+        import sqlite3
+        con = sqlite3.connect(GUILD_EVENTS_DB, timeout=5)
         try:
-            perms = ch.permissions_for(me)
-            if not (perms.view_channel and perms.send_messages):
-                continue
-            await asyncio.wait_for(ch.send(guild_blocklist.NOTICE_TEXT), timeout=5)
-            return True
-        except Exception:
-            continue
-    return False
+            row = con.execute("SELECT event FROM guild_events WHERE guild_id=? ORDER BY ts DESC LIMIT 1",
+                              (str(guild_id),)).fetchone()
+            return row[0] if row else None
+        finally:
+            con.close()
+    except Exception:
+        return None
+
+
+async def _finish_blocked(guild, posted: bool, readd: int = None):
+    """The exit from a blocked server the bot was re-added to: one email with
+    the real notice result, then leave. Also what cogs/guild_blocklist.py calls
+    when a pending stay ends (notice finally posted, or the cap ran out)."""
+    if readd is None:
+        readd = _blocked_departures(guild.id)
+    entry = guild_blocklist.get(guild.id) or {}
+    bot.blocked_pending.pop(guild.id, None)
+    bot.blocked_leaving.add(guild.id)
+    # Every refusal emails the operator (Paul, 9/27: "send me the notification
+    # email"); the attempt number tells them apart, and the notice result is
+    # reported as it happened — the 9/27 17:19 email claimed a notice that was
+    # never posted because the email was built before the attempt.
+    bot.loop.create_task(_send_guild_alert("blocked", guild, reason=entry.get("reason"), readd=readd,
+                                           notice_posted=posted))
+    try:
+        await guild.leave()
+    except Exception as e:
+        print(f"[WARN] could not leave blocked guild {guild.id}: {e}")
+
+
+bot.blocklist_finish = _finish_blocked
 
 
 async def _enforce_blocklist(guild, readd: bool = False) -> bool:
-    """Leave `guild` if it is on the operator blocklist. True when it was.
+    """Act on `guild` if it is on the operator blocklist. True when it is.
 
     The public rule is torvex.app/TrustSafety ("Servers we don't serve"); the
     list itself is managed on the dashboard (/operator/blocklist), and
-    cogs/guild_blocklist.py purges the archive on the way out via on_guild_remove.
+    cogs/guild_blocklist.py purges everything stored on the way out.
 
-    `readd=True` is the join-time path: the server just added the bot again.
-    That gets the one-line notice and an email that names the attempt number
-    (BlackNova re-added three times in 26 minutes on 9/27).
+    `readd=False` (dashboard block on a server the bot is in): leave now, say
+    nothing — the first exit is silent.
+    `readd=True` (the server added the bot again): post the one-line notice
+    and leave. With no channel it can speak in, the bot STAYS, pending, until
+    someone gives it a role — Paul, 9/27: "let the bot rejoin and get perms
+    then send the msg" — and the cog retries + enforces NOTICE_MAX_WAIT. Every
+    refusal emails the operator with the attempt number and the real result.
     """
     try:
         entry = guild_blocklist.get(guild.id)
@@ -358,24 +394,33 @@ async def _enforce_blocklist(guild, readd: bool = False) -> bool:
         return False
     if not entry:
         return False
-    prior = _blocked_departures(guild.id) if readd else 0
-    print(f"[GUILD] BLOCKED {guild.id} ({guild.name!r}) — {entry['reason']!r}; "
-          f"{'re-add #%d, ' % prior if readd and prior else ''}leaving")
-    bot.blocked_leaving.add(guild.id)
-    posted = None
-    if readd:
-        posted = await _post_blocked_notice(guild)
-        print(f"[GUILD] BLOCKED notice {'posted' if posted else 'NOT posted (no channel)'} in {guild.id}")
-    # Every refusal emails the operator (Paul, 9/27: "send me the notification
-    # email"); the attempt number tells them apart, and the notice result is
-    # reported as it happened — the 9/27 17:19 email claimed a notice that was
-    # never posted because the email was built before the attempt.
+    if not readd:
+        print(f"[GUILD] BLOCKED {guild.id} ({guild.name!r}) — {entry['reason']!r}; leaving")
+        bot.blocked_leaving.add(guild.id)
+        bot.loop.create_task(_send_guild_alert("blocked", guild, reason=entry["reason"]))
+        try:
+            await guild.leave()
+        except Exception as e:
+            print(f"[WARN] could not leave blocked guild {guild.id}: {e}")
+        return True
+    prior = _blocked_departures(guild.id)
+    posted = await guild_blocklist.post_notice(guild)
+    if posted:
+        print(f"[GUILD] BLOCKED {guild.id} ({guild.name!r}) — {entry['reason']!r}; re-add #{prior}, "
+              f"notice posted; leaving")
+        await _finish_blocked(guild, True, readd=prior)
+        return True
+    import time as _time
+    bot.blocked_pending[guild.id] = _time.time()
+    # Their config (automation rules, welcome cards…) must not run while we
+    # wait for a channel: drop the row now, not just on the way out.
+    neutralize = getattr(bot, "blocklist_neutralize", None)
+    if neutralize is not None:
+        await neutralize(guild.id)
+    print(f"[GUILD] BLOCKED {guild.id} ({guild.name!r}) — {entry['reason']!r}; re-add #{prior}, "
+          f"notice NOT posted (no channel) — staying up to {guild_blocklist.NOTICE_MAX_WAIT // 60} min for perms")
     bot.loop.create_task(_send_guild_alert("blocked", guild, reason=entry["reason"], readd=prior,
-                                           notice_posted=posted))
-    try:
-        await guild.leave()
-    except Exception as e:
-        print(f"[WARN] could not leave blocked guild {guild.id}: {e}")
+                                           notice_posted=False, waiting=True))
     return True
 
 
@@ -396,6 +441,7 @@ async def on_guild_remove(guild):
     # and no alert — the operator either did it or was already emailed.
     blocked = guild.id in bot.blocked_leaving
     bot.blocked_leaving.discard(guild.id)
+    bot.blocked_pending.pop(guild.id, None)   # kicked mid-wait: the stay is over either way
     print(f"[GUILD] {'LEFT BLOCKED' if blocked else 'REMOVED FROM'} {guild.id} ({guild.name!r}) members={getattr(guild, 'member_count', '?')} — now in {len(bot.guilds)} guilds")
     _record_guild_event("blocked" if blocked else "remove", guild)
     if not blocked:

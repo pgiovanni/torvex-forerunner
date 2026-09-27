@@ -40,8 +40,43 @@ MAX_REASON = 300
 # (nothing to argue with), but a re-add means they read the silence as a
 # glitch and will keep trying — the notice is what makes them stop. Decided
 # 9/27 after BlackNova re-added the bot three times in 26 minutes.
+NOTICE_CONTACT = os.environ.get("BLOCKLIST_CONTACT", "mrdudebro1")   # Paul's Discord username
 NOTICE_TEXT = ("This server is on Torvex's do-not-serve list, so the bot will not stay here. "
-               "https://torvex.app/TrustSafety")
+               f"https://torvex.app/TrustSafety — DM {NOTICE_CONTACT} if you want to discuss.")
+
+# A re-added blocked server usually gives the bot no channel it can speak in
+# (fresh add = integration role only, channels role-locked — BlackNova, six
+# times). Paul, 9/27: "let the bot rejoin and get perms then send the msg." So
+# the bot stays until it can post, then leaves — capped, because a bot sitting
+# inside a cheat shop for hours is exactly what the list exists to prevent.
+NOTICE_MAX_WAIT = 30 * 60
+
+
+async def post_notice(guild, timeout: float = 5.0) -> bool:
+    """Post NOTICE_TEXT into the system channel, or the first text channel the
+    bot can both see and speak in. Best-effort: False when there is no such
+    channel or every send failed. Never raises, never waits past `timeout`
+    per attempt. Duck-typed on the guild so tests can use fakes."""
+    import asyncio
+    me = getattr(guild, "me", None)
+    if me is None:
+        return False
+    seen, candidates = set(), []
+    for ch in [getattr(guild, "system_channel", None)] + list(getattr(guild, "text_channels", []) or []):
+        if ch is None or id(ch) in seen:
+            continue
+        seen.add(id(ch))
+        candidates.append(ch)
+    for ch in candidates:
+        try:
+            perms = ch.permissions_for(me)
+            if not (perms.view_channel and perms.send_messages):
+                continue
+            await asyncio.wait_for(ch.send(NOTICE_TEXT), timeout=timeout)
+            return True
+        except Exception:
+            continue
+    return False
 @contextlib.contextmanager
 def _conn(db=None):
     """Open, create-if-needed, commit on clean exit, always close (Windows

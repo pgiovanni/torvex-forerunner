@@ -63,10 +63,52 @@ class GuildBlocklistStore(unittest.TestCase):
 
 
 class ReaddPolicy(unittest.TestCase):
-    def test_notice_is_one_line_with_the_policy_link(self):
-        self.assertNotIn("\n", store.NOTICE_TEXT)
+    def test_notice_is_one_line_with_the_policy_link_and_contact(self):
+        self.assertNotIn(chr(10), store.NOTICE_TEXT)
         self.assertIn("torvex.app/TrustSafety", store.NOTICE_TEXT)
-        self.assertLess(len(store.NOTICE_TEXT), 200)
+        self.assertIn(store.NOTICE_CONTACT, store.NOTICE_TEXT)
+        self.assertLess(len(store.NOTICE_TEXT), 240)
+
+
+class _Perms:
+    def __init__(self, view, send):
+        self.view_channel, self.send_messages = view, send
+
+
+class _Chan:
+    def __init__(self, view=True, send=True, fail=False):
+        self._p, self.fail, self.sent = _Perms(view, send), fail, []
+
+    def permissions_for(self, me):
+        return self._p
+
+    async def send(self, text):
+        if self.fail:
+            raise RuntimeError("403")
+        self.sent.append(text)
+
+
+class _Guild:
+    def __init__(self, system=None, channels=(), me="me"):
+        self.system_channel, self.text_channels, self.me = system, list(channels), me
+
+
+class PostNotice(unittest.IsolatedAsyncioTestCase):
+    async def test_no_channel_the_bot_can_speak_in(self):
+        g = _Guild(channels=[_Chan(view=False), _Chan(send=False)])
+        self.assertFalse(await store.post_notice(g))
+
+    async def test_system_channel_first_then_fallback(self):
+        sysch, other = _Chan(), _Chan()
+        self.assertTrue(await store.post_notice(_Guild(system=sysch, channels=[other, sysch])))
+        self.assertEqual(sysch.sent, [store.NOTICE_TEXT])
+        self.assertEqual(other.sent, [])                      # posted once, in the system channel
+        broken, good = _Chan(fail=True), _Chan()
+        self.assertTrue(await store.post_notice(_Guild(system=broken, channels=[good])))
+        self.assertEqual(good.sent, [store.NOTICE_TEXT])      # a failed send falls through
+
+    async def test_no_member_object_means_no_post(self):
+        self.assertFalse(await store.post_notice(_Guild(channels=[_Chan()], me=None)))
 
 
 if __name__ == "__main__":
