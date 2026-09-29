@@ -206,6 +206,13 @@ DEFAULTS = {
     "automod_scamimg_mode": "timeout",     # off | delete | timeout | kick | ban
     "automod_scamimg_timeout_min": 1440,   # timeout length in "timeout" mode
     "automod_scamimg_exempt_staff": 0,     # staff are NOT above this one: the posters are hijacked accounts
+    # Same message across channels (2026-09-29) — utils/crosspost.py. Counts
+    # CHANNELS, not messages: the spam tools post twice per channel at most.
+    "automod_burst_mode": "timeout",       # off | delete | timeout | kick | ban
+    "automod_burst": [3, 15],              # [channels, seconds]
+    "automod_burst_timeout_min": 1440,     # timeout length in "timeout" mode
+    "automod_burst_exempt_staff": 1,       # a mod posting one notice in three channels is doing their job
+    "automod_burst_exempt_channels": [],   # channels that never count towards a burst
     # Raid detection: N human joins inside W seconds.
     "automod_raid_enabled": 0,
     "automod_raid": [10, 30],              # [joins, seconds]

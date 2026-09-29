@@ -692,6 +692,7 @@
   "listener_cogs": [
     "auto_rules",
     "guild_blocklist",
-    "scam_images"
+    "scam_images",
+    "crosspost"
   ]
 }
