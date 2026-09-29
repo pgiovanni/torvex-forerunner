@@ -691,6 +691,7 @@
   ],
   "listener_cogs": [
     "auto_rules",
-    "guild_blocklist"
+    "guild_blocklist",
+    "scam_images"
   ]
 }

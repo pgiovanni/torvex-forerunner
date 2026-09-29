@@ -201,6 +201,11 @@ DEFAULTS = {
     "automod_links_exempt_roles": [],      # role ids that may always post links
     "automod_links_exempt_channels": [],   # channels where links are fine (links/media channels)
     "automod_links_notice": 1,             # self-deleting "links aren't allowed here" line in-channel
+    # Scam images (2026-09-29) — utils/scam_images.py. Known scam screenshots
+    # matched by what they look like, acted on at the first message.
+    "automod_scamimg_mode": "timeout",     # off | delete | timeout | kick | ban
+    "automod_scamimg_timeout_min": 1440,   # timeout length in "timeout" mode
+    "automod_scamimg_exempt_staff": 0,     # staff are NOT above this one: the posters are hijacked accounts
     # Raid detection: N human joins inside W seconds.
     "automod_raid_enabled": 0,
     "automod_raid": [10, 30],              # [joins, seconds]

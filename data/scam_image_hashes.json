@@ -1,0 +1,112 @@
+{
+  "note": "Perceptual hashes of known scam-image spam. dhash/phash are 64-bit hex from utils/scam_images.py; an image matches when BOTH are within `threshold` bits of one template. Add a wave by appending its hashes \u2014 never raise the threshold to reach one.",
+  "threshold": 10,
+  "families": [
+    {
+      "key": "mrbeast-casino",
+      "label": "MrBeast crypto-casino giveaway",
+      "templates": [
+        {
+          "name": "profile 2026-09-17",
+          "dhash": "37717adc733abb3f",
+          "phash": "e0e0d5c71c1f0abe"
+        },
+        {
+          "name": "promo-code 2026-09-17",
+          "dhash": "1c9f69a7a929aea9",
+          "phash": "f54a08eeb54a253d"
+        },
+        {
+          "name": "withdrawal 2026-09-17",
+          "dhash": "9b3f282623232783",
+          "phash": "914e4f94ce4bb4b4"
+        },
+        {
+          "name": "payout-phone 2026-09-17",
+          "dhash": "800021140c7d19f3",
+          "phash": "c5ba36c9caa6318e"
+        },
+        {
+          "name": "profile 2026-09-21",
+          "dhash": "37757a5c733abb3b",
+          "phash": "c1e0d5c71c1f0abe"
+        },
+        {
+          "name": "promo-code 2026-09-21",
+          "dhash": "1d9f69a7a929aea9",
+          "phash": "f54a08e6b55a253d"
+        },
+        {
+          "name": "withdrawal 2026-09-21",
+          "dhash": "9b7b392423232783",
+          "phash": "914e4f94ce4bb4b4"
+        },
+        {
+          "name": "payout-phone 2026-09-21",
+          "dhash": "800021341c6d19f3",
+          "phash": "c5ba36c9caa4318f"
+        },
+        {
+          "name": "profile 2026-09-23",
+          "dhash": "3f717a5e733abb2f",
+          "phash": "e0e0d5c71c1f0abe"
+        },
+        {
+          "name": "promo-code 2026-09-23",
+          "dhash": "5c9f69a7a929aea9",
+          "phash": "f54a0ce6b54a253d"
+        },
+        {
+          "name": "withdrawal 2026-09-23",
+          "dhash": "1b7f28242323278b",
+          "phash": "914e4f94ce4bb4b4"
+        },
+        {
+          "name": "payout-phone 2026-09-23",
+          "dhash": "000021140c6d19f3",
+          "phash": "c5ba36c9caa6318e"
+        },
+        {
+          "name": "profile 2026-09-26a",
+          "dhash": "37717a7c733abb3f",
+          "phash": "c1e0d5c71c1f0abe"
+        },
+        {
+          "name": "promo-code 2026-09-26a",
+          "dhash": "1c9f69a7a929aca9",
+          "phash": "f54a0ce6b54a253d"
+        },
+        {
+          "name": "withdrawal 2026-09-26a",
+          "dhash": "9b7f292423232783",
+          "phash": "914e4f94ce4bb4b4"
+        },
+        {
+          "name": "payout-phone 2026-09-26a",
+          "dhash": "800021140c6d19f3",
+          "phash": "c5ba36c9caa6318e"
+        },
+        {
+          "name": "profile 2026-09-26b",
+          "dhash": "37717a7c733abb3d",
+          "phash": "e0e0d5c71c1f0abe"
+        },
+        {
+          "name": "promo-code 2026-09-26b",
+          "dhash": "1d9f69a7a929aca9",
+          "phash": "f54a0ce6b54a253d"
+        },
+        {
+          "name": "withdrawal 2026-09-26b",
+          "dhash": "9b3f382c23232783",
+          "phash": "916e4e94ce4bb694"
+        },
+        {
+          "name": "payout-phone 2026-09-26b",
+          "dhash": "000021140c6d19f3",
+          "phash": "c5ba36c9caa4318f"
+        }
+      ]
+    }
+  ]
+}
