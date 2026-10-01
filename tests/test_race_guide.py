@@ -130,6 +130,13 @@ lobby = br.lobby_embed(race, [], "Torvex")
 how = br.how_it_works(race["settings"])
 check("lobby card uses how_it_works", how in [f.value for f in lobby.fields], True)
 
+# ── off the clock the card must say WHO starts it (Paul 9/30: "it's not
+#    supposed to start until we hit start") ──────────────────────────────
+ok("manual lobby: the host starts it", "host hits Start the race" in lobby.footer.text)
+ok("manual lobby: no promise of an automatic start", "automatically" not in lobby.footer.text)
+ok("auto-start lobby says so",
+   "starts automatically" in br.lobby_embed(race, [], "Torvex", autostart=True).footer.text)
+
 print(f"{_total - len(_fails)}/{_total} race-guide checks passed")
 for f in _fails:
     print("  FAIL", f)

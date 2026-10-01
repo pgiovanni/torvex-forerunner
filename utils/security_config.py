@@ -279,6 +279,10 @@ DEFAULTS = {
     "race_schedule_mode": "ghost",
     "race_schedule_round_secs": 90,
     "race_schedule_min_account_days": 7,
+    # Off the clock, a lobby waits for the host's Start button (Paul 9/30:
+    # "it's not supposed to start until we hit start"). 1 = the old behaviour,
+    # the race goes the moment the lobby holds its minimum.
+    "race_autostart": 0,
     "race_channel_id": None,
     "deadchat_role_id": None,
     "deadchat_cooldown_min": 30,

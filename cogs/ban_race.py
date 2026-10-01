@@ -531,7 +531,7 @@ def shot_rules_blocks(s):
     ]]
 
 
-def lobby_embed(race, rows, guild_name, schedule=None):
+def lobby_embed(race, rows, guild_name, schedule=None, autostart=False):
     s = race["settings"]
     e = discord.Embed(title="🔫 LAST TO SURVIVE", color=COLOR,
                       description=PITCH.format(lives=s["lives"]))
@@ -558,8 +558,10 @@ def lobby_embed(race, rows, guild_name, schedule=None):
                            f"— you keep your seat, nobody re-joins."),
                     inline=False)
         e.set_footer(text=f"{guild_name} · the lobby never closes — your seat carries to the next race")
-    else:
+    elif autostart:
         e.set_footer(text=f"{guild_name} · starts automatically at {s['min_players']} players")
+    else:
+        e.set_footer(text=f"{guild_name} · the host hits Start the race once {s['min_players']} are in")
     return e
 
 
@@ -694,6 +696,13 @@ class BanRace(commands.Cog):
     def _scheduled(self, guild_id):
         return self._schedule_cfg(guild_id) is not None
 
+    def _autostart(self, guild_id):
+        """Off the clock: does a full lobby start itself? Off by default — the
+        host's Start button is the trigger (Paul 9/30: "it's not supposed to
+        start until we hit start"); a guild turns it back on on the dashboard."""
+        return (not self._scheduled(guild_id)
+                and bool(get_config(guild_id).get("race_autostart", 0)))
+
     def _next_slot_ts(self, guild_id, now=None):
         sc = self._schedule_cfg(guild_id)
         if not sc:
@@ -716,7 +725,8 @@ class BanRace(commands.Cog):
                 sched = {"next": engine.next_slot(time.time(), slots, tz), "slots": slots, "tz": tz}
             except Exception:
                 log.exception("race schedule: next slot failed for guild %s", guild.id)
-        return lobby_embed(race, rows, guild.name, schedule=sched)
+        return lobby_embed(race, rows, guild.name, schedule=sched,
+                           autostart=self._autostart(guild.id))
 
     async def _lobby_message(self, channel, race):
         if not channel or not race.get("lobby_msg_id"):
@@ -1020,7 +1030,9 @@ class BanRace(commands.Cog):
             need = race["settings"].get("min_players", engine.MIN_PLAYERS)
             header = ("**The lobby is open — the race hasn't started yet.** Hit **Join** on the card"
                       + (f" in {ch.mention}." if ch else ".")
-                      + (where if sc else f" It starts at **{need}** players."))
+                      + (where if sc else f" It starts at **{need}** players."
+                         if self._autostart(guild.id)
+                         else f" The host starts it once **{need}** are in."))
         else:
             header = ("**A round is running.** You're not in this one — **Join** on the round card "
                       "drops you into the next round, a life lighter for every round already played.")
@@ -1517,7 +1529,8 @@ class BanRace(commands.Cog):
                            min_account_days="Minimum account age to enter (default 7)",
                            min_players="Players needed before the race can start (default 3)",
                            sudden_death_at="Alive count that starts sudden death (blank = sized to the field: ~¼, 2–5)",
-                           channel="Mods only: run this race somewhere other than the server's race channel")
+                           channel="Mods only: run this race somewhere other than the server's race channel",
+                           rematch="Mods only: seat everyone from the last race, so nobody has to re-join")
     @app_commands.choices(mode=MODE_CHOICES)
     async def race_start(self, interaction: discord.Interaction,
                          lives: app_commands.Range[int, 1, 50] = None,
@@ -1526,13 +1539,18 @@ class BanRace(commands.Cog):
                          min_account_days: app_commands.Range[int, 0, 365] = 7,
                          min_players: app_commands.Range[int, 3, None] = 3,     # no cap on players (Paul 9/12)
                          sudden_death_at: app_commands.Range[int, 2, 50] = None,
-                         channel: discord.TextChannel = None):
+                         channel: discord.TextChannel = None,
+                         rematch: bool = False):
         guild = interaction.guild
         mode_v = mode.value if mode else engine.DEFAULTS["mode"]
         if engine.active_race(guild.id):
             return await interaction.response.send_message(
                 "A race is already on here — `/race stop` it first.", ephemeral=True)
         is_mod = interaction.user.guild_permissions.manage_guild
+        if not is_mod and rematch:
+            return await interaction.response.send_message(
+                "Seating other people is a mod's call — `rematch:` needs **Manage Server**. "
+                "Leave it off and everyone joins from the card.", ephemeral=True)
         if not is_mod and mode_v == "real":
             return await interaction.response.send_message(
                 "Real bans are a mod's call — anyone can open a **ghost** race, but `mode: real` needs "
@@ -1561,6 +1579,7 @@ class BanRace(commands.Cog):
         # actual head-count the moment the race starts. An explicit value is the
         # host's call and is never touched.
         lives_auto = lives is None
+        prev = engine.latest_race(guild.id) if rematch else None      # before the new one exists
         race, warn = await self._open_lobby(guild, channel, interaction.user.id, {
             "lives": engine.recommended_lives(min_players) if lives_auto else lives,
             "lives_auto": lives_auto,
@@ -1578,12 +1597,48 @@ class BanRace(commands.Cog):
                       if lives_auto else
                       f" Lives fixed at **{lives}** (recommended for {min_players} players: "
                       f"{engine.recommended_lives(min_players)}).")
+        if rematch:
+            note = "\n" + await self._seat_previous(guild, channel, race, prev) + note
         slot = self._next_slot_ts(guild.id)
         how = (f"It starts on the schedule — next slot <t:{int(slot)}:F> (<t:{int(slot)}:R>). "
                f"Times, minimum and mode live on the dashboard."
-               if slot else "Hit **Start the race** on it when enough people have joined.")
+               if slot else "It starts by itself once enough people have joined."
+               if self._autostart(guild.id)
+               else "Hit **Start the race** on it when enough people have joined.")
         await interaction.followup.send(f"Lobby's open in {channel.mention}. {how}{lives_note}{note}",
                                         ephemeral=True)
+
+    async def _seat_previous(self, guild, channel, race, prev):
+        """/race start rematch: — put the last race's players straight into this
+        lobby (Paul 9/30: "cancel the current round and reregister everyone").
+        Same entry checks as the Join button; it never starts the race, the
+        host's Start button still does. Returns the line for the host."""
+        if not prev:
+            return "♻️ No earlier race here to take players from."
+        s = race["settings"]
+        seated, skipped = 0, []
+        for p in engine.players(prev["id"]):
+            m = guild.get_member(int(p["user_id"]))
+            if m is None:
+                skipped.append(f"{p['name']} (left the server)")
+                continue
+            if engine.join_error(m.created_at.timestamp(), time.time(), s["min_account_days"],
+                                 is_bot=m.bot, bannable=self._bannable(guild, m), mode=s["mode"]):
+                skipped.append(f"{m.display_name} (can't enter this one)")
+                continue
+            engine.join(race["id"], m.id, m.display_name, s["lives"])
+            await self._set_racer(guild, race, m.id, True)
+            seated += 1
+        race = engine.get_race(race["id"])
+        msg = await self._lobby_message(channel, race)
+        if msg:
+            try:
+                await msg.edit(embed=self._card(guild, race, engine.players(race["id"])),
+                               view=lobby_view(race["id"]))
+            except discord.HTTPException:
+                pass
+        return (f"♻️ Seated **{seated}** from race #{prev['id']}."
+                + (f" Skipped: {', '.join(skipped)}." if skipped else ""))
 
     @race.command(name="stop", description="Stop the race (host or a mod). Unbans everyone it banned.")
     async def race_stop(self, interaction: discord.Interaction):
@@ -1600,9 +1655,10 @@ class BanRace(commands.Cog):
 
     # Paul 9/12: "someone said 15 is too high" — the join threshold has to be
     # changeable on an OPEN lobby, not only at /race start. Same auto-start
-    # rule as a join: if the lobby already holds that many, it goes now.
+    # rule as a join: where the server has auto-start on and the lobby already
+    # holds that many, it goes now.
     @race.command(name="edit", description="Change an open lobby's settings before the race starts.")
-    @app_commands.describe(min_players="Players needed before the race starts — it starts the moment the lobby holds this many",
+    @app_commands.describe(min_players="Players needed before the race can start",
                            sudden_death_at="Alive count that starts sudden death (0 = back to auto, sized to the field)",
                            round_minutes="Minutes per round for this race (sudden death runs half that)")
     async def race_edit(self, interaction: discord.Interaction,
@@ -1667,7 +1723,7 @@ class BanRace(commands.Cog):
                 lobby_msg = None
         summary = "; ".join(changes)
         if (min_players is not None and len(rows) >= need and channel and lobby_msg
-                and not self._scheduled(guild.id)):
+                and self._autostart(guild.id)):
             await self._begin(guild, channel, lobby_msg, race, rows)
             return await interaction.followup.send(
                 f"{summary} — the lobby already had {len(rows)} in, so it's starting now.", ephemeral=True)
@@ -1677,7 +1733,9 @@ class BanRace(commands.Cog):
             except discord.HTTPException:
                 pass
         slot = self._next_slot_ts(guild.id)
-        when = (f" Next scheduled start <t:{int(slot)}:R>." if slot else f" It starts at {need}.")
+        when = (f" Next scheduled start <t:{int(slot)}:R>." if slot
+                else f" It starts at {need}." if self._autostart(guild.id)
+                else f" The host hits **Start the race** once {need} are in.")
         await interaction.followup.send(f"{summary}. {len(rows)} in so far —{when}", ephemeral=True)
 
     @race.command(name="channel", description="Mods: set this server's race channel — where /race start opens lobbies.")
@@ -2000,17 +2058,22 @@ class BanRace(commands.Cog):
         lives_txt = ("lives get set when it starts — recommended for the head-count"
                      if s.get("lives_auto") else f"{s['lives']} lives")
         slot = self._next_slot_ts(interaction.guild.id)
+        auto = self._autostart(interaction.guild.id)
         if slot:
             tail = (f" ({len(rows)}/{need} — {need - len(rows)} more or it waits for the slot after.)"
                     if len(rows) < need else f" ({len(rows)}/{need} — it's on.)")
             tail += f" Starts <t:{int(slot)}:R>."
-        else:
+        elif auto:
             tail = f" ({len(rows)}/{need} — it starts the moment the lobby fills.)" if len(rows) < need else ""
+        else:
+            tail = (f" ({len(rows)}/{need} — {need - len(rows)} more, then the host starts it.)"
+                    if len(rows) < need else
+                    f" ({len(rows)}/{need} — enough to go: the host hits **Start the race**.)")
         await interaction.response.send_message(
             f"You're in. {lives_txt}. Don't trust anyone. 🔫" + tail, ephemeral=True)
         await self._set_racer(interaction.guild, race, m.id, True)
-        if len(rows) >= need and not slot:
-            # unscheduled server: a full lobby is the trigger, no waiting on the host
+        if len(rows) >= need and auto:
+            # auto-start server: a full lobby is the trigger, no waiting on the host
             await self._begin(interaction.guild, interaction.channel, interaction.message, race, rows)
         else:
             await self._refresh_lobby(interaction, race)
