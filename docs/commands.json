@@ -1635,29 +1635,49 @@
    "dm_allowed": true
   },
   {
-   "path": "steal-emoji",
-   "description": "Copy custom emojis into this server — paste them, or upload an image, and I'll add them.",
+   "path": "steal-emoji emoji",
+   "description": "Paste emoji(s) from any server, an emoji ID, or an emoji link, and I'll add them here.",
    "params": [
     {
      "name": "emoji",
      "type": "string",
-     "required": false,
+     "required": true,
      "description": "Paste the emoji(s) to steal (from any server), a raw emoji ID, or a CDN emoji link"
     },
     {
      "name": "name",
      "type": "string",
      "required": false,
-     "description": "Rename it (only when stealing a single emoji; an uploaded file defaults to its filename)"
-    },
+     "description": "Rename it (only when stealing a single emoji)"
+    }
+   ],
+   "signature": "/steal-emoji emoji <emoji> [name]",
+   "root": "steal-emoji",
+   "cog": "emojis",
+   "permissions": [
+    "Manage Expressions"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": true
+  },
+  {
+   "path": "steal-emoji file",
+   "description": "Upload an image or GIF and I'll add it here as an emoji.",
+   "params": [
     {
      "name": "file",
      "type": "attachment",
+     "required": true,
+     "description": "The image / GIF to turn into an emoji"
+    },
+    {
+     "name": "name",
+     "type": "string",
      "required": false,
-     "description": "Or upload an image / GIF to turn into an emoji"
+     "description": "Name for the emoji (defaults to the filename)"
     }
    ],
-   "signature": "/steal-emoji [emoji] [name] [file]",
+   "signature": "/steal-emoji file <file> [name]",
    "root": "steal-emoji",
    "cog": "emojis",
    "permissions": [
@@ -5436,11 +5456,17 @@
    ],
    "server_owner_only": false
   },
-  "steal-emoji": {
+  "steal-emoji emoji": {
    "cog": "emojis",
-   "visibility_permissions": [
+   "visibility_permissions": [],
+   "runtime_permissions": [
     "manage_emojis"
    ],
+   "server_owner_only": false
+  },
+  "steal-emoji file": {
+   "cog": "emojis",
+   "visibility_permissions": [],
    "runtime_permissions": [
     "manage_emojis"
    ],
