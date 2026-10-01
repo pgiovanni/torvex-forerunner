@@ -66,39 +66,71 @@ class Emojis(commands.Cog):
             return None
 
     async def _fetch_emoji(self, session, emoji_id: str, animated: bool):
-        """Fetch emoji bytes from the CDN, retrying smaller if over the upload cap.
-        Returns (data, animated) or (None, animated)."""
+        """Fetch emoji bytes from the CDN. Returns the uploads worth trying,
+        best first — empty if it's gone or nothing fits under the upload cap."""
         ext = "gif" if animated else "png"
-        data = await self._fetch(session, CDN.format(id=emoji_id, ext=ext))
+        base = CDN.format(id=emoji_id, ext=ext)
+        data = await self._fetch(session, base)
         if data is None and animated:
             # bare-ID guess was wrong: not animated after all
             ext, animated = "png", False
-            data = await self._fetch(session, CDN.format(id=emoji_id, ext=ext))
-        if data is not None and len(data) > MAX_EMOJI_BYTES:
-            data = await self._fetch(session, CDN.format(id=emoji_id, ext=ext) + "?size=128")
-        if data is not None and len(data) > MAX_EMOJI_BYTES:
-            data = None
-        return data, animated
+            base = CDN.format(id=emoji_id, ext=ext)
+            data = await self._fetch(session, base)
+        if data is None:
+            return []
+        if len(data) <= MAX_EMOJI_BYTES:
+            return [data]
+        # over the cap. An animated emoji is usually well under it as WebP at
+        # full size; after that the CDN's downscaled GIFs. A still just shrinks.
+        if animated:
+            urls = [CDN.format(id=emoji_id, ext="webp") + "?animated=true",
+                    base + "?size=96", base + "?size=64"]
+        else:
+            urls = [base + "?size=128"]
+        uploads = []
+        for url in urls:
+            data = await self._fetch(session, url)
+            if data is not None and len(data) <= MAX_EMOJI_BYTES:
+                uploads.append(data)
+        return uploads
 
     @app_commands.command(name="steal-emoji",
-                          description="Copy custom emojis into this server — paste them (or one emoji ID) and I'll grab them.")
+                          description="Copy custom emojis into this server — paste them, or upload an image, and I'll add them.")
     @app_commands.describe(
         emoji="Paste the emoji(s) to steal (from any server), a raw emoji ID, or a CDN emoji link",
-        name="Rename it (only when stealing a single emoji)")
+        name="Rename it (only when stealing a single emoji; an uploaded file defaults to its filename)",
+        file="Or upload an image / GIF to turn into an emoji")
     @app_commands.default_permissions(manage_emojis=True)
     @app_commands.checks.has_permissions(manage_emojis=True)
-    async def steal_emoji(self, interaction: discord.Interaction, emoji: str, name: str = None):
+    async def steal_emoji(self, interaction: discord.Interaction, emoji: str = None,
+                          name: str = None, file: discord.Attachment = None):
         guild = interaction.guild
         if guild is None:
             return await interaction.response.send_message("Server only.", ephemeral=True)
         if not guild.me.guild_permissions.manage_emojis:
             return await interaction.response.send_message(
                 "❌ I don't have the **Manage Emoji** permission here.", ephemeral=True)
+        if (file is None) == (not emoji):
+            return await interaction.response.send_message(
+                "❌ Give me one thing to add — paste emoji(s) in `emoji:` **or** upload an image in `file:`.",
+                ephemeral=True)
 
-        found = EMOJI_RE.findall(emoji)
-        targets = [(anim == "a", nm, eid) for anim, nm, eid in found]
+        targets = []
         url_target = None
-        if not targets:
+        if file is not None:
+            if not (file.content_type or "").startswith("image/"):
+                return await interaction.response.send_message(
+                    "❌ That file isn't an image (png/jpg/gif/webp).", ephemeral=True)
+            name = name or os.path.splitext(file.filename)[0]
+            if not _clean_name(name):
+                return await interaction.response.send_message(
+                    "❌ The filename doesn't make a usable emoji name — pass `name:` too.",
+                    ephemeral=True)
+            url_target = file.url
+        else:
+            found = EMOJI_RE.findall(emoji)
+            targets = [(anim == "a", nm, eid) for anim, nm, eid in found]
+        if not targets and not url_target:
             bare = emoji.strip().strip("<>")
             m = CDN_RE.search(bare)
             if m:
@@ -142,6 +174,7 @@ class Emojis(commands.Cog):
                 data = await self._fetch(session, url_target, redirects=False)
             if data is None:
                 return await interaction.followup.send(
+                    "❌ Couldn't read that upload (over 8MB?)." if file is not None else
                     "❌ Couldn't fetch that link (expired, deleted, or too big — attachment links go stale, re-copy it).")
             data = _shrink_if_needed(data)
             if data is None:
@@ -149,10 +182,11 @@ class Emojis(commands.Cog):
                     "❌ Image is over 256KB and I couldn't shrink it (animated images can't be resized).")
             try:
                 new = await guild.create_custom_emoji(name=final_name, image=data, reason=reason)
-                return await interaction.followup.send(f"✅ Stole {new}")
+                return await interaction.followup.send(
+                    f"✅ {'Added' if file is not None else 'Stole'} {new}")
             except ValueError:
                 return await interaction.followup.send(
-                    "❌ That link isn't a valid image (png/jpg/gif/webp).")
+                    "❌ That isn't a valid image (png/jpg/gif/webp).")
             except discord.HTTPException as e:
                 if e.code == 30008:
                     return await interaction.followup.send(
@@ -168,18 +202,26 @@ class Emojis(commands.Cog):
                 if int(eid) in have:
                     failed.append(f"`{final_name}` — already in this server")
                     continue
-                data, animated = await self._fetch_emoji(session, eid, animated)
-                if data is None:
+                uploads = await self._fetch_emoji(session, eid, animated)
+                if not uploads:
                     failed.append(f"`{final_name}` — couldn't fetch it (deleted, or too large even resized)")
                     continue
-                try:
-                    new = await guild.create_custom_emoji(name=final_name, image=data, reason=reason)
+                new, err = None, None
+                for data in uploads:
+                    try:
+                        new = await guild.create_custom_emoji(name=final_name, image=data, reason=reason)
+                        break
+                    except (discord.HTTPException, ValueError) as e:
+                        err = e  # a refused format falls through to the next, smaller one
+                        if getattr(e, "code", None) == 30008:
+                            break
+                if new is not None:
                     added.append(str(new))
-                except discord.HTTPException as e:
-                    if e.code == 30008:
-                        failed.append(f"`{final_name}` — emoji slots are FULL (free one up or boost)")
-                        break  # every further attempt of this type will fail too
-                    failed.append(f"`{final_name}` — Discord rejected it: {e.text}")
+                    continue
+                if getattr(err, "code", None) == 30008:
+                    failed.append(f"`{final_name}` — emoji slots are FULL (free one up or boost)")
+                    break  # every further attempt of this type will fail too
+                failed.append(f"`{final_name}` — Discord rejected it: {getattr(err, 'text', err)}")
 
         lines = []
         if added:
