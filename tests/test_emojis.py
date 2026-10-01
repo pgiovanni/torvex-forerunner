@@ -86,10 +86,18 @@ check("a one-letter name is refused", _clean_name("a") == "")
 check("names cap at 32", len(_clean_name("x" * 50)) == 32)
 
 # ── the command's shape ──────────────────────────────────────────────────
-params = inspect.signature(Emojis.steal_emoji.callback).parameters
-check("emoji: is optional now", params["emoji"].default is None)
-check("file: takes an attachment, optional",
-      params["file"].annotation is discord.Attachment and params["file"].default is None)
+# emoji OR file, never both: two subcommands, each with its one required field
+subs = {c.name: c for c in Emojis.steal.commands}
+check("/steal-emoji has exactly emoji + file", set(subs) == {"emoji", "file"})
+params = inspect.signature(subs["emoji"].callback).parameters
+check("/steal-emoji emoji: emoji is required, no file field",
+      params["emoji"].default is inspect.Parameter.empty and "file" not in params)
+params = inspect.signature(subs["file"].callback).parameters
+check("/steal-emoji file: an attachment is required, no emoji field",
+      params["file"].annotation is discord.Attachment
+      and params["file"].default is inspect.Parameter.empty and "emoji" not in params)
+check("both still need Manage Expressions at run time",
+      all(c.checks for c in subs.values()))
 
 print(f"\n{_total - len(_fails)}/{_total} passed")
 sys.exit(1 if _fails else 0)
