@@ -1660,12 +1660,10 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
         pay_overkill(shooter, victim)
 
     # AFK: didn't vote this round = one life gone, shields don't apply
-    afk_hit = set()
     if afk:
         for p in alive(rows):
             if not is_afk(p):
                 continue
-            afk_hit.add(p["user_id"])
             p["lives"] -= 1
             if p["lives"] > 0:
                 lines.append(f"😴 {m(p['user_id'])} didn't vote — loses a life. **{p['lives']}** left.")
@@ -1673,11 +1671,13 @@ def resolve_round(rows, shot_rows, round_no, rng, *, backfire, sudden, storm, ms
                 _die(p, round_no, lines, f"😴 {m(p['user_id'])} didn't vote and had nothing left. **Eliminated.**")
                 dead.append(p["user_id"])
 
-    # the storm: fewest-chat-messages survivor bleeds one life, shields don't help;
-    # it skips anyone the AFK penalty already hit this round
+    # the storm: fewest-chat-messages survivor bleeds one life, shields don't help.
+    # It used to skip anyone the AFK penalty had already hit, which pointed it at
+    # the quietest of the people who DID play (Paul 9/30: "it should be whoever
+    # talks the least whether afk or not. not whoever talks the least of the
+    # active members"). Only someone who walked in this round is spared.
     if storm and len(alive(rows)) >= 3:
-        cands = [p for p in alive(rows)
-                 if p["user_id"] not in afk_hit and p.get("joined_round") != round_no] or alive(rows)
+        cands = [p for p in alive(rows) if p.get("joined_round") != round_no] or alive(rows)
         low = min(msgs.get(p["user_id"], 0) for p in cands)
         pool = [p for p in cands if msgs.get(p["user_id"], 0) == low]
         v = rng.choice(pool)

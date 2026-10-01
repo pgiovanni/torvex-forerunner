@@ -818,13 +818,13 @@ class Afk(unittest.TestCase):
         resolve([a, b], [S(1, 2, "transfuse")], afk=True)
         self.assertEqual(a["lives"], 1)          # -1 transfuse, -1 afk
 
-    def test_afk_death_has_no_killer_and_storm_skips_the_afk(self):
+    def test_afk_death_has_no_killer_and_the_storm_moves_on_to_the_living(self):
         a, b, c, d = P(1, lives=1), P(2), P(3), P(4)
         r = resolve([a, b, c, d], [S(2, 3), S(3, 2), S(4, 3)], round_no=2, afk=True, storm=True,
                     msgs={"1": 0, "2": 0, "3": 9, "4": 9})
         self.assertFalse(a["alive"])
         self.assertNotIn("1", r["killers"])
-        # storm skipped afk-hit a; quietest of the rest is b
+        # a is already out; the quietest still standing is b
         self.assertEqual(b["lives"], 1)          # shot by c, then the storm
         self.assertEqual(c["lives"], 1)          # shot by b and d
         self.assertEqual(d["lives"], 3)
@@ -845,6 +845,21 @@ class Storm(unittest.TestCase):
         self.assertFalse(a["alive"])
         self.assertIn("1", r["dead"])
         self.assertNotIn("1", r["killers"])
+
+    def test_storm_takes_the_quietest_even_when_afk_already_cost_them_a_life(self):
+        """Paul 9/30: "whoever talks the least whether afk or not" — it used to
+        skip the AFK and land on the quietest of the people who did play."""
+        a, b, c = P(1), P(2), P(3)
+        resolve([a, b, c], [S(2, 3), S(3, 2)], round_no=2, afk=True, storm=True,
+                msgs={"1": 0, "2": 4, "3": 9})
+        self.assertEqual(a["lives"], 1)          # AFK, then the storm
+        self.assertEqual(b["lives"], 2)          # shot by c only — the storm left them alone
+        self.assertEqual(c["lives"], 2)
+
+    def test_storm_spares_someone_who_walked_in_this_round(self):
+        a, b, c = P(1, joined_round=2), P(2), P(3)
+        resolve([a, b, c], [], round_no=2, storm=True, msgs={"1": 0, "2": 4, "3": 9})
+        self.assertEqual((a["lives"], b["lives"]), (3, 2))
 
     def test_storm_stays_out_of_the_final_two(self):
         a, b = P(1), P(2)
