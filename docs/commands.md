@@ -1794,18 +1794,19 @@ Post a ready-made role panel — creates any roles you don't have yet
 
 #### `/steal-emoji`
 
-Copy custom emojis into this server — paste them (or one emoji ID) and I'll grab them.
+Copy custom emojis into this server — paste them, or upload an image, and I'll add them.
 
 ```
-/steal-emoji <emoji> [name]
+/steal-emoji [emoji] [name] [file]
 ```
 
 **Access:** Requires **Manage Expressions**
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `emoji` | string | Yes | Paste the emoji(s) to steal (from any server), a raw emoji ID, or a CDN emoji link |
-| `name` | string | No | Rename it (only when stealing a single emoji) |
+| `emoji` | string | No | Paste the emoji(s) to steal (from any server), a raw emoji ID, or a CDN emoji link |
+| `name` | string | No | Rename it (only when stealing a single emoji; an uploaded file defaults to its filename) |
+| `file` | attachment | No | Or upload an image / GIF to turn into an emoji |
 
 ### Pi counting
 
@@ -2383,7 +2384,7 @@ Change an open lobby's settings before the race starts.
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `min_players` | integer | No | Players needed before the race starts — it starts the moment the lobby holds this many *(range 3–?)* |
+| `min_players` | integer | No | Players needed before the race can start *(range 3–?)* |
 | `sudden_death_at` | integer | No | Alive count that starts sudden death (0 = back to auto, sized to the field) *(range 0–50)* |
 | `round_minutes` | number | No | Minutes per round for this race (sudden death runs half that) *(range 0.5–30.0)* |
 

@@ -1043,7 +1043,7 @@
      "name": "min_players",
      "type": "integer",
      "required": false,
-     "description": "Players needed before the race starts — it starts the moment the lobby holds this many",
+     "description": "Players needed before the race can start",
      "min": 3
     },
     {
@@ -1636,22 +1636,28 @@
   },
   {
    "path": "steal-emoji",
-   "description": "Copy custom emojis into this server — paste them (or one emoji ID) and I'll grab them.",
+   "description": "Copy custom emojis into this server — paste them, or upload an image, and I'll add them.",
    "params": [
     {
      "name": "emoji",
      "type": "string",
-     "required": true,
+     "required": false,
      "description": "Paste the emoji(s) to steal (from any server), a raw emoji ID, or a CDN emoji link"
     },
     {
      "name": "name",
      "type": "string",
      "required": false,
-     "description": "Rename it (only when stealing a single emoji)"
+     "description": "Rename it (only when stealing a single emoji; an uploaded file defaults to its filename)"
+    },
+    {
+     "name": "file",
+     "type": "attachment",
+     "required": false,
+     "description": "Or upload an image / GIF to turn into an emoji"
     }
    ],
-   "signature": "/steal-emoji <emoji> [name]",
+   "signature": "/steal-emoji [emoji] [name] [file]",
    "root": "steal-emoji",
    "cog": "emojis",
    "permissions": [
