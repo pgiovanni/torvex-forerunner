@@ -134,6 +134,9 @@ check("lobby card uses how_it_works", how in [f.value for f in lobby.fields], Tr
 #    supposed to start until we hit start") ──────────────────────────────
 ok("manual lobby: the host starts it", "host hits Start the race" in lobby.footer.text)
 ok("manual lobby: no promise of an automatic start", "automatically" not in lobby.footer.text)
+ok("bot-opened lobby: anyone in it starts it",
+   "anyone in the lobby hits Start the race"
+   in br.lobby_embed(race, [], "Torvex", open_start=True).footer.text)
 ok("auto-start lobby says so",
    "starts automatically" in br.lobby_embed(race, [], "Torvex", autostart=True).footer.text)
 
