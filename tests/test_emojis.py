@@ -80,6 +80,43 @@ check("...and then shrinks as a still, not as an animation", out == [b"png128"])
 out, _ = uploads({}, True)
 check("deleted emoji = nothing", out == [])
 
+# ── Discord's hourly hold: give up fast, don't sit it out ────────────────
+import cogs.emojis as emojis_mod  # noqa: E402
+
+
+class HeldGuild:
+    """A server whose emoji uploads Discord has put on hold."""
+    finished = False
+
+    async def create_custom_emoji(self, **kwargs):
+        await asyncio.sleep(5)          # the library waiting out the hold
+        HeldGuild.finished = True
+        return "emoji"
+
+
+class OpenGuild:
+    async def create_custom_emoji(self, **kwargs):
+        return f"<:{kwargs['name']}:1>"
+
+
+async def held_case():
+    emojis_mod.UPLOAD_WAIT = 0.05
+    cog = Emojis(bot=None)
+    try:
+        await cog._create(HeldGuild(), name="x", image=b"", reason="")
+        timed_out = False
+    except asyncio.TimeoutError:
+        timed_out = True
+    await asyncio.sleep(0.1)
+    ok = await cog._create(OpenGuild(), name="fox", image=b"", reason="")
+    return timed_out, ok
+
+timed_out, ok = asyncio.run(held_case())
+check("an upload on hold gives up instead of hanging", timed_out)
+check("...and the dropped upload never lands later", not HeldGuild.finished)
+check("a normal upload still goes straight through", ok == "<:fox:1>")
+check("the hold message says to try later", "try again later" in emojis_mod.HELD.lower())
+
 # ── names ────────────────────────────────────────────────────────────────
 check("filename with spaces/dashes cleans up", _clean_name("my cool-cat (1)") == "mycoolcat1")
 check("a one-letter name is refused", _clean_name("a") == "")

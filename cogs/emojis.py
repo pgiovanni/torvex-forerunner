@@ -1,3 +1,4 @@
+import asyncio
 import io
 import os
 import re
@@ -16,6 +17,12 @@ DISCORD_URL_RE = re.compile(r"https?://(?:cdn|media)\.discordapp\.(?:com|net)/\S
 NAME_RE = re.compile(r"[^A-Za-z0-9_]")
 MAX_EMOJI_BYTES = 256 * 1024  # Discord upload cap
 MAX_PER_CALL = 10
+# Discord caps new emojis per server per hour. Past the cap it answers with a
+# hold of up to an hour, which the library would silently sit out while the
+# command dies as "did not respond" (33 minutes, 10/1). Give up after this long.
+UPLOAD_WAIT = 25
+HELD = ("Discord is holding emoji uploads for this server — it only allows so many "
+        "new emojis in an hour. Try again later (it can take up to an hour to clear).")
 
 CDN = "https://cdn.discordapp.com/emojis/{id}.{ext}"
 
@@ -93,6 +100,11 @@ class Emojis(commands.Cog):
             if data is not None and len(data) <= MAX_EMOJI_BYTES:
                 uploads.append(data)
         return uploads
+
+    async def _create(self, guild, **kwargs):
+        """create_custom_emoji, but asyncio.TimeoutError instead of waiting out
+        an hourly hold. Cancelling drops the request, so nothing lands later."""
+        return await asyncio.wait_for(guild.create_custom_emoji(**kwargs), timeout=UPLOAD_WAIT)
 
     # One or the other, enforced by Discord itself: each subcommand has its
     # one required field, so there is no way to fill in both or neither.
@@ -174,7 +186,7 @@ class Emojis(commands.Cog):
         await interaction.response.defer()
         have = {e.id for e in guild.emojis}
         reason = f"/steal-emoji by {interaction.user} ({interaction.user.id})"
-        added, failed = [], []
+        added, failed, held = [], [], False
 
         if url_target:
             final_name = _clean_name(name)
@@ -194,9 +206,11 @@ class Emojis(commands.Cog):
                 return await interaction.followup.send(
                     "❌ Image is over 256KB and I couldn't shrink it (animated images can't be resized).")
             try:
-                new = await guild.create_custom_emoji(name=final_name, image=data, reason=reason)
+                new = await self._create(guild, name=final_name, image=data, reason=reason)
                 return await interaction.followup.send(
                     f"✅ {'Added' if file is not None else 'Stole'} {new}")
+            except asyncio.TimeoutError:
+                return await interaction.followup.send(f"⏳ {HELD}")
             except ValueError:
                 return await interaction.followup.send(
                     "❌ That isn't a valid image (png/jpg/gif/webp).")
@@ -222,7 +236,10 @@ class Emojis(commands.Cog):
                 new, err = None, None
                 for data in uploads:
                     try:
-                        new = await guild.create_custom_emoji(name=final_name, image=data, reason=reason)
+                        new = await self._create(guild, name=final_name, image=data, reason=reason)
+                        break
+                    except asyncio.TimeoutError:
+                        held = True
                         break
                     except (discord.HTTPException, ValueError) as e:
                         err = e  # a refused format falls through to the next, smaller one
@@ -231,6 +248,8 @@ class Emojis(commands.Cog):
                 if new is not None:
                     added.append(str(new))
                     continue
+                if held:
+                    break  # the hold is on the whole server; the rest would wait too
                 if getattr(err, "code", None) == 30008:
                     failed.append(f"`{final_name}` — emoji slots are FULL (free one up or boost)")
                     break  # every further attempt of this type will fail too
@@ -241,6 +260,8 @@ class Emojis(commands.Cog):
             lines.append(f"✅ Stole {' '.join(added)}")
         if failed:
             lines.append("❌ " + "\n❌ ".join(failed))
+        if held:
+            lines.append(f"⏳ {HELD}")
         if dropped > 0:
             lines.append(f"⚠️ Only {MAX_PER_CALL} per command — {dropped} skipped, run it again for those.")
         embed = discord.Embed(
