@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **223 commands** (96 top-level, the rest subcommands) across 40 cogs
+- **222 commands** (96 top-level, the rest subcommands) across 40 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -1792,35 +1792,21 @@ Post a ready-made role panel — creates any roles you don't have yet
 
 <sub>`cogs/emojis.py`</sub>
 
-#### `/steal-emoji emoji`
+#### `/steal-emoji`
 
-Paste emoji(s) from any server, an emoji ID, or an emoji link, and I'll add them here.
-
-```
-/steal-emoji emoji <emoji> [name]
-```
-
-**Access:** Requires **Manage Expressions**
-
-| Parameter | Type | Required | Description |
-|---|---|:--:|---|
-| `emoji` | string | Yes | Paste the emoji(s) to steal (from any server), a raw emoji ID, or a CDN emoji link |
-| `name` | string | No | Rename it (only when stealing a single emoji) |
-
-#### `/steal-emoji file`
-
-Upload an image or GIF and I'll add it here as an emoji.
+Add emojis to this server — paste them (or a link) in emoji:, or upload an image in file:.
 
 ```
-/steal-emoji file <file> [name]
+/steal-emoji [emoji] [file] [name]
 ```
 
 **Access:** Requires **Manage Expressions**
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `file` | attachment | Yes | The image / GIF to turn into an emoji |
-| `name` | string | No | Name for the emoji (defaults to the filename) |
+| `emoji` | string | No | Paste the emoji(s) to steal (from any server), a raw emoji ID, or a CDN emoji link |
+| `file` | attachment | No | Or upload an image / GIF to turn into an emoji instead |
+| `name` | string | No | Rename it (only when stealing a single emoji; an uploaded file defaults to its filename) |
 
 ### Pi counting
 
