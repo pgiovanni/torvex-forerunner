@@ -123,18 +123,55 @@ check("a one-letter name is refused", _clean_name("a") == "")
 check("names cap at 32", len(_clean_name("x" * 50)) == 32)
 
 # ── the command's shape ──────────────────────────────────────────────────
-# emoji OR file, never both: two subcommands, each with its one required field
-subs = {c.name: c for c in Emojis.steal.commands}
-check("/steal-emoji has exactly emoji + file", set(subs) == {"emoji", "file"})
-params = inspect.signature(subs["emoji"].callback).parameters
-check("/steal-emoji emoji: emoji is required, no file field",
-      params["emoji"].default is inspect.Parameter.empty and "file" not in params)
-params = inspect.signature(subs["file"].callback).parameters
-check("/steal-emoji file: an attachment is required, no emoji field",
-      params["file"].annotation is discord.Attachment
-      and params["file"].default is inspect.Parameter.empty and "emoji" not in params)
-check("both still need Manage Expressions at run time",
-      all(c.checks for c in subs.values()))
+# ONE command; Discord requires neither field, the cog requires exactly one
+cmd = Emojis.steal_emoji
+check("/steal-emoji is a single command, not a group",
+      isinstance(cmd, discord.app_commands.Command) and cmd.parent is None)
+params = inspect.signature(cmd.callback).parameters
+check("emoji: is not required", params["emoji"].default is None)
+check("file: takes an attachment, not required",
+      params["file"].annotation is discord.Attachment and params["file"].default is None)
+check("field order is emoji, file, name", list(params)[2:] == ["emoji", "file", "name"])
+check("still needs Manage Expressions at run time", bool(cmd.checks))
+
+
+class Reply:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, text, **kwargs):
+        self.sent.append(text)
+
+
+class Perms:
+    manage_emojis = True
+
+
+class Me:
+    guild_permissions = Perms()
+
+
+class Guild:
+    me = Me()
+    emojis = []
+
+
+class Interaction:
+    def __init__(self):
+        self.guild, self.response = Guild(), Reply()
+
+
+class Upload:
+    content_type, filename, url = "image/png", "cat.png", "https://cdn.discordapp.com/x.png"
+
+
+def refused(**kwargs):
+    i = Interaction()
+    asyncio.run(cmd.callback(Emojis(bot=None), i, **kwargs))
+    return bool(i.response.sent) and "one of the two" in i.response.sent[0]
+
+check("neither field filled = told to fill one", refused())
+check("both fields filled = told to fill one", refused(emoji="<:a_b:123456789012345678>", file=Upload()))
 
 print(f"\n{_total - len(_fails)}/{_total} passed")
 sys.exit(1 if _fails else 0)

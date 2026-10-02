@@ -106,39 +106,28 @@ class Emojis(commands.Cog):
         an hourly hold. Cancelling drops the request, so nothing lands later."""
         return await asyncio.wait_for(guild.create_custom_emoji(**kwargs), timeout=UPLOAD_WAIT)
 
-    # One or the other, enforced by Discord itself: each subcommand has its
-    # one required field, so there is no way to fill in both or neither.
-    steal = app_commands.Group(
-        name="steal-emoji", description="Copy custom emojis into this server",
-        default_permissions=discord.Permissions(manage_emojis=True))
-
-    @steal.command(name="emoji",
-                   description="Paste emoji(s) from any server, an emoji ID, or an emoji link, and I'll add them here.")
+    # ONE command (Paul, 10/1 — the emoji | file subcommand split was a
+    # misread). Neither field is required by Discord; exactly one must be filled.
+    @app_commands.command(name="steal-emoji",
+                          description="Add emojis to this server — paste them (or a link) in emoji:, or upload an image in file:.")
     @app_commands.describe(
         emoji="Paste the emoji(s) to steal (from any server), a raw emoji ID, or a CDN emoji link",
-        name="Rename it (only when stealing a single emoji)")
+        file="Or upload an image / GIF to turn into an emoji instead",
+        name="Rename it (only when stealing a single emoji; an uploaded file defaults to its filename)")
+    @app_commands.default_permissions(manage_emojis=True)
     @app_commands.checks.has_permissions(manage_emojis=True)
-    async def steal_emoji(self, interaction: discord.Interaction, emoji: str, name: str = None):
-        await self._steal(interaction, emoji=emoji, name=name)
-
-    @steal.command(name="file",
-                   description="Upload an image or GIF and I'll add it here as an emoji.")
-    @app_commands.describe(
-        file="The image / GIF to turn into an emoji",
-        name="Name for the emoji (defaults to the filename)")
-    @app_commands.checks.has_permissions(manage_emojis=True)
-    async def steal_file(self, interaction: discord.Interaction, file: discord.Attachment,
-                         name: str = None):
-        await self._steal(interaction, file=file, name=name)
-
-    async def _steal(self, interaction: discord.Interaction, emoji: str = None,
-                     name: str = None, file: discord.Attachment = None):
+    async def steal_emoji(self, interaction: discord.Interaction, emoji: str = None,
+                          file: discord.Attachment = None, name: str = None):
         guild = interaction.guild
         if guild is None:
             return await interaction.response.send_message("Server only.", ephemeral=True)
         if not guild.me.guild_permissions.manage_emojis:
             return await interaction.response.send_message(
                 "❌ I don't have the **Manage Emoji** permission here.", ephemeral=True)
+        if (file is None) == (not emoji):
+            return await interaction.response.send_message(
+                "❌ Fill in one of the two — `emoji:` (paste an emoji or a link) **or** `file:` (upload an image).",
+                ephemeral=True)
 
         targets = []
         url_target = None
