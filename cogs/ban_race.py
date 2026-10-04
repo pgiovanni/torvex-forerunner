@@ -984,6 +984,7 @@ class BanRace(commands.Cog):
             "lives": engine.recommended_lives(need),
             "lives_auto": True,
             "round_secs": num("race_schedule_round_secs", engine.DEFAULTS["round_secs"], 30, 1800),
+            "drops_per_player": engine.drop_rate(cfg.get("race_drops_per_player")),
             "mode": mode if mode in engine.MODES else engine.DEFAULTS["mode"],
             "min_account_days": num("race_schedule_min_account_days",
                                     engine.DEFAULTS["min_account_days"], 0, 365),
@@ -1335,13 +1336,17 @@ class BanRace(commands.Cog):
                         _, kind, is_super = queue.pop(0)
                         asyncio.create_task(self._spawn_drop(race_id, channel, s, kind, is_super))
                     await asyncio.sleep(min(2.0, max(0.2, race["round_ends_at"] - now)))
-                cur_id = (engine.get_race(race_id) or {}).get("round_msg_id")
-                if cur_id:
-                    try:
-                        panel = msg if (msg is not None and str(msg.id) == str(cur_id))                             else await channel.fetch_message(int(cur_id))
-                        await panel.edit(view=round_view(race_id, closed=True))
-                    except (discord.HTTPException, ValueError):
-                        pass
+                # Under the panel lock: a bump that began before the bell must
+                # finish and save its id first, or we would close the copy it
+                # is about to delete and leave the new one open.
+                async with self._panel_lock[race_id]:
+                    cur_id = (engine.get_race(race_id) or {}).get("round_msg_id")
+                    if cur_id:
+                        try:
+                            panel = msg if (msg is not None and str(msg.id) == str(cur_id))                                 else await channel.fetch_message(int(cur_id))
+                            await panel.edit(view=round_view(race_id, closed=True))
+                        except (discord.HTTPException, ValueError):
+                            pass
                 await self._close_round(race_id, round_no, guild, channel)
                 engine.update_race(race_id, round_ends_at=None)    # closed: nothing to resume
                 race = engine.get_race(race_id)
@@ -1541,7 +1546,7 @@ class BanRace(commands.Cog):
 
     @race.command(name="start", description="Open a lobby in the server's race channel (set with /race channel).")
     @app_commands.describe(lives="Lives per player (blank = recommended for however many join)",
-                           round_minutes="Minutes per round (default 1.5; sudden death runs half that)",
+                           round_minutes="Minutes per round (default 0.75 = 45 s; sudden death runs half that, 30 s at least)",
                            mode="ghost = no bans (default); real = actual bans, auto-unban at the end",
                            min_account_days="Minimum account age to enter (default 7)",
                            min_players="Players needed before the race can start (default 3)",
@@ -1550,7 +1555,7 @@ class BanRace(commands.Cog):
     @app_commands.choices(mode=MODE_CHOICES)
     async def race_start(self, interaction: discord.Interaction,
                          lives: app_commands.Range[int, 1, 50] = None,
-                         round_minutes: app_commands.Range[float, 0.5, 30.0] = 1.5,
+                         round_minutes: app_commands.Range[float, 0.5, 30.0] = 0.75,
                          mode: app_commands.Choice[str] = None,
                          min_account_days: app_commands.Range[int, 0, 365] = 7,
                          min_players: app_commands.Range[int, 3, None] = 3,     # no cap on players (Paul 9/12)
@@ -1594,6 +1599,8 @@ class BanRace(commands.Cog):
             "lives": engine.recommended_lives(min_players) if lives_auto else lives,
             "lives_auto": lives_auto,
             "round_secs": int(round(round_minutes * 60)), "mode": mode_v,
+            # not an option here — the server's card decides how busy the drops are
+            "drops_per_player": engine.drop_rate(get_config(guild.id).get("race_drops_per_player")),
             "min_account_days": min_account_days, "min_players": min_players,
             # a fixed 5 put a 6-player race in sudden death from round 2 (9/12);
             # blank = sized to the field, re-done for the real head-count at start
@@ -2342,6 +2349,14 @@ class BanRace(commands.Cog):
 
     async def _bump_panel_locked(self, race, channel):
         key = "lobby_msg_id" if race["status"] == "lobby" else "round_msg_id"
+        # Between a round's close and the next round's card the row still
+        # points at the CLOSED card, and the results post is exactly the kind
+        # of chatter that trips a bump — which re-posted the finished round
+        # with live Vote buttons (Paul 10/4: "the first round card appears a
+        # second time after the first round is over"). A finished round has
+        # no panel to bump; the next card is seconds away.
+        if race["status"] == "running" and time.time() >= (race.get("round_ends_at") or 0):
+            return
         old_id = race.get(key)
         if not old_id:
             if race["status"] == "lobby":

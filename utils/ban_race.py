@@ -33,9 +33,10 @@ Round model (all resolution is SIMULTANEOUS at round close):
   * the top killer (2+ kills, unique max) carries a BOUNTY: finishing them is
     worth two extra shots;
   * drops are GUARANTEED every round and SCALE WITH THE PLAYERS STILL IN:
-    alive × `drops_per_player` (min 1, capped so drops never overlap a
-    `drop_window`), spread evenly over the middle of the timer — twenty
-    players get a busy channel, three get one drop; sudden death adds a
+    alive × `drops_per_player` (min 1, capped so no more than
+    `DROP_OVERLAP` are grabbable at once), spread evenly over the middle of
+    the timer — twenty players get a busy channel, three get a drop each;
+    sudden death adds a
     SUPER drop each round: nuke (everyone else takes 1 at close), full
     heal, arsenal (+3 shots) — all three go to your KIT and are used from
     Power-ups (Paul 9/26: "only item i've been okay with auto working is
@@ -72,7 +73,7 @@ DEFAULT_CHANNEL = "last-to-survive"
 
 DEFAULTS = dict(
     lives=5,
-    round_secs=90,           # 1.5 min (Paul 9/13: "people are complaining it's too long")
+    round_secs=45,           # Paul 10/4: "half the rounds again" (90 since 9/13, 180 before)
     mode="ghost",            # ghost = marked out only; real = actual bans (opt-in)
     backfire=0.10,          # OVERLOAD shots only (9/21) — a plain shot never backfires
     sudden_death_at=5,       # overwritten at start from the head-count unless the host set it (9/12)
@@ -80,7 +81,7 @@ DEFAULTS = dict(
     min_players=3,           # lobby needs this many before Start works
     shot_cap=3,
     storm_from_round=2,
-    drops_per_player=0.5,    # drops per round = alive players × this (min 1; Paul 9/12: "scale with active users")
+    drops_per_player=1.0,    # drops per round = alive players × this (min 1; Paul 10/4: "more items drop per round" — was 0.5)
     drop_window=10,          # seconds a drop stays grabbable
 )
 
@@ -1170,12 +1171,30 @@ def roll_drop(rng, weights=None):
     return rng.choices(kinds, weights=[w[k] for k in kinds], k=1)[0]
 
 
+# Drops may share the channel, this many at a time. One-at-a-time capped a
+# 45 s round at three drops whatever the head-count, which is the opposite of
+# "more items drop per round" (Paul 10/4).
+DROP_OVERLAP = 2
+DROP_RATES = (0.5, 1.0, 1.5, 2.0)   # what a server may pick for drops_per_player
+
+
+def drop_rate(value):
+    """A server's drops-per-player setting, coerced: anything that isn't one
+    of DROP_RATES falls back to the default — a typo in config must never
+    stop the drops."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return DEFAULTS["drops_per_player"]
+    return v if v in DROP_RATES else DEFAULTS["drops_per_player"]
+
+
 def drop_count(alive, per_player, round_secs, drop_window):
     """How many regular drops a round gets: alive players × per_player,
-    never fewer than one, never so many that two are grabbable at once
-    (the 10–85 % window divided by the grab window)."""
+    never fewer than one, never so many that more than DROP_OVERLAP are
+    grabbable at once (the 10–85 % window divided by the grab window)."""
     n = int(round(max(0, alive) * per_player))
-    cap = max(1, int(0.75 * round_secs // max(1, drop_window)))
+    cap = max(1, int(0.75 * round_secs * DROP_OVERLAP // max(1, drop_window)))
     return max(1, min(cap, n))
 
 

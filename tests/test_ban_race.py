@@ -424,9 +424,26 @@ class Drops(unittest.TestCase):
         self.assertEqual(E.drop_count(2, 0.5, 180, 10), 1)
         self.assertEqual(E.drop_count(1, 0.5, 180, 10), 1)
         self.assertEqual(E.drop_count(0, 0.5, 180, 10), 1)
-        # capped so two drops are never grabbable at once: 30 s round, 10 s window -> 2 max
-        self.assertEqual(E.drop_count(100, 0.5, 30, 10), 2)
-        self.assertEqual(E.drop_count(100, 0.5, 180, 10), 13)
+        # capped so no more than DROP_OVERLAP (2) are grabbable at once: 30 s round, 10 s window -> 4 max
+        self.assertEqual(E.drop_count(100, 0.5, 30, 10), 4)
+        self.assertEqual(E.drop_count(100, 0.5, 180, 10), 27)
+
+    def test_default_round_is_45s_with_a_drop_per_player(self):
+        # Paul 10/4: "half the rounds again and have more items drop per round"
+        self.assertEqual(E.DEFAULTS["round_secs"], 45)
+        self.assertEqual(E.DEFAULTS["drops_per_player"], 1.0)
+        d = E.DEFAULTS
+        self.assertEqual(E.drop_count(3, d["drops_per_player"], 45, d["drop_window"]), 3)
+        self.assertEqual(E.drop_count(6, d["drops_per_player"], 45, d["drop_window"]), 6)
+        self.assertEqual(E.drop_count(20, d["drops_per_player"], 45, d["drop_window"]), 6)   # the overlap cap
+        self.assertEqual(E.drop_count(6, d["drops_per_player"], 30, d["drop_window"]), 4)    # sudden death
+
+    def test_drop_rate_setting_falls_back_on_junk(self):
+        self.assertEqual(E.drop_rate("2"), 2.0)
+        self.assertEqual(E.drop_rate("0.5"), 0.5)
+        self.assertEqual(E.drop_rate(1.5), 1.5)
+        for junk in (None, "", "lots", "7", -1, [], "0"):
+            self.assertEqual(E.drop_rate(junk), 1.0)
 
     def test_every_round_drops_spread_over_the_middle_plus_super_in_sudden_death(self):
         rng = random.Random(3)
