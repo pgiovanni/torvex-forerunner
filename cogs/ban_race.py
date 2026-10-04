@@ -60,8 +60,6 @@ BUMP_COOLDOWN = 20      # seconds between two bumps of the same race
 CARD_REPOST_COOLDOWN = 30   # seconds before a missing lobby card may be re-posted again
 SCHEDULE_CHECK_S = 20   # how often the scheduler looks at the clock
 REOPEN_BOOT_WINDOW = 2 * 3600   # on startup, reopen the lobby only for a race that ended this recently
-RESEAT_CUTOFF = 1791121200      # 2026-10-04 13:40 UTC — lobbies opened before this were reseated by the old code
-
 MODE_CHOICES = [
     app_commands.Choice(name="ghost — no bans, eliminated players are just out (default)", value="ghost"),
     app_commands.Choice(name="real — actual bans, auto-unban when it ends", value="real"),
@@ -660,18 +658,6 @@ class BanRace(commands.Cog):
         for race in engine.running_races():
             self._start_task(race)
             log.info("resumed race %s in guild %s", race["id"], race["guild_id"])
-        # ONE-OFF (Paul 10/4: "empty the current lobby"): a lobby the old code
-        # reopened with the last race's players already in it gets its seats
-        # cleared. Lobbies opened after the cutoff are never touched.
-        for race in engine.lobby_races():
-            guild = self.bot.get_guild(int(race["guild_id"]))
-            if (guild is None or race["host_id"] != str(self.bot.user.id)
-                    or race["created_at"] >= RESEAT_CUTOFF):
-                continue
-            await self._strip_all_racers(guild, race)
-            for p in engine.players(race["id"]):
-                engine.leave(race["id"], p["user_id"])
-            log.info("race %s: reseated lobby emptied", race["id"])
         # Open lobbies: re-render their embed so the rules on it are the rules
         # that will run (power-ups, tiers, lives line) — a deploy mid-lobby
         # used to leave a stale card up until the next join.
