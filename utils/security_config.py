@@ -283,9 +283,9 @@ DEFAULTS = {
     # "it's not supposed to start until we hit start"). 1 = the old behaviour,
     # the race goes the moment the lobby holds its minimum.
     "race_autostart": 0,
-    # Off the clock the lobby is standing too: a race that ends reopens it with
-    # the same players seated (Paul 9/30: "just reseat everyone and have the
-    # lobby auto open after a round").
+    # Off the clock the lobby is standing too: a race that ends reopens it,
+    # empty (Paul 9/30: "have the lobby auto open after a round"; 10/4:
+    # "reseat is a one time thing").
     "race_reopen": 1,
     "race_channel_id": None,
     "deadchat_role_id": None,

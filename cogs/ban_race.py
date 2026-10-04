@@ -60,6 +60,7 @@ BUMP_COOLDOWN = 20      # seconds between two bumps of the same race
 CARD_REPOST_COOLDOWN = 30   # seconds before a missing lobby card may be re-posted again
 SCHEDULE_CHECK_S = 20   # how often the scheduler looks at the clock
 REOPEN_BOOT_WINDOW = 2 * 3600   # on startup, reopen the lobby only for a race that ended this recently
+RESEAT_CUTOFF = 1791121200      # 2026-10-04 13:40 UTC — lobbies opened before this were reseated by the old code
 
 MODE_CHOICES = [
     app_commands.Choice(name="ghost — no bans, eliminated players are just out (default)", value="ghost"),
@@ -659,6 +660,18 @@ class BanRace(commands.Cog):
         for race in engine.running_races():
             self._start_task(race)
             log.info("resumed race %s in guild %s", race["id"], race["guild_id"])
+        # ONE-OFF (Paul 10/4: "empty the current lobby"): a lobby the old code
+        # reopened with the last race's players already in it gets its seats
+        # cleared. Lobbies opened after the cutoff are never touched.
+        for race in engine.lobby_races():
+            guild = self.bot.get_guild(int(race["guild_id"]))
+            if (guild is None or race["host_id"] != str(self.bot.user.id)
+                    or race["created_at"] >= RESEAT_CUTOFF):
+                continue
+            await self._strip_all_racers(guild, race)
+            for p in engine.players(race["id"]):
+                engine.leave(race["id"], p["user_id"])
+            log.info("race %s: reseated lobby emptied", race["id"])
         # Open lobbies: re-render their embed so the rules on it are the rules
         # that will run (power-ups, tiers, lives line) — a deploy mid-lobby
         # used to leave a stale card up until the next join.
@@ -1619,14 +1632,15 @@ class BanRace(commands.Cog):
 
     async def _reopen_lobby(self, guild, prev):
         """Off the clock the lobby is standing too: when a race ends, the next
-        lobby opens by itself with the same players already in it (Paul 9/30:
-        "just reseat everyone and have the lobby auto open after a round" — and
-        no command for it). Built from the dashboard card like the scheduler's
-        lobby, hosted by the bot, and it WAITS: nothing starts until someone in
-        it presses Start. A lobby a mod cancels stays closed until /race start.
+        lobby opens by itself (Paul 9/30: "have the lobby auto open after a
+        round" — and no command for it). Built from the dashboard card like the
+        scheduler's lobby, hosted by the bot, and it WAITS: nothing starts until
+        someone in it presses Start. A lobby a mod cancels stays closed until
+        /race start.
 
-        Real-ban races reopen EMPTY — nobody gets banned in a race they didn't
-        click Join for."""
+        It opens EMPTY — everyone clicks Join for the race they play. Carrying
+        the last race's players over was a one-off (Paul 10/4: "it shouldn't do
+        that ... reseat is a one time thing")."""
         cfg = get_config(guild.id)
         if (self._scheduled(guild.id) or not cfg.get("race_reopen", 1)
                 or engine.active_race(guild.id)):
@@ -1637,26 +1651,8 @@ class BanRace(commands.Cog):
         race, _ = await self._open_lobby(guild, channel, self.bot.user.id, self._template(cfg))
         if race is None:
             return None
-        s = race["settings"]
-        seated = 0
-        for p in (engine.players(prev["id"]) if prev and s["mode"] == "ghost" else []):
-            m = guild.get_member(int(p["user_id"]))
-            if m is None or engine.join_error(m.created_at.timestamp(), time.time(), s["min_account_days"],
-                                              is_bot=m.bot, bannable=self._bannable(guild, m), mode=s["mode"]):
-                continue
-            engine.join(race["id"], m.id, m.display_name, s["lives"])
-            await self._set_racer(guild, race, m.id, True)
-            seated += 1
-        if seated:
-            msg = await self._lobby_message(channel, race)
-            if msg:
-                try:
-                    await msg.edit(embed=self._card(guild, race, engine.players(race["id"])),
-                                   view=lobby_view(race["id"]))
-                except discord.HTTPException:
-                    pass
-        log.info("race %s: lobby reopened after race %s (%d reseated)",
-                 race["id"], prev["id"] if prev else None, seated)
+        log.info("race %s: lobby reopened after race %s",
+                 race["id"], prev["id"] if prev else None)
         return race
 
     @race.command(name="stop", description="Stop the race (host or a mod). Unbans everyone it banned.")
@@ -1670,10 +1666,10 @@ class BanRace(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         channel = await self._channel_for(interaction.guild, race) or interaction.channel
         await self._abort(interaction.guild, channel, race, interaction.user)
-        # A race cut short goes back to a lobby with everyone still in it; a
-        # lobby that's stopped is someone closing it, so it stays closed.
+        # A race cut short goes back to a fresh, empty lobby; a lobby that's
+        # stopped is someone closing it, so it stays closed.
         again = race["status"] == "running" and await self._reopen_lobby(interaction.guild, race)
-        await interaction.followup.send("Stopped — the lobby is open again with everyone back in it."
+        await interaction.followup.send("Stopped — a fresh lobby is open; hit Join to get back in."
                                         if again else "Stopped.", ephemeral=True)
 
     # Paul 9/12: "someone said 15 is too high" — the join threshold has to be
