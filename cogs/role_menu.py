@@ -26,12 +26,14 @@ import re
 import sys
 import sqlite3
 import logging
+import time
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from utils import perm_failures  # noqa: E402
 from utils.role_templates import TEMPLATES, template_choices, as_json  # noqa: E402
 
 log = logging.getLogger("role_menu")
@@ -50,9 +52,48 @@ DB_PATH = os.environ.get("TORVEX_ROLEMENUS_DB") or (
 # How the dashboard hands work back to us. It only ever writes rows — every
 # Discord call still happens here, through the same _render() the commands use,
 # so there is exactly one place that posts a panel.
-#   'dirty'  -> (re)post or edit the message, then re-register its buttons
-#   'delete' -> remove the message and the rows
+#   'dirty'   -> (re)post or edit the message, then re-register its buttons
+#   'delete'  -> remove the message and the rows
+#   'waiting' -> the channel refused us (no View / Send / Embed for the bot's
+#                role). Nothing is retried blindly: every tick re-reads the
+#                channel's permissions from the gateway cache — no API call —
+#                and the panel posts the moment an admin grants them. Until
+#                then `last_error` holds the sentence the dashboard shows the
+#                creator. Before 10/6 a refusal just cleared the state, so the
+#                panel vanished from the queue without a word (prv, panel 64).
 SYNC_SECONDS = 8
+WAITING = "waiting"
+WHAT = "post the reaction-role panel"          # the ledger's name for this site
+
+# What a panel post actually needs — an embed with buttons, no file — in the
+# order an admin should fix them. Checked BEFORE the send so the failure is
+# known on the same tick the dashboard saved, not after an API round-trip.
+PANEL_NEEDS = (
+    ("view_channel", "View Channel"),
+    ("send_messages", "Send Messages"),
+    ("embed_links", "Embed Links"),
+)
+
+
+def panel_blockers(channel, me):
+    """Permission names stopping a post in `channel`; [] when it can go out.
+    A channel the bot can't see at all (`get_channel` → None) is a View
+    Channel problem, not a 'channel gone' one — the dashboard only offers
+    channels that exist, and a hidden channel appears the moment View is granted."""
+    if channel is None:
+        return ["View Channel"]
+    return perm_failures.missing_perms(channel, me, PANEL_NEEDS)
+
+
+def blocked_text(channel_name, missing):
+    """The one sentence stored on the panel row for the dashboard. Plain '#name',
+    not a mention — it is read on a web page, where <#id> renders as noise."""
+    where = f"#{channel_name}" if channel_name else "that channel"
+    if missing == ["View Channel"] and not channel_name:
+        return ("Couldn't post: Torvex Forerunner can't see that channel — "
+                "its role needs View Channel there.")
+    return (f"Couldn't post in {where}: Torvex Forerunner is missing "
+            f"{' + '.join(missing)} there.")
 
 # One-shot migration map: the current MEE6 reaction-roles set, by category.
 # (role_id, label, emoji|None). Bootstrap resolves each id in the live guild and
@@ -164,6 +205,11 @@ def _init():
         if "state" not in cols:
             # work queue for panels edited outside the bot (the dashboard)
             c.execute("ALTER TABLE panels ADD COLUMN state TEXT")
+        if "last_error" not in cols:
+            # why a 'waiting' panel isn't posted, in the creator's words, and
+            # when it was first refused — the dashboard reads both
+            c.execute("ALTER TABLE panels ADD COLUMN last_error TEXT")
+            c.execute("ALTER TABLE panels ADD COLUMN error_ts REAL")
         rcols = {r[1] for r in c.execute("PRAGMA table_info(panel_roles)")}
         if "colour" not in rcols:
             # A row the dashboard saves with NO role_id is a role that doesn't
@@ -350,8 +396,8 @@ class RoleMenu(commands.Cog):
         try:
             with _conn() as c:
                 todo = c.execute(
-                    "SELECT panel_id, guild_id, channel_id, message_id, state FROM panels "
-                    "WHERE state IN ('dirty','delete')").fetchall()
+                    "SELECT panel_id, guild_id, channel_id, message_id, state, error_ts "
+                    "FROM panels WHERE state IN ('dirty','delete',?)", (WAITING,)).fetchall()
         except sqlite3.Error:
             return
         for p in todo:
@@ -361,11 +407,26 @@ class RoleMenu(commands.Cog):
             try:
                 if p["state"] == "delete":
                     await self._delete_panel(guild, p)
-                else:
-                    await self._publish_panel(guild, p["panel_id"])
-            except discord.Forbidden:
-                log.warning("panel %s: missing permissions in %s", p["panel_id"], guild.id)
-                self._clear_state(p["panel_id"])      # don't spin on a permission problem
+                    continue
+                channel = guild.get_channel(int(p["channel_id"])) if p["channel_id"] else None
+                missing = panel_blockers(channel, guild.me)
+                if missing:
+                    if p["state"] != WAITING:
+                        await self._park(guild, p, channel, missing)
+                    continue      # still watching — cache read, nothing sent
+                await self._publish_panel(guild, p["panel_id"])
+                if p["state"] == WAITING:
+                    waited = time.time() - (p["error_ts"] or time.time())
+                    log.info("panel %s: permissions granted in %s after %.0f s — posted",
+                             p["panel_id"], channel, waited)
+                perm_failures.ok(guild.id, p["channel_id"], WHAT)
+            except discord.Forbidden as e:
+                # the cache said yes and Discord said no (an overwrite landed
+                # between the check and the send, or a perm we don't list) —
+                # same outcome: watch it, don't drop it
+                channel = guild.get_channel(int(p["channel_id"])) if p["channel_id"] else None
+                missing = panel_blockers(channel, guild.me) or ["Send Messages"]
+                await self._park(guild, p, channel, missing, e)
             except discord.HTTPException as e:
                 log.warning("panel %s: %s", p["panel_id"], e)
 
@@ -375,7 +436,21 @@ class RoleMenu(commands.Cog):
 
     def _clear_state(self, panel_id):
         with _conn() as c:
-            c.execute("UPDATE panels SET state=NULL WHERE panel_id=?", (panel_id,))
+            c.execute("UPDATE panels SET state=NULL, last_error=NULL, error_ts=NULL "
+                      "WHERE panel_id=?", (panel_id,))
+
+    async def _park(self, guild, p, channel, missing, exc=None):
+        """A refused panel goes to 'waiting' — never dropped — with the reason
+        on the row for the dashboard and in the permission ledger for
+        /check-perms (+ the one-a-day DM to the server's alert contact)."""
+        text = blocked_text(getattr(channel, "name", None), missing)
+        with _conn() as c:
+            c.execute("UPDATE panels SET state=?, last_error=?, error_ts=? WHERE panel_id=?",
+                      (WAITING, text, time.time(), p["panel_id"]))
+        log.warning("panel %s: %s — watching for %s in %s (%s)",
+                    p["panel_id"], text, " + ".join(missing), guild.id, guild.name)
+        await perm_failures.report(self.bot, guild, channel or p["channel_id"], WHAT, exc,
+                                   needed=PANEL_NEEDS)
 
     async def _publish_panel(self, guild, panel_id):
         """Render, then refresh the button registration.

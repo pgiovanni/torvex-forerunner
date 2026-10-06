@@ -111,10 +111,12 @@ _init()
 
 
 # ───────────────────────────────────────────────────────────── pure (testable)
-def missing_perms(channel, me):
+def missing_perms(channel, me, needed=None):
     """Names of the NEEDED permissions `me` lacks in `channel`, most basic
     first. Empty when the bot has them all — or when `channel` is None, since
-    there is nothing to inspect."""
+    there is nothing to inspect. `needed` swaps in a caller's own
+    (attr, label) list for a site that doesn't post files — a role-menu
+    panel is an embed with buttons, so Attach Files would be a false alarm."""
     if channel is None or me is None:
         return []
     try:
@@ -123,7 +125,7 @@ def missing_perms(channel, me):
         return []
     if getattr(p, "administrator", False):
         return []
-    return [label for attr, label in NEEDED if not getattr(p, attr, True)]
+    return [label for attr, label in (needed or NEEDED) if not getattr(p, attr, True)]
 
 
 def explain(what, channel, missing, code=None):
@@ -165,12 +167,12 @@ def _code(exc):
 
 
 # ──────────────────────────────────────────────────────────────────── record
-def note(guild, channel, what, exc=None):
+def note(guild, channel, what, exc=None, needed=None):
     """Record the failure + one journal line (throttled). Returns the
     explanation. Never raises — a broken ledger must not break the cog."""
     gid, cid = str(getattr(guild, "id", guild)), _channel_id(channel)
     me = getattr(guild, "me", None)
-    missing = missing_perms(channel if not isinstance(channel, (int, str)) else None, me)
+    missing = missing_perms(channel if not isinstance(channel, (int, str)) else None, me, needed)
     code = _code(exc)
     detail = explain(what, channel, missing, code)
     key = (gid, cid, what)
@@ -256,9 +258,9 @@ def alert_target(guild, cfg):
     return guild.owner
 
 
-async def report(bot, guild, channel, what, exc=None):
+async def report(bot, guild, channel, what, exc=None, needed=None):
     """note() + a one-a-day DM to the alert contact. Returns the explanation."""
-    detail = note(guild, channel, what, exc)
+    detail = note(guild, channel, what, exc, needed)
     if guild is None:
         return detail
     gid, cid = str(guild.id), _channel_id(channel)
