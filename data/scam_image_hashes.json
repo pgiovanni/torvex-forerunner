@@ -1,5 +1,5 @@
 {
-  "note": "Perceptual hashes of known scam-image spam. dhash/phash are 64-bit hex from utils/scam_images.py; an image matches when BOTH are within `threshold` bits of one template. Add a wave by appending its hashes \u2014 never raise the threshold to reach one.",
+  "note": "Perceptual hashes of known scam-image spam. dhash/phash are 64-bit hex from utils/scam_images.py; an image matches when BOTH are within `threshold` bits of one template. Add a wave by appending its hashes — never raise the threshold to reach one.",
   "threshold": 10,
   "families": [
     {
@@ -105,6 +105,26 @@
           "name": "payout-phone 2026-09-26b",
           "dhash": "000021140c6d19f3",
           "phash": "c5ba36c9caa4318f"
+        },
+        {
+          "name": "profile 2026-10-09",
+          "dhash": "34342a3d39391d31",
+          "phash": "c1e1e3c65c5e5c94"
+        },
+        {
+          "name": "promo-code 2026-10-09",
+          "dhash": "5f2eb7a129262da7",
+          "phash": "f5de4a00bcb55a25"
+        },
+        {
+          "name": "withdrawal 2026-10-09",
+          "dhash": "3e20212c43032502",
+          "phash": "946a6e964a49b69d"
+        },
+        {
+          "name": "payout-phone 2026-10-09",
+          "dhash": "ac9086a3e3633070",
+          "phash": "911e6ae194f3486f"
         }
       ]
     }
