@@ -27,6 +27,15 @@ class TestPickUsedInvite(unittest.TestCase):
         after = {"new": (1, "5")}
         self.assertEqual(pick_used_invite(before, after, {}, NOW), ("new", "5"))
 
+    def test_expired_vanish_is_not_a_use(self):
+        # a 7-day race invite lapsed between snapshots: its absence is expiry,
+        # not a use (10/11: a join was pinned on race 29's hour-dead invite)
+        before = {"race": (0, "bot"), "aaa": (3, "1")}
+        after = {"aaa": (3, "1")}
+        self.assertEqual(pick_used_invite(before, after, {}, NOW, expired={"race"}), (None, None))
+        # without the expiry knowledge the old fallback still fires
+        self.assertEqual(pick_used_invite(before, after, {}, NOW), ("race", "bot"))
+
     def test_nothing_moved(self):
         before = {"aaa": (3, "1")}
         after = {"aaa": (3, "1")}

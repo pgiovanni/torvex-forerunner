@@ -87,13 +87,16 @@ SECRET = os.environ.get("ALTGUARD_SECRET", "")
 VANISH_WINDOW = 20.0
 
 
-def pick_used_invite(before, after, recent_gone, now):
+def pick_used_invite(before, after, recent_gone, now, expired=()):
     """Decide which invite code a just-joined member used.
 
     before:      {code: (uses, inviter_id)} cache snapshot from before the join
     after:       {code: (uses, inviter_id)} fresh snapshot taken after the join
     recent_gone: {code: (inviter_id, deleted_at)} codes the gateway said were
                  deleted moments ago
+    expired:     codes whose expiry had already passed at `now` — if one of
+                 those is missing from `after`, it lapsed, it wasn't used
+                 (10/11: a join got pinned on a race invite an hour dead)
     Returns (code, inviter_id) or (None, None) if nothing matches unambiguously.
     """
     # a use-count that went up is definitive
@@ -107,7 +110,8 @@ def pick_used_invite(before, after, recent_gone, now):
               if now - ts <= VANISH_WINDOW and c not in after}
     if len(recent) == 1:
         return next(iter(recent.items()))
-    vanished = {c: inv for c, (_u, inv) in before.items() if c not in after}
+    vanished = {c: inv for c, (_u, inv) in before.items()
+                if c not in after and c not in expired}
     if len(vanished) == 1:
         return next(iter(vanished.items()))
     return None, None
@@ -124,6 +128,7 @@ class Invites(commands.Cog):
         self.bot = bot
         self.session = None       # aiohttp, for gate lookups
         self._cache = {}          # guild_id -> {code: (uses, inviter_id)}
+        self._expiry = {}         # guild_id -> {code: expires_at unix ts} (timed invites only)
         self._vanity = {}         # guild_id -> vanity uses
         self._recent_gone = {}    # guild_id -> {code: (inviter_id, deleted_at)}
         with self._conn() as c:
@@ -178,6 +183,8 @@ class Invites(commands.Cog):
             inv.code: (inv.uses or 0, str(inv.inviter.id) if inv.inviter else None)
             for inv in invites
         }
+        self._expiry[guild.id] = {inv.code: inv.expires_at.timestamp()
+                                  for inv in invites if inv.expires_at}
         if "VANITY_URL" in guild.features:
             try:
                 v = await guild.vanity_invite()
@@ -213,6 +220,8 @@ class Invites(commands.Cog):
         if self._tracked(invite.guild):
             self._cache.setdefault(invite.guild.id, {})[invite.code] = (
                 invite.uses or 0, str(invite.inviter.id) if invite.inviter else None)
+            if invite.expires_at:
+                self._expiry.setdefault(invite.guild.id, {})[invite.code] = invite.expires_at.timestamp()
 
     @commands.Cog.listener()
     async def on_invite_delete(self, invite):
@@ -231,6 +240,7 @@ class Invites(commands.Cog):
             return
         guild = member.guild
         before = dict(self._cache.get(guild.id, {}))
+        ebefore = dict(self._expiry.get(guild.id, {}))
         vbefore = self._vanity.get(guild.id, 0)
         invites = await self._refresh_cache(guild)
 
@@ -239,7 +249,9 @@ class Invites(commands.Cog):
         if invites is not None:
             now = time.time()
             gone = self._recent_gone.setdefault(guild.id, {})
-            code, inviter_id = pick_used_invite(before, self._cache.get(guild.id, {}), gone, now)
+            expired = {c for c, ts in ebefore.items() if ts <= now}
+            code, inviter_id = pick_used_invite(before, self._cache.get(guild.id, {}), gone, now,
+                                                expired=expired)
             for c in [c for c, (_i, ts) in gone.items() if now - ts > VANISH_WINDOW]:
                 gone.pop(c, None)
 

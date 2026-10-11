@@ -1546,3 +1546,33 @@ class ScheduleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStaleInvites(unittest.TestCase):
+    """Return invites outlive their race by INVITE_GRACE, then get swept."""
+    def setUp(self):
+        self.db = os.path.join(tempfile.mkdtemp(), "race.db")
+
+    def _race(self, gid, status, ended, url="https://discord.gg/abc"):
+        r = E.create_race(gid, 2, 3, db=self.db)
+        E.update_race(r["id"], db=self.db, status=status, finished_at=ended, invite_url=url)
+        return r["id"]
+
+    def test_only_old_finished_races_with_an_invite(self):
+        now = 1_000_000.0
+        old = self._race(1, "finished", now - 7200)
+        fresh = self._race(2, "finished", now - 600)
+        aborted = self._race(3, "aborted", now - 7200)
+        no_url = self._race(4, "finished", now - 7200, url=None)
+        r = E.create_race(5, 2, 3, db=self.db)                  # open lobby keeps its invite
+        E.update_race(r["id"], db=self.db, invite_url="https://discord.gg/lobby")
+        got = sorted(x["id"] for x in E.stale_invites(3600, now=now, db=self.db))
+        self.assertEqual(got, sorted([old, aborted]))
+        self.assertNotIn(fresh, got)
+        self.assertNotIn(no_url, got)
+
+    def test_cleared_url_drops_out(self):
+        now = 1_000_000.0
+        rid = self._race(1, "finished", now - 7200)
+        E.update_race(rid, db=self.db, invite_url=None)
+        self.assertEqual(E.stale_invites(3600, now=now, db=self.db), [])

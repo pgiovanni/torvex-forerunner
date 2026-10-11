@@ -764,6 +764,18 @@ def running_races(db=None):
         return [_race_row(r) for r in c.execute("SELECT * FROM races WHERE status='running'")]
 
 
+def stale_invites(min_age, now=None, db=None):
+    """Races that are over but still hold their return invite, and ended more
+    than `min_age` seconds ago — the eliminated have had that long to use it."""
+    init(db)
+    cutoff = (now or time.time()) - min_age
+    with _conn(db) as c:
+        return [_race_row(r) for r in c.execute(
+            "SELECT * FROM races WHERE status IN ('finished','aborted')"
+            " AND invite_url IS NOT NULL AND invite_url != ''"
+            " AND COALESCE(finished_at, created_at) < ?", (cutoff,))]
+
+
 def update_race(race_id, db=None, **fields):
     if "winner_ids" in fields:
         fields["winner_ids"] = json.dumps([str(x) for x in fields["winner_ids"]])

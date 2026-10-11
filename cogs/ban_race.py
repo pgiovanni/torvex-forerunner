@@ -52,6 +52,7 @@ COLOR_WIN = 0x2ECC71
 MENTIONS = discord.AllowedMentions(users=True, roles=False, everyone=False)
 NO_MENTIONS = discord.AllowedMentions.none()
 INVITE_DAYS = 7
+INVITE_GRACE = 3600     # seconds after a race ends before its return invite is revoked
 RACER_ROLE = "Racer"     # only this role can talk in the race channel; Join grants it
 MAX_PINGS = 60
 START_DELAY = 30        # seconds between the start ping and round 1 opening
@@ -679,6 +680,33 @@ class BanRace(commands.Cog):
                     await self._reopen_lobby(guild, prev)
             except Exception:
                 log.exception("race: boot reopen failed for guild %s", guild.id)
+        try:
+            await self._revoke_stale_invites()
+        except Exception:
+            log.exception("race: invite sweep failed")
+
+    async def _revoke_stale_invites(self, guild_id=None):
+        """Delete the return invites of races that ended over INVITE_GRACE ago.
+        Every lobby mints a 7-day invite and nothing revoked it, so a busy
+        server carried four to six live bot invites at once (Paul 10/11: "why
+        do i keep seeing torvex forerunner invites"). An hour is the grace for
+        the eliminated to come back on it; runs at boot and at each race start."""
+        for race in engine.stale_invites(INVITE_GRACE):
+            if guild_id is not None and int(race["guild_id"]) != int(guild_id):
+                continue
+            code = (race["invite_url"] or "").rstrip("/").rsplit("/", 1)[-1]
+            try:
+                inv = await self.bot.fetch_invite(code)
+                await inv.delete(reason=f"Last to survive — race #{race['id']} is over")
+                log.info("race %s: revoked return invite %s", race["id"], code)
+            except discord.NotFound:
+                pass                                   # expired or already gone
+            except discord.Forbidden:
+                log.warning("race %s: can't revoke invite %s (need Manage Channels)", race["id"], code)
+                continue                               # keep the url so a later pass retries
+            except discord.HTTPException:
+                continue
+            engine.update_race(race["id"], invite_url=None)
 
     # ── the schedule ──────────────────────────────────────────────────────────────────
     # Paul 9/16: "instead of starting when everyone joins, it should be
@@ -2189,6 +2217,10 @@ class BanRace(commands.Cog):
                                             f"⏳ **Round 1 opens <t:{opens}:R>.**"),
             allowed_mentions=MENTIONS)
         self._start_task(race)
+        try:
+            await self._revoke_stale_invites(guild.id)
+        except Exception:
+            log.exception("race %s: invite sweep failed", race["id"])
 
     async def _btn_cancel(self, interaction, race, _):
         if not self._is_host(interaction, race):
