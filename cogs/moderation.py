@@ -230,9 +230,12 @@ class Moderation(commands.Cog):
         if mcfg["dm"] and member is not None:
             embed.add_field(name="Notified", value="DM sent" if dmed else "DMs closed", inline=True)
         embed.set_footer(text=f"Banned by {interaction.user.display_name}")
+        # The first followup after an ephemeral defer is ALWAYS ephemeral (it
+        # edits the "thinking" message), so spend it on the private receipt and
+        # let the card land publicly in the channel.
+        await interaction.followup.send("✅ Done.", ephemeral=True)
         await interaction.followup.send(embed=embed)  # public confirmation
         await _mod_log(self.bot, guild, mcfg, embed)
-        await interaction.followup.send("✅ Done.", ephemeral=True)
 
     @app_commands.command(name="unban", description="Unban a user by their Discord ID.")
     @app_commands.describe(
@@ -281,8 +284,8 @@ class Moderation(commands.Cog):
         )
         embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
         embed.set_footer(text=f"Unbanned by {interaction.user.display_name}")
+        await interaction.followup.send("✅ Done.", ephemeral=True)  # consumes the ephemeral defer
         await interaction.followup.send(embed=embed)  # public confirmation
-        await interaction.followup.send("✅ Done.", ephemeral=True)
 
     @app_commands.command(name="kick", description="Kick a member from the server (they can rejoin with an invite).")
     @app_commands.describe(
