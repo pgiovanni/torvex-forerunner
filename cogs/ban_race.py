@@ -15,9 +15,10 @@ round loop itself is resumed from the DB on the next on_ready.
 
 Eliminations in mode "real" are actual bans, executed by the bot — the only
 way members at the same role level can knock each other out. Each victim is
-DM'd their elimination card WITH the return invite BEFORE the ban lands
-(after it, no shared server usually means no DM), and the bot unbans every
-race ban the moment a winner is declared or the host stops the race. Race
+DM'd their elimination card BEFORE the ban lands (after it, no shared server
+usually means no DM), and the bot unbans every race ban the moment a winner
+is declared or the host stops the race. The bot never mints an invite (Paul
+10/11: "stop the auto invite creation") — the host posts the way back in. Race
 bans are marked quiet so the goodbye channel and mod-log embeds don't get
 thirty cards in a night; member_events still records every one.
 """
@@ -51,8 +52,6 @@ COLOR_LEGENDARY = 0xE67E22 # the golden apple
 COLOR_WIN = 0x2ECC71
 MENTIONS = discord.AllowedMentions(users=True, roles=False, everyone=False)
 NO_MENTIONS = discord.AllowedMentions.none()
-INVITE_DAYS = 7
-INVITE_GRACE = 3600     # seconds after a race ends before its return invite is revoked
 RACER_ROLE = "Racer"     # only this role can talk in the race channel; Join grants it
 MAX_PINGS = 60
 START_DELAY = 30        # seconds between the start ping and round 1 opening
@@ -500,7 +499,7 @@ def how_it_works(s):
     return (f"• Rounds last **{_fmt_round(s['round_secs'])}**; shots are secret and all land at once.\n"
             f"• One shot per round — it doesn't stack. Power-ups you grab stay with you for the whole race.\n"
             f"• Zero lives = {'**actually banned**' if s['mode'] == 'real' else 'out'}. "
-            f"{'Everyone is unbanned the moment it ends, and you get the invite by DM first.' if s['mode'] == 'real' else ''}\n"
+            f"{'Everyone is unbanned the moment it ends; the host posts the invite back in.' if s['mode'] == 'real' else ''}\n"
             f"• Don't vote in a round and you lose a life. AFK is not a strategy.\n"
             f"• Only racers can talk here — **Join** unlocks the channel; ghosts watch in silence.\n"
             f"• Power-ups drop in this channel every round — the more of you still in, the more drops. First click takes it. "
@@ -620,8 +619,7 @@ def elimination_dm(race, round_no, killer_id, guild_name):
     if s["mode"] == "real":
         e.add_field(name="What happens now",
                     value="You're being banned — that's the game. The bot **unbans everyone the moment the race "
-                          "ends**. Keep this invite; it's how you get back in:\n"
-                          + (race["invite_url"] or "*(the host will post the invite)*"),
+                          "ends**; the host posts the invite to get back in.",
                     inline=False)
     return e
 
@@ -680,34 +678,6 @@ class BanRace(commands.Cog):
                     await self._reopen_lobby(guild, prev)
             except Exception:
                 log.exception("race: boot reopen failed for guild %s", guild.id)
-        try:
-            await self._revoke_stale_invites()
-        except Exception:
-            log.exception("race: invite sweep failed")
-
-    async def _revoke_stale_invites(self, guild_id=None):
-        """Delete the return invites of races that ended over INVITE_GRACE ago.
-        Every lobby mints a 7-day invite and nothing revoked it, so a busy
-        server carried four to six live bot invites at once (Paul 10/11: "why
-        do i keep seeing torvex forerunner invites"). An hour is the grace for
-        the eliminated to come back on it; runs at boot and at each race start."""
-        for race in engine.stale_invites(INVITE_GRACE):
-            if guild_id is not None and int(race["guild_id"]) != int(guild_id):
-                continue
-            code = (race["invite_url"] or "").rstrip("/").rsplit("/", 1)[-1]
-            try:
-                inv = await self.bot.fetch_invite(code)
-                await inv.delete(reason=f"Last to survive — race #{race['id']} is over")
-                log.info("race %s: revoked return invite %s", race["id"], code)
-            except discord.NotFound:
-                pass                                   # expired or already gone
-            except discord.Forbidden:
-                log.warning("race %s: can't revoke invite %s (need Manage Channels)", race["id"], code)
-                continue                               # keep the url so a later pass retries
-            except discord.HTTPException:
-                continue
-            engine.update_race(race["id"], invite_url=None)
-
     # ── the schedule ──────────────────────────────────────────────────────────────────
     # Paul 9/16: "instead of starting when everyone joins, it should be
     # scheduled 4 times a day ... if there's only 2 people it should delay till
@@ -817,8 +787,8 @@ class BanRace(commands.Cog):
         return msg
 
     async def _open_lobby(self, guild, channel, host_id, settings):
-        """Lock the channel, mint the return invite, create the race, post its
-        card. Shared by /race start and the scheduler's standing lobby.
+        """Lock the channel, create the race, post its card. Shared by
+        /race start and the scheduler's standing lobby.
         Returns (race, warnings); race is None when the engine refused."""
         warn = []
         racer_role_id = None
@@ -829,23 +799,11 @@ class BanRace(commands.Cog):
         except (discord.Forbidden, discord.HTTPException) as e:
             warn.append(f"⚠️ Couldn't set up the Racer role / channel lock ({e.__class__.__name__}) — "
                         f"I need Manage Roles and Manage Channels; anyone can talk there until then.")
-        invite_url = None
-        try:
-            inv = await channel.create_invite(max_age=INVITE_DAYS * 86400, max_uses=0, unique=True,
-                                              reason="Last to survive — return invite for the eliminated")
-            invite_url = inv.url
-        except discord.HTTPException:
-            pass
         try:
             race = engine.create_race(guild.id, channel.id, host_id,
                                       settings=dict(settings, racer_role_id=racer_role_id))
         except ValueError as e:
             return None, [str(e)]
-        engine.update_race(race["id"], invite_url=invite_url)
-        race = engine.get_race(race["id"])
-        if not invite_url:
-            warn.append("⚠️ Couldn't mint a return invite (need Create Invite in that channel) — "
-                        "post one yourself before it starts.")
         msg = await channel.send(embed=self._card(guild, race, []), view=lobby_view(race["id"]))
         engine.update_race(race["id"], lobby_msg_id=str(msg.id))
         return engine.get_race(race["id"]), warn
@@ -1470,11 +1428,8 @@ class BanRace(commands.Cog):
             except (discord.Forbidden, discord.HTTPException, discord.NotFound) as e:
                 log.warning("race %s: could not unban revived %s: %s", race["id"], uid, e)
             engine.update_player(race["id"], uid, banned=0)
-            invite = race.get("invite_url") or ""
-            await self._dm(uid, content=(f"💫 Someone **revived** you in **{guild.name}** — you're back in the "
-                                         f"race with 1 life. Rejoin now: {invite}" if invite else
-                                         f"💫 Someone **revived** you in **{guild.name}** — you're back in the "
-                                         f"race with 1 life. Ask the host for the invite."))
+            await self._dm(uid, content=f"💫 Someone **revived** you in **{guild.name}** — you're back in the "
+                                        f"race with 1 life. Ask the host for the invite.")
         await self._set_racer(guild, race, uid, True)
 
     async def _unban_all(self, guild, race):
@@ -1526,8 +1481,8 @@ class BanRace(commands.Cog):
             log.exception("race %s: could not reopen the lobby", race_id)
         for p in rows if race["settings"]["mode"] == "real" else []:
             if not p["alive"]:
-                await self._dm(p["user_id"], content=f"Race over in **{guild.name}** — you're unbanned. "
-                                                     f"{race['invite_url'] or ''}".strip())
+                await self._dm(p["user_id"], content=f"Race over in **{guild.name}** — you're unbanned; "
+                                                     f"ask the host for the invite back in.")
                 await asyncio.sleep(0.3)
 
     async def _abort(self, guild, channel, race, by):
@@ -1797,10 +1752,9 @@ class BanRace(commands.Cog):
                 "No race channel set — `/race channel #channel` to pick one.", ephemeral=True)
         perms = channel.permissions_for(guild.me)
         missing = [name for name, ok in (("Send Messages", perms.send_messages),
-                                         ("Manage Permissions", perms.manage_roles),
-                                         ("Create Invite", perms.create_instant_invite)) if not ok]
+                                         ("Manage Permissions", perms.manage_roles)) if not ok]
         set_config(guild.id, race_channel_id=str(channel.id))
-        note = ("\n" + f"⚠️ I'm missing **{', '.join(missing)}** there — the Racer lock / return invite "
+        note = ("\n" + f"⚠️ I'm missing **{', '.join(missing)}** there — the Racer lock "
                 f"will fail until that's fixed." if missing else "")
         await interaction.response.send_message(
             f"Race channel set to {channel.mention}. `/race start` opens lobbies there.{note}", ephemeral=True)
@@ -2217,10 +2171,6 @@ class BanRace(commands.Cog):
                                             f"⏳ **Round 1 opens <t:{opens}:R>.**"),
             allowed_mentions=MENTIONS)
         self._start_task(race)
-        try:
-            await self._revoke_stale_invites(guild.id)
-        except Exception:
-            log.exception("race %s: invite sweep failed", race["id"])
 
     async def _btn_cancel(self, interaction, race, _):
         if not self._is_host(interaction, race):
