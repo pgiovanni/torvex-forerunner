@@ -15,6 +15,13 @@ or, once the Anthropic org is back:
     ANTHROPIC_API_KEY=sk-ant-...
     # models default to claude-sonnet-5 / claude-haiku-4-5
 
+Images: `chat(..., images=[...])` attaches pictures to the user turn — the
+asker's own attachments, never anything fetched from the archive. An entry is
+either a URL string (the provider fetches it) or {"media_type": "image/png",
+"data": "<base64>"} (bytes we fetched ourselves — the cog does this, because
+provider-side fetching 400s on hosts that block bots, Wikimedia included, and
+Discord's CDN links are signed and short-lived). Nothing is stored either way.
+
 Known OpenAI-compatible base URLs (one backend covers them all):
     OpenRouter  https://openrouter.ai/api/v1
     Groq        https://api.groq.com/openai/v1
@@ -43,6 +50,54 @@ class ChatResult:
     refusal: bool = False
 
 
+def _image_url(img) -> str:
+    """URL form of one image entry: a plain URL passes through, fetched bytes
+    become a data: URL (what the OpenAI dialect takes for inline images)."""
+    if isinstance(img, dict):
+        return f"data:{img['media_type']};base64,{img['data']}"
+    return img
+
+
+def _anthropic_source(img) -> dict:
+    if isinstance(img, dict):
+        return {"type": "base64", "media_type": img["media_type"], "data": img["data"]}
+    return {"type": "url", "url": img}
+
+
+def openai_user_message(text: str, images=None):
+    """The user turn for an OpenAI-style request: a plain string when there
+    are no images (what every existing test and provider log expects), else
+    the parts form — text first, then one image_url part per picture."""
+    if not images:
+        return text
+    parts = [{"type": "text", "text": text}]
+    parts += [{"type": "image_url", "image_url": {"url": _image_url(i)}} for i in images]
+    return parts
+
+
+def anthropic_user_content(text: str, images=None):
+    """The user turn for the Messages API: plain string without images, else
+    image blocks FIRST then the text (the order the vision docs recommend)."""
+    if not images:
+        return text
+    blocks = [{"type": "image", "source": _anthropic_source(i)} for i in images]
+    blocks.append({"type": "text", "text": text})
+    return blocks
+
+
+# Models whose thinking must be switched off explicitly. Sonnet 5 runs adaptive
+# thinking when the param is omitted and accepts {"type": "disabled"}; the 5.5
+# generation REJECTS "disabled" with a 400 (effort is the knob there), so this
+# is an exact-id list, not a prefix match — `claude-sonnet-5` must never catch
+# `claude-sonnet-5-5`.
+_THINKING_OFF_MODELS = ("claude-sonnet-5",)
+
+
+def anthropic_thinking_kwargs(model: str) -> dict:
+    """Extra Messages-API kwargs for a model id, or {} to leave the default."""
+    return {"thinking": {"type": "disabled"}} if model in _THINKING_OFF_MODELS else {}
+
+
 def parse_openai_response(data: dict) -> ChatResult:
     """Pure parser for an OpenAI-style /chat/completions response body."""
     usage = data.get("usage") or {}
@@ -67,13 +122,13 @@ class OpenAICompatProvider:
         self.api_key = api_key
 
     async def chat(self, model: str, system: str, user_content: str,
-                   max_tokens: int) -> ChatResult:
+                   max_tokens: int, images=None) -> ChatResult:
         payload = {
             "model": model,
             "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user_content},
+                {"role": "user", "content": openai_user_message(user_content, images)},
             ],
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -96,17 +151,17 @@ class AnthropicProvider:
         self.client = AsyncAnthropic()  # reads ANTHROPIC_API_KEY
 
     async def chat(self, model: str, system: str, user_content: str,
-                   max_tokens: int) -> ChatResult:
+                   max_tokens: int, images=None) -> ChatResult:
         kwargs = dict(
             model=model,
             max_tokens=max_tokens,
             system=system,
-            messages=[{"role": "user", "content": user_content}],
+            messages=[{"role": "user",
+                       "content": anthropic_user_content(user_content, images)}],
         )
-        if model.startswith("claude-sonnet-5"):
-            # Sonnet 5 runs adaptive thinking when the param is omitted — turn it
-            # off explicitly: chat answers don't need it and thinking bills as output.
-            kwargs["thinking"] = {"type": "disabled"}
+        # Chat answers don't need thinking and it bills as output — off where
+        # the API lets us say so (see _THINKING_OFF_MODELS for why not 5.5).
+        kwargs.update(anthropic_thinking_kwargs(model))
         response = await self.client.messages.create(**kwargs)
         text = "".join(b.text for b in response.content if b.type == "text").strip()
         return ChatResult(

@@ -18,6 +18,8 @@ from dataclasses import dataclass
 
 # model -> (input µ$/kTok, output µ$/kTok) == $/MTok * 1000
 PRICES = {
+    "claude-sonnet-5-5": (2000, 10000),
+    "claude-haiku-5-5": (100, 500),
     "claude-sonnet-5": (3000, 15000),
     "claude-haiku-4-5": (1000, 5000),
 }

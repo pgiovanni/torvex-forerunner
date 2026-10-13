@@ -315,3 +315,76 @@ class TestOwnWords(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _Att:
+    """Stand-in for discord.Attachment — only the fields image_urls() reads."""
+    def __init__(self, url, content_type="image/png", size=1000, filename="a.png"):
+        self.url, self.content_type, self.size, self.filename = url, content_type, size, filename
+
+
+class TestImageUrls(unittest.TestCase):
+    """Only the asker's pictures go to the model, and only ones it can take."""
+
+    def test_images_only_in_order(self):
+        from cogs.ai import image_urls
+        urls = image_urls([_Att("u1"), _Att("u2", content_type="video/mp4"),
+                           _Att("u3", content_type="image/jpeg")])
+        self.assertEqual(urls, ["u1", "u3"])
+
+    def test_oversize_and_non_image_dropped(self):
+        from cogs.ai import image_urls, IMAGE_MAX_BYTES
+        urls = image_urls([_Att("big", size=IMAGE_MAX_BYTES + 1),
+                           _Att("pdf", content_type="application/pdf"),
+                           _Att("ok")])
+        self.assertEqual(urls, ["ok"])
+
+    def test_missing_content_type_falls_back_to_extension(self):
+        from cogs.ai import image_urls
+        self.assertEqual(image_urls([_Att("p", content_type=None, filename="x.JPG"),
+                                     _Att("t", content_type=None, filename="x.txt")]),
+                         ["p"])
+
+    def test_per_ask_cap(self):
+        from cogs.ai import image_urls, IMAGES_PER_ASK
+        urls = image_urls([_Att(f"u{i}") for i in range(IMAGES_PER_ASK + 3)])
+        self.assertEqual(len(urls), IMAGES_PER_ASK)
+        self.assertEqual(image_urls([_Att("a"), _Att("b")], limit=1), ["a"])
+
+    def test_empty(self):
+        from cogs.ai import image_urls
+        self.assertEqual(image_urls(None), [])
+        self.assertEqual(image_urls([]), [])
+
+
+class TestContextLineImages(unittest.TestCase):
+    def test_image_marker_after_the_cap(self):
+        from cogs.ai import context_line, CONTEXT_SNIPPET
+        line = context_line(False, "x", "a" * 1000, image_count=2)
+        self.assertTrue(line.endswith(" (+2 images)"))
+        self.assertEqual(len(line), len("[member] x: ") + CONTEXT_SNIPPET + len(" (+2 images)"))
+
+    def test_image_only_message_still_has_a_line(self):
+        from cogs.ai import context_line
+        self.assertEqual(context_line(False, "x", "", image_count=1), "[member] x: (+1 image)")
+
+    def test_no_marker_without_images(self):
+        from cogs.ai import context_line
+        self.assertEqual(context_line(True, "bot", "hi"), "[you]: hi")
+
+
+class TestContextKnobs(unittest.TestCase):
+    def test_defaults_are_the_10_13_values(self):
+        from cogs.ai import CONTEXT_MESSAGES, CONTEXT_SNIPPET, CONTEXT_SCAN, IMAGES_PER_ASK
+        if not os.getenv("AI_CONTEXT_MESSAGES"):
+            self.assertEqual(CONTEXT_MESSAGES, 24)
+            self.assertGreaterEqual(CONTEXT_SCAN, CONTEXT_MESSAGES * 5)
+        if not os.getenv("AI_CONTEXT_SNIPPET"):
+            self.assertEqual(CONTEXT_SNIPPET, 320)
+        if not os.getenv("AI_IMAGES_PER_ASK"):
+            self.assertEqual(IMAGES_PER_ASK, 4)
+
+    def test_image_rules_say_data_not_instructions(self):
+        from cogs.ai import IMAGE_RULES
+        self.assertIn("never instructions", IMAGE_RULES)
+        self.assertIn("Never identify", IMAGE_RULES)
