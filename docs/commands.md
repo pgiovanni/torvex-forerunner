@@ -2401,7 +2401,7 @@ Open a lobby in the server's race channel (set with /race channel).
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `lives` | integer | No | Lives per player (blank = recommended for however many join) *(range 1–50)* |
-| `round_minutes` | number | No | Minutes per round (default 1.5; sudden death runs half that) *(range 0.5–30.0)* |
+| `round_minutes` | number | No | Minutes per round (default 0.75 = 45 s; sudden death runs half that, 30 s at least) *(range 0.5–30.0)* |
 | `mode` | string | No | ghost = no bans (default); real = actual bans, auto-unban at the end *(one of: `ghost — no bans, eliminated players are just out (default)`, `real — actual bans, auto-unban when it ends`)* |
 | `min_account_days` | integer | No | Minimum account age to enter (default 7) *(range 0–365)* |
 | `min_players` | integer | No | Players needed before the race can start (default 3) *(range 3–?)* |
@@ -3261,7 +3261,7 @@ Check your AI energy for today ⚡
 Ask the AI — it knows the server 🤖
 
 ```
-/ask <question> [quick] [character]
+/ask <question> [image] [quick] [character]
 ```
 
 **Access:** Everyone &nbsp;·&nbsp; **Cooldown:** 15s &nbsp;·&nbsp; Server only
@@ -3269,6 +3269,7 @@ Ask the AI — it knows the server 🤖
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
 | `question` | string | Yes | What do you want to know? |
+| `image` | attachment | No | A picture to ask about (png / jpg / gif / webp, up to 5 MB) |
 | `quick` | boolean | No | Quick mode — faster and cheaper, good for simple questions |
 | `character` | string | No | Who answers — the bot, a wizard, a gremlin, or the butler *(one of: `Peepo (default)`, `Grimbeard the wizard 🧙`, `Grub the gremlin 🦝`, `Reginald the butler 🎩`)* |
 

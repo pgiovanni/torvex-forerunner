@@ -323,6 +323,12 @@
      "description": "What do you want to know?"
     },
     {
+     "name": "image",
+     "type": "attachment",
+     "required": false,
+     "description": "A picture to ask about (png / jpg / gif / webp, up to 5 MB)"
+    },
+    {
      "name": "quick",
      "type": "boolean",
      "required": false,
@@ -341,7 +347,7 @@
      ]
     }
    ],
-   "signature": "/ask <question> [quick] [character]",
+   "signature": "/ask <question> [image] [quick] [character]",
    "root": "ask",
    "cog": "ai",
    "permissions": [],
@@ -1086,7 +1092,7 @@
      "name": "round_minutes",
      "type": "number",
      "required": false,
-     "description": "Minutes per round (default 1.5; sudden death runs half that)",
+     "description": "Minutes per round (default 0.75 = 45 s; sudden death runs half that, 30 s at least)",
      "min": 0.5,
      "max": 30.0
     },
