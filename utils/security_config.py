@@ -304,6 +304,9 @@ DEFAULTS = {
     # Timeout Members always may.
     "deadchat_min_level_role_id": None,
     "deadchat_ping_roles": [],
+    # `deadchat_admin_only` overrides both of the above AND the staff bypass:
+    # only Administrator may run /deadchat (home server, Paul 10/14).
+    "deadchat_admin_only": 0,
     # ── automation rules (cogs/auto_rules.py) ─────────────────────────────────
     # The dashboard's rule builder writes these. `rules` is a LIST of rule
     # objects, not flat keys — see cogs/auto_rules.py for the shape and for why

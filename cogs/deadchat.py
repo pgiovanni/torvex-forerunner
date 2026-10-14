@@ -33,10 +33,14 @@ server"): two dashboard fields, both blank = any member.
     most active people. A role that isn't a level tier simply has to be held.
   * `deadchat_ping_roles` — roles that may always ping (staff, boosters…).
   Members who can Manage Messages or Timeout Members always pass.
+  * `deadchat_admin_only` (Paul, 2026-10-14: "turn dead chat ping off for
+    everyone other than administrators") — a switch that overrides both
+    fields AND the staff bypass: only members with Administrator may run
+    /deadchat. Off by default; the home server has it on.
 
 Config keys (utils/security_config.DEFAULTS, mirrored in the dashboard):
   deadchat_enabled, deadchat_role_id, deadchat_cooldown_min, deadchat_channels,
-  deadchat_min_level_role_id, deadchat_ping_roles
+  deadchat_min_level_role_id, deadchat_ping_roles, deadchat_admin_only
 """
 import os
 import sys
@@ -121,9 +125,19 @@ def ping_roles(cfg) -> set:
     return out
 
 
+def admin_only(cfg) -> bool:
+    """The 'Administrators only' switch. Anything truthy but not an obvious
+    'off' counts — the dashboard stores 1/0, the bot must not reopen the
+    door on a stray '0'/'false' string."""
+    v = cfg.get("deadchat_admin_only")
+    if isinstance(v, str):
+        return v.strip().lower() not in ("", "0", "false", "no", "off")
+    return bool(v)
+
+
 def restricted(cfg) -> bool:
-    """True when the card limits who may ping (either field set)."""
-    return min_level_role(cfg) is not None or bool(ping_roles(cfg))
+    """True when the card limits who may ping (admin-only, or either field set)."""
+    return admin_only(cfg) or min_level_role(cfg) is not None or bool(ping_roles(cfg))
 
 
 def qualifying_level_roles(min_rid, mapping) -> set:
@@ -137,10 +151,13 @@ def qualifying_level_roles(min_rid, mapping) -> set:
     return {rid for rid, lvl in tiers.items() if lvl >= tier}
 
 
-def can_ping(cfg, member_role_ids, is_mod=False, mapping=None) -> bool:
+def can_ping(cfg, member_role_ids, is_mod=False, mapping=None, is_admin=False) -> bool:
     """Whether this member may run /deadchat. Open server (nothing configured)
-    → yes. Otherwise mods, the always-allowed roles, or a level tier at/above
+    → yes. Administrators-only switch → Administrator and nobody else, not even
+    mods. Otherwise mods, the always-allowed roles, or a level tier at/above
     the minimum."""
+    if admin_only(cfg):
+        return bool(is_admin)
     if not restricted(cfg):
         return True
     if is_mod:
@@ -201,7 +218,8 @@ class DeadChat(commands.Cog):
             return
         if not can_ping(cfg, [r.id for r in interaction.user.roles],
                         is_mod(interaction.user.guild_permissions),
-                        await self._level_mapping(guild.id)):
+                        await self._level_mapping(guild.id),
+                        is_admin=interaction.user.guild_permissions.administrator):
             await interaction.response.send_message(
                 self._who_may_text(guild, cfg), ephemeral=True,
                 allowed_mentions=discord.AllowedMentions.none())
@@ -252,6 +270,8 @@ class DeadChat(commands.Cog):
 
     @staticmethod
     def _who_may_text(guild, cfg) -> str:
+        if admin_only(cfg):
+            return "Dead Chat pings here are for administrators only."
         parts = []
         min_rid = min_level_role(cfg)
         if min_rid is not None:

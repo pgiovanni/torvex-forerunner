@@ -119,6 +119,22 @@ class WhoMayPing(unittest.TestCase):
         self.assertFalse(D.can_ping(self.CFG, [150], False, {}))
         self.assertFalse(D.can_ping(self.CFG, [150], False, None))
 
+    def test_admin_only_switch_shuts_everyone_but_administrators(self):
+        # Paul 10/14: "turn dead chat ping off for everyone other than administrators"
+        cfg = dict(self.CFG, deadchat_admin_only=1)
+        self.assertTrue(D.admin_only(cfg))
+        self.assertTrue(D.restricted({"deadchat_admin_only": 1}))
+        self.assertTrue(D.can_ping(cfg, [], False, self.MAP, is_admin=True))
+        self.assertFalse(D.can_ping(cfg, [], True, self.MAP))                 # a mod is not an admin
+        self.assertFalse(D.can_ping(cfg, [900, 150], False, self.MAP))        # always-role + Level 50+
+        self.assertFalse(D.can_ping({"deadchat_admin_only": 1}, [], True, {}))  # nothing else set
+        # off / junk-off strings leave the normal rules in place
+        for off in (0, "", "0", "false", None):
+            self.assertFalse(D.admin_only({"deadchat_admin_only": off}))
+        self.assertTrue(D.can_ping(dict(self.CFG, deadchat_admin_only="0"), [], True, self.MAP))
+        self.assertTrue(D.admin_only({"deadchat_admin_only": "1"}))
+        self.assertTrue(D.admin_only({"deadchat_admin_only": True}))
+
     def test_junk_config_fails_closed_to_open(self):
         # unparsable role id / junk list entries = "not configured", same rule as deadchat_role_id
         self.assertIsNone(D.min_level_role({"deadchat_min_level_role_id": "abc"}))
