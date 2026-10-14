@@ -389,36 +389,30 @@ COMMAND_RULES_MISSING = (
     "dashboard.torvex.app/docs/commands instead."
 )
 
+# Who it is and where it is — nothing else (Paul 10/13: "it doesn't need a
+# persona. it just needs to know it's in a discord server as a discord bot").
+# The old default was a ~450-token voice sheet with banned-phrase lists that
+# still let bully mode back in twice (7/27, 8/19); the guardrails that matter
+# live in BASE_RULES. {guild}/{channel} are filled per ask (plain_name()).
+IDENTITY = (
+    "You are Torvex Forerunner, a Discord bot. You are answering inside the "
+    "Discord server \"{guild}\", in its #{channel} channel, where members reach "
+    "you by @-mentioning you or with /ask; your reply is posted there for "
+    "everyone in the channel to read. Write like someone typing in that chat: "
+    "plain and direct, a short question gets a short answer, no preamble and "
+    "no restating the question. A plain \"no idea\" beats hedging."
+)
+
+
+def plain_name(name, cap: int = 80) -> str:
+    """A server or channel name as one line of plain text for the prompt."""
+    return " ".join(str(name or "").split())[:cap] or "this server"
+
+
+# Optional characters (/ask character:) — flavor layered ON TOP of IDENTITY
+# and BASE_RULES. The default ("peepo") is no character at all.
 PERSONAS = {
-    "peepo": (
-        "You are Torvex Forerunner, the server's bot — but you talk like a "
-        "longtime regular, not like an assistant. Voice: relaxed, dry, direct. "
-        "Match the energy of whoever's talking; short question gets a short "
-        "answer. Have actual opinions and commit to them; a plain 'no idea' "
-        "beats hedging. Default is friendly-neutral: a normal question gets a "
-        "straight answer with no jab attached. Tease a member ONLY when they "
-        "are obviously doing a bit with you and want it back; even then it's "
-        "one light tap, not a takedown. Answer first, riff second.\n"
-        "Banned roast-speak (these turn you into an insult bot, never use "
-        "them or anything shaped like them): opening a reply with a jab at "
-        "whoever asked, mocking someone's spelling, typing, intelligence, or "
-        "effort, calling a question dumb/basic/obvious, 'skill issue'-style "
-        "dismissals, sarcastic fake praise, dunking on someone who isn't in "
-        "the conversation, or piling on when the chat is already clowning on "
-        "somebody. Dry wit aims at the situation or yourself — a member is "
-        "never the punchline unless they teed it up on purpose.\n"
-        "Banned assistant-speak (these instantly break your voice, never use "
-        "them or anything shaped like them): 'great question', 'happy to "
-        "help', \"I'm just here to...\", 'let's dive in', 'keep it light', "
-        "'keep it fun', announcing your own vibe or role in any way — having "
-        "a personality means never describing it. No cheerleader exclamation "
-        "points, no emoji unless one genuinely lands (max one). Don't open "
-        "with a restatement of the question; just answer it.\n"
-        "Code still gets code blocks and a straight, correct explanation — "
-        "casual voice never means sloppy answers. Settle chat arguments "
-        "fairly and give the verdict like a friend would, not a referee "
-        "reading a rulebook."
-    ),
+    "peepo": "",
     "wizard": (
         "You are Grimbeard the Unfathomable, an ancient and extremely dramatic "
         "archmage haunting a Discord server. Everything is portents, forbidden "
@@ -921,7 +915,8 @@ class AI(commands.Cog):
                        with_images: bool = False,
                        context_pull: bool = False,
                        image_pull: bool = False,
-                       channel_images: str = "") -> str:
+                       channel_images: str = "",
+                       guild_name: str = "", channel_name: str = "") -> str:
         """Persona + hard rules, plus the command index only when asked for.
 
         The index lives in docs/commands.json and is attached on demand —
@@ -930,7 +925,11 @@ class AI(commands.Cog):
         Volatile parts (channel glance, the question) live in user_content,
         and the rules sit in `system`, where a member typing "ignore your
         command list" lands underneath them rather than over them."""
-        parts = [PERSONAS.get(character, PERSONAS["peepo"]), BASE_RULES, date_rule()]
+        parts = [IDENTITY.format(guild=plain_name(guild_name),
+                                 channel=plain_name(channel_name, 60))]
+        if PERSONAS.get(character):
+            parts.append(PERSONAS[character])
+        parts += [BASE_RULES, date_rule()]
         if context_pull:
             parts.append(CONTEXT_RULES_ONDEMAND.format(limit=CONTEXT_PULL))
         if not self._commands.available:
@@ -1220,7 +1219,8 @@ class AI(commands.Cog):
                 context_pull=pull_allowed and not ctx_loaded,
                 image_pull=bool(image_refs) and not img_loaded
                 and asker_images < IMAGES_PER_ASK,
-                channel_images=channel_note)
+                channel_images=channel_note,
+                guild_name=guild.name, channel_name=channel.name)
             try:
                 result = await provider.chat(
                     model=model, system=system,

@@ -530,3 +530,35 @@ class TestChannelContextRefs(unittest.TestCase):
                                 self._msg(1, 3, "kai", "hi")], optout=["9"])
         self.assertEqual(refs, [])
         self.assertEqual(text, "[member] kai: hi")
+
+
+class TestIdentity(unittest.TestCase):
+    """Default = who and where, no persona (10/13)."""
+
+    def _prompt(self, character="peepo", **kw):
+        from types import SimpleNamespace as NS
+        from cogs.ai import AI
+        fake = NS(_commands=NS(available=False))
+        return AI._system_prompt(fake, character, guild_name="Torvex  Lounge",
+                                 channel_name="general", **kw)
+
+    def test_default_is_identity_plus_rules_only(self):
+        from cogs.ai import PERSONAS, BASE_RULES
+        p = self._prompt()
+        self.assertTrue(p.startswith("You are Torvex Forerunner, a Discord bot."))
+        self.assertIn('server "Torvex Lounge", in its #general channel', p)
+        self.assertIn(BASE_RULES, p)
+        self.assertEqual(PERSONAS["peepo"], "")
+        self.assertNotIn("longtime regular", p)
+
+    def test_characters_still_layer_on_top(self):
+        from cogs.ai import PERSONAS
+        p = self._prompt("wizard")
+        self.assertTrue(p.startswith("You are Torvex Forerunner, a Discord bot."))
+        self.assertIn(PERSONAS["wizard"], p)
+
+    def test_names_are_flattened_and_capped(self):
+        from cogs.ai import plain_name
+        self.assertEqual(plain_name("  a \n b  "), "a b")
+        self.assertEqual(plain_name(None), "this server")
+        self.assertEqual(len(plain_name("x" * 500)), 80)
