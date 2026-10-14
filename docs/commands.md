@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **222 commands** (96 top-level, the rest subcommands) across 40 cogs
+- **223 commands** (97 top-level, the rest subcommands) across 40 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -23,7 +23,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 ## Index
 
-**Security** — `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/honeypot`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recon-status`, `/recon-unblock`, `/security-ai`, `/security`, `/simpleverify`, `/structure-restore`, `/unquarantine`, `/verify`
+**Security** — `/allow-invite`, `/altguard-check`, `/altguard-gate`, `/altguard-lookup`, `/altguard-release`, `/altguard-sweep`, `/altguard-unwatch`, `/altguard-verify-panel`, `/altguard-watch`, `/antinuke`, `/hitlist`, `/honeypot`, `/prune-config`, `/prune-run`, `/prune-status`, `/quarantine-lock`, `/quarantine`, `/recon-status`, `/recon-unblock`, `/security-ai`, `/security`, `/simpleverify`, `/structure-restore`, `/unquarantine`, `/verify`
 
 **Moderation** — `/ban`, `/clear-warning`, `/clear-warnings`, `/conduct-forget`, `/evidence`, `/kick`, `/lock`, `/msglog`, `/note`, `/prune-messages`, `/quiet-kick`, `/timeout`, `/unban`, `/unlock`, `/untimeout`, `/warn`, `/warnings`
 
@@ -497,6 +497,22 @@ Force-lock the quarantine role out of every channel (admin)
 ### LinkGuard
 
 <sub>`cogs/link_guard.py`</sub>
+
+#### `/allow-invite`
+
+Let a member post ONE invite to another server (a one-time pass). 0 uses = revoke.
+
+```
+/allow-invite <member> [uses] [hours]
+```
+
+**Access:** Requires **Manage Messages** &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `member` | user | Yes | Who you're approving |
+| `uses` | integer | No | How many foreign invites they may post (default 1). 0 revokes. *(range 0–10)* |
+| `hours` | integer | No | The pass expires unused after this many hours (default 24). *(range 1–168)* |
 
 #### `/hitlist add`
 

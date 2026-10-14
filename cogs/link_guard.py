@@ -476,6 +476,15 @@ def _init_tripdb():
                    granted_by TEXT, granted_ts REAL,
                    PRIMARY KEY (guild_id, user_id))"""
         )
+        # One-time invite passes (2026-10-14, Paul: "someone wants to post an
+        # invite and i approve it i can give them one invite credit"). Counted
+        # in USES, not minutes: each foreign invite they post spends one.
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS invite_passes (
+                   guild_id TEXT, user_id TEXT, uses_left INTEGER, expires_ts REAL,
+                   granted_by TEXT, granted_ts REAL,
+                   PRIMARY KEY (guild_id, user_id))"""
+        )
         # AutoMod link-policy hits — the durable record the mod-log card summarises
         c.execute(
             """CREATE TABLE IF NOT EXISTS link_policy_hits (
@@ -511,6 +520,75 @@ def _set_pass(guild_id, user_id, minutes, granted_by):
                   "granted_ts=excluded.granted_ts",
                   (str(guild_id), str(user_id), exp, str(granted_by), time.time()))
         return exp
+
+
+INVITE_PASS_USES_MAX = 10
+INVITE_PASS_HOURS_MAX = 168
+
+
+def _get_invite_pass(guild_id, user_id, now=None):
+    """The member's live invite pass, or None (expired rows read as None)."""
+    now = time.time() if now is None else now
+    try:
+        with _tripdb() as c:
+            r = c.execute("SELECT * FROM invite_passes WHERE guild_id=? AND user_id=?",
+                          (str(guild_id), str(user_id))).fetchone()
+    except sqlite3.Error:
+        return None
+    if not r or int(r["uses_left"] or 0) <= 0 or float(r["expires_ts"] or 0) <= now:
+        return None
+    return dict(r)
+
+
+def _set_invite_pass(guild_id, user_id, uses, hours, granted_by):
+    """uses <= 0 revokes. Returns the stored row, or None when revoked. A
+    re-grant REPLACES (not adds to) whatever they had — the mod said 'one'."""
+    uses = max(0, min(INVITE_PASS_USES_MAX, int(uses)))
+    hours = max(1, min(INVITE_PASS_HOURS_MAX, int(hours)))
+    with _tripdb() as c:
+        if uses <= 0:
+            c.execute("DELETE FROM invite_passes WHERE guild_id=? AND user_id=?",
+                      (str(guild_id), str(user_id)))
+            return None
+        now = time.time()
+        row = {"guild_id": str(guild_id), "user_id": str(user_id), "uses_left": uses,
+               "expires_ts": now + hours * 3600, "granted_by": str(granted_by), "granted_ts": now}
+        c.execute("INSERT INTO invite_passes(guild_id,user_id,uses_left,expires_ts,granted_by,granted_ts) "
+                  "VALUES (:guild_id,:user_id,:uses_left,:expires_ts,:granted_by,:granted_ts) "
+                  "ON CONFLICT(guild_id,user_id) DO UPDATE SET uses_left=excluded.uses_left, "
+                  "expires_ts=excluded.expires_ts, granted_by=excluded.granted_by, "
+                  "granted_ts=excluded.granted_ts", row)
+        return row
+
+
+def _consume_invite_pass(guild_id, user_id, now=None):
+    """Spend one use. Returns the pass with `uses_left` = what remains AFTER
+    this use, or None when they hold no live pass. One transaction, so two
+    invites in the same second can't both ride one use."""
+    now = time.time() if now is None else now
+    try:
+        with _tripdb() as c:
+            c.execute("BEGIN IMMEDIATE")
+            r = c.execute("SELECT * FROM invite_passes WHERE guild_id=? AND user_id=?",
+                          (str(guild_id), str(user_id))).fetchone()
+            if not r:
+                return None
+            if int(r["uses_left"] or 0) <= 0 or float(r["expires_ts"] or 0) <= now:
+                c.execute("DELETE FROM invite_passes WHERE guild_id=? AND user_id=?",
+                          (str(guild_id), str(user_id)))
+                return None
+            left = int(r["uses_left"]) - 1
+            if left <= 0:
+                c.execute("DELETE FROM invite_passes WHERE guild_id=? AND user_id=?",
+                          (str(guild_id), str(user_id)))
+            else:
+                c.execute("UPDATE invite_passes SET uses_left=? WHERE guild_id=? AND user_id=?",
+                          (left, str(guild_id), str(user_id)))
+            out = dict(r)
+            out["uses_left"] = left
+            return out
+    except sqlite3.Error:
+        return None
 
 
 def _count_link_hits(guild_id, user_id):
@@ -1230,6 +1308,15 @@ class LinkGuard(commands.Cog):
         if invite_exempt(cfg, [r.id for r in member.roles], _is_staff(member, cfg)):
             return  # the configured exempt-role list (or staff perms, if that switch is on) — table only
 
+        # An approved one-off (/allow-invite) is spent here, before anything
+        # counts or acts: the post stands, the spam clock doesn't tick, the
+        # mod-log says who approved it. A mod's explicit yes beats a trip.
+        used = _consume_invite_pass(guild.id, author.id, now)
+        if used:
+            await self._invite_alert(guild, cfg, message.channel, member, foreign,
+                                     False, False, {}, 0, 0, invite_mode(cfg), passed=used)
+            return
+
         enforce = bool(cfg.get("linkguard_enforce"))
         key = (guild.id, author.id)
         if self._invite_tripped.get(key, 0) > now:
@@ -1272,11 +1359,13 @@ class LinkGuard(commands.Cog):
                                  hit, enforce, acts, s_win, len(times), mode)
 
     async def _invite_alert(self, guild, cfg, channel, member, foreign, hit,
-                            enforce, acts, window, n, mode="log"):
+                            enforce, acts, window, n, mode="log", passed=None):
         ch = self._modlog(guild, cfg)
         if ch is None:
             return
-        if hit:
+        if passed:
+            title, color = "📨✅ Foreign invite posted — approved (one-time pass)", 0x3BA55D
+        elif hit:
             title, color = "📨🚨 LinkGuard — invite SPAM", 0x8B0000
         else:
             title, color = "📨 Foreign server invite posted", 0xE0A23B
@@ -1300,7 +1389,14 @@ class LinkGuard(commands.Cog):
         if prior > 1:
             embed.add_field(name="On record",
                             value=f"{prior} invite post(s) logged", inline=True)
-        if hit:
+        if passed:
+            left = int(passed.get("uses_left") or 0)
+            embed.add_field(
+                name="Action",
+                value=f"✅ left up — pass granted by <@{passed.get('granted_by')}>; "
+                      + (f"**{left}** use(s) left" if left else "that was their last use"),
+                inline=False)
+        elif hit:
             embed.add_field(
                 name="Pattern",
                 value=f"**{n}** foreign invites inside **{window}s** — counted across "
@@ -1479,6 +1575,55 @@ class LinkGuard(commands.Cog):
                     f"🔗 Link pass {'revoked for' if exp is None else 'granted to'} {member.mention} "
                     f"by {interaction.user.mention}"
                     + ("" if exp is None else f" — until <t:{int(exp)}:t>"),
+                    allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                pass
+
+    @app_commands.command(name="allow-invite",
+                          description="Let a member post ONE invite to another server (a one-time pass). 0 uses = revoke.")
+    @app_commands.describe(member="Who you're approving",
+                           uses="How many foreign invites they may post (default 1). 0 revokes.",
+                           hours="The pass expires unused after this many hours (default 24).")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_messages=True)
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def allow_invite_cmd(self, interaction: discord.Interaction, member: discord.Member,
+                               uses: app_commands.Range[int, 0, INVITE_PASS_USES_MAX] = 1,
+                               hours: app_commands.Range[int, 1, INVITE_PASS_HOURS_MAX] = 24):
+        guild = interaction.guild
+        cfg = get_config(guild.id)
+        if member.bot:
+            await interaction.response.send_message(
+                "Bots aren't policed for invites — nothing to pass.", ephemeral=True)
+            return
+        row = _set_invite_pass(guild.id, member.id, int(uses), int(hours), interaction.user.id)
+        if row is None:
+            msg = f"📨 Invite pass for {member.mention} **revoked**."
+        else:
+            exp = int(row["expires_ts"])
+            n = int(row["uses_left"])
+            plural = "s" if n != 1 else ""
+            msg = (f"📨 {member.mention} may post **{n}** invite{plural} to another server "
+                   f"— unused, it expires <t:{exp}:R>.")
+            notes = []
+            if not is_enabled(guild.id, "linkguard") or not cfg.get("linkguard_invites", 1):
+                notes.append("invite capture is **off** here, so nothing was blocking them anyway")
+            elif invite_mode(cfg) == "log" and not bool(cfg.get("linkguard_enforce")):
+                notes.append("foreign invites are only **logged** here, so this mostly marks the post as approved")
+            if invite_exempt(cfg, [r.id for r in member.roles], _is_staff(member, cfg)):
+                notes.append("they're already **exempt** (staff / exempt role) — the pass won't be needed")
+            if notes:
+                msg += "\n-# " + "; ".join(notes) + "."
+        await interaction.response.send_message(msg, ephemeral=True,
+                                                allowed_mentions=discord.AllowedMentions.none())
+        ch = self._automod_log(guild, cfg)
+        if ch is not None:
+            try:
+                await ch.send(
+                    f"📨 Invite pass {'revoked for' if row is None else 'granted to'} {member.mention} "
+                    f"by {interaction.user.mention}"
+                    + ("" if row is None else
+                       f" — {int(row['uses_left'])} use(s), expires <t:{int(row['expires_ts'])}:R>"),
                     allowed_mentions=discord.AllowedMentions.none())
             except discord.HTTPException:
                 pass

@@ -496,6 +496,14 @@
       ]
     },
     {
+      "name": "allow-invite",
+      "description": "Let a member post ONE invite to another server (a one-time pass). 0 uses = revoke.",
+      "cog": "link_guard",
+      "required_permissions": [
+        "manage_messages"
+      ]
+    },
+    {
       "name": "altguard-verify-panel",
       "description": "Post click-to-verify button (admin)",
       "cog": "altguard",

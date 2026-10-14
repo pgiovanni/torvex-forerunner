@@ -15,6 +15,7 @@ import datetime
 import os
 import sys
 import tempfile
+import time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
@@ -193,6 +194,52 @@ check("_is_staff: narrowed to admin-only, an admin still is",
       lg._is_staff(admin, {"automod_staff_perms": ["administrator"]}) is True)
 check("_is_staff: cfg omitted entirely still works (old call shape)",
       lg._is_staff(mod) is True)
+
+
+# ------------------------------------------- one-time invite passes (10/14)
+# Paul: "someone wants to post an invite and i approve it i can give them one
+# invite credit." /allow-invite stores USES; each foreign invite spends one.
+with tempfile.TemporaryDirectory() as td:
+    real = lg._TRIPDB
+    lg._TRIPDB = os.path.join(td, "p.db")
+    try:
+        lg._init_tripdb()
+        G, U = "1", "42"
+        check("pass: none to start", lg._get_invite_pass(G, U) is None)
+        check("pass: consume with none held -> None", lg._consume_invite_pass(G, U) is None)
+        row = lg._set_invite_pass(G, U, 1, 24, "mod1")
+        check("pass: grant stores 1 use, 24h", row["uses_left"] == 1
+              and abs(row["expires_ts"] - (time.time() + 24 * 3600)) < 5)
+        check("pass: readable while live", lg._get_invite_pass(G, U)["granted_by"] == "mod1")
+        used = lg._consume_invite_pass(G, U)
+        check("pass: first use spends it, reports 0 left", bool(used) and used["uses_left"] == 0
+              and used["granted_by"] == "mod1")
+        check("pass: second invite gets nothing", lg._consume_invite_pass(G, U) is None)
+        check("pass: row gone after last use", lg._get_invite_pass(G, U) is None)
+        lg._set_invite_pass(G, U, 3, 1, "mod1")
+        check("pass: 3 uses count down 2,1,gone",
+              lg._consume_invite_pass(G, U)["uses_left"] == 2
+              and lg._consume_invite_pass(G, U)["uses_left"] == 1
+              and lg._consume_invite_pass(G, U)["uses_left"] == 0
+              and lg._consume_invite_pass(G, U) is None)
+        lg._set_invite_pass(G, U, 1, 1, "mod1")
+        check("pass: expired -> not live, consume returns None and clears it",
+              lg._get_invite_pass(G, U, now=time.time() + 3601) is None
+              and lg._consume_invite_pass(G, U, now=time.time() + 3601) is None
+              and lg._get_invite_pass(G, U) is None)
+        lg._set_invite_pass(G, U, 5, 1, "mod1")
+        check("pass: re-grant REPLACES, never adds",
+              lg._set_invite_pass(G, U, 1, 1, "mod2")["uses_left"] == 1
+              and lg._get_invite_pass(G, U)["granted_by"] == "mod2")
+        check("pass: 0 uses revokes", lg._set_invite_pass(G, U, 0, 1, "mod2") is None
+              and lg._get_invite_pass(G, U) is None)
+        check("pass: clamped to the caps",
+              lg._set_invite_pass(G, U, 999, 99999, "m")["uses_left"] == lg.INVITE_PASS_USES_MAX
+              and abs(lg._get_invite_pass(G, U)["expires_ts"]
+                      - (time.time() + lg.INVITE_PASS_HOURS_MAX * 3600)) < 5)
+        check("pass: per guild", lg._get_invite_pass("2", U) is None)
+    finally:
+        lg._TRIPDB = real
 
 print(f"\n{_total - len(_fails)}/{_total} passed")
 sys.exit(1 if _fails else 0)

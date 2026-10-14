@@ -2128,6 +2128,42 @@
    "dm_allowed": false
   },
   {
+   "path": "allow-invite",
+   "description": "Let a member post ONE invite to another server (a one-time pass). 0 uses = revoke.",
+   "params": [
+    {
+     "name": "member",
+     "type": "user",
+     "required": true,
+     "description": "Who you're approving"
+    },
+    {
+     "name": "uses",
+     "type": "integer",
+     "required": false,
+     "description": "How many foreign invites they may post (default 1). 0 revokes.",
+     "min": 0,
+     "max": 10
+    },
+    {
+     "name": "hours",
+     "type": "integer",
+     "required": false,
+     "description": "The pass expires unused after this many hours (default 24).",
+     "min": 1,
+     "max": 168
+    }
+   ],
+   "signature": "/allow-invite <member> [uses] [hours]",
+   "root": "allow-invite",
+   "cog": "link_guard",
+   "permissions": [
+    "Manage Messages"
+   ],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "hitlist add",
    "description": "Add a domain to this server's grabber/canary hitlist.",
    "params": [
@@ -5709,6 +5745,16 @@
   "hitlist pass": {
    "cog": "link_guard",
    "visibility_permissions": [],
+   "runtime_permissions": [
+    "manage_messages"
+   ],
+   "server_owner_only": false
+  },
+  "allow-invite": {
+   "cog": "link_guard",
+   "visibility_permissions": [
+    "manage_messages"
+   ],
    "runtime_permissions": [
     "manage_messages"
    ],
