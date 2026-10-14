@@ -100,3 +100,15 @@ def test_fetched_bytes_become_inline_images():
     assert parts[2]["image_url"]["url"] == "https://cdn/x.png"
     blocks = anthropic_user_content("q", [img])
     assert blocks[0]["source"] == {"type": "base64", "media_type": "image/png", "data": "AAAA"}
+
+
+def test_reasoning_kwargs(monkeypatch):
+    from utils.ai_provider import reasoning_kwargs
+    assert reasoning_kwargs("low") == {"reasoning": {"effort": "low"}}
+    assert reasoning_kwargs(" High ") == {"reasoning": {"effort": "high"}}
+    assert reasoning_kwargs("off") == {}          # not a thing: provider default
+    assert reasoning_kwargs("") == {}
+    monkeypatch.delenv("AI_REASONING_EFFORT", raising=False)
+    assert reasoning_kwargs() == {}
+    monkeypatch.setenv("AI_REASONING_EFFORT", "minimal")
+    assert reasoning_kwargs() == {"reasoning": {"effort": "minimal"}}

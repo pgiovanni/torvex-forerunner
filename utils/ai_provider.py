@@ -114,6 +114,22 @@ def parse_openai_response(data: dict) -> ChatResult:
     return ChatResult(text, tokens_in, tokens_out, refusal)
 
 
+# Reasoning effort on the OpenAI dialect (OpenRouter). Measured on prod 10/13
+# with Sonnet 5.5: the provider default is ADAPTIVE reasoning — 45 tokens of
+# thinking on "how many e's in seventeen", 313 on a line of banter — all
+# billed as output at $10/M. `{"enabled": false}` is a 400 there ("Reasoning
+# is mandatory for this endpoint"); `{"effort": "low"}` ran with 0 reasoning
+# tokens and the same correct answers. Unset = provider default; the operator
+# picks the trade with AI_REASONING_EFFORT (minimal / low / medium / high).
+_EFFORTS = ("minimal", "low", "medium", "high")
+
+
+def reasoning_kwargs(effort=None) -> dict:
+    """The extra request fields for the chosen effort; {} for unset/invalid."""
+    e = (os.getenv("AI_REASONING_EFFORT", "") if effort is None else effort).strip().lower()
+    return {"reasoning": {"effort": e}} if e in _EFFORTS else {}
+
+
 class OpenAICompatProvider:
     """Any API speaking the OpenAI /chat/completions dialect."""
 
@@ -130,6 +146,7 @@ class OpenAICompatProvider:
                 {"role": "system", "content": system},
                 {"role": "user", "content": openai_user_message(user_content, images)},
             ],
+            **reasoning_kwargs(),
         }
         headers = {"Authorization": f"Bearer {self.api_key}"}
         timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_S)
