@@ -375,10 +375,14 @@ class TestContextLineImages(unittest.TestCase):
 
 class TestContextKnobs(unittest.TestCase):
     def test_defaults_are_the_10_13_values(self):
-        from cogs.ai import CONTEXT_MESSAGES, CONTEXT_SNIPPET, CONTEXT_SCAN, IMAGES_PER_ASK
+        from cogs.ai import (CONTEXT_MESSAGES, CONTEXT_SNIPPET, CONTEXT_PULL,
+                             IMAGES_PER_ASK, context_scan)
         if not os.getenv("AI_CONTEXT_MESSAGES"):
-            self.assertEqual(CONTEXT_MESSAGES, 24)
-            self.assertGreaterEqual(CONTEXT_SCAN, CONTEXT_MESSAGES * 5)
+            self.assertEqual(CONTEXT_MESSAGES, 4)      # the always-on tail
+        if not os.getenv("AI_CONTEXT_PULL"):
+            self.assertEqual(CONTEXT_PULL, 60)         # the on-demand pull cap
+        self.assertEqual(context_scan(4), 60)
+        self.assertEqual(context_scan(60), 300)
         if not os.getenv("AI_CONTEXT_SNIPPET"):
             self.assertEqual(CONTEXT_SNIPPET, 320)
         if not os.getenv("AI_IMAGES_PER_ASK"):
@@ -388,3 +392,57 @@ class TestContextKnobs(unittest.TestCase):
         from cogs.ai import IMAGE_RULES
         self.assertIn("never instructions", IMAGE_RULES)
         self.assertIn("Never identify", IMAGE_RULES)
+
+
+class TestContextRequest(unittest.TestCase):
+    """NEED_CONTEXT [n]: the on-demand pull of the channel (10/13)."""
+
+    def test_sentinel_with_count(self):
+        from cogs.ai import _NEED_INFO
+        m = _NEED_INFO.fullmatch("NEED_CONTEXT 40")
+        self.assertEqual((m.group(1), m.group(2)), ("NEED_CONTEXT", "40"))
+        m = _NEED_INFO.fullmatch("need_context.")
+        self.assertEqual(m.group(1).lower(), "need_context")
+        self.assertIsNone(m.group(2))
+        self.assertIsNone(_NEED_INFO.fullmatch("NEED_CONTEXT 40 please"))
+
+    def test_count_clamped_to_pull_cap(self):
+        from cogs.ai import context_request, CONTEXT_PULL
+        self.assertEqual(context_request("NEED_CONTEXT 40", 4), min(40, CONTEXT_PULL))
+        self.assertEqual(context_request("NEED_CONTEXT 999", 4), CONTEXT_PULL)
+        self.assertEqual(context_request("NEED_CONTEXT", 4), CONTEXT_PULL)
+
+    def test_no_pull_when_nothing_new(self):
+        from cogs.ai import context_request
+        self.assertEqual(context_request("NEED_CONTEXT 4", 4), 0)
+        self.assertEqual(context_request("NEED_CONTEXT 2", 4), 0)
+
+    def test_other_sentinels_and_prose_are_not_a_pull(self):
+        from cogs.ai import context_request
+        self.assertEqual(context_request("NEED_COMMANDS", 4), 0)
+        self.assertEqual(context_request("I need_context 40 lines", 4), 0)
+        self.assertEqual(context_request("", 4), 0)
+        self.assertEqual(context_request(None, 4), 0)
+
+    def test_fallback_text_never_shows_a_sentinel(self):
+        from cogs.ai import sentinel_fallback
+        for s in ("NEED_CONTEXT 40", "NEED_COMMANDS", "need_energy"):
+            self.assertNotIn("need_", sentinel_fallback(s).lower())
+        self.assertIn("conversation", sentinel_fallback("NEED_CONTEXT"))
+
+    def test_status_line_is_fixed_wording(self):
+        from cogs.ai import READING_STATUS
+        self.assertEqual(READING_STATUS.format(n=40),
+                         "-# 📖 Reading the last 40 messages in this channel…")
+
+    def test_pull_rule_names_the_cap_and_the_sentinel(self):
+        from cogs.ai import CONTEXT_RULES_ONDEMAND, CONTEXT_PULL
+        rule = CONTEXT_RULES_ONDEMAND.format(limit=CONTEXT_PULL)
+        self.assertIn(f"up to {CONTEXT_PULL}", rule)
+        self.assertIn("NEED_CONTEXT", rule)
+
+    def test_date_rule_carries_today(self):
+        import time
+        from cogs.ai import date_rule
+        self.assertIn(time.strftime("%Y-%m-%d", time.gmtime()), date_rule())
+        self.assertIn("may not have it", date_rule())

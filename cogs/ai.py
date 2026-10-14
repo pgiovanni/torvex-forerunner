@@ -97,17 +97,35 @@ _MODEL_WORDS = ("gpt", "openai", "claude", "anthropic", "llm", "gemini",
 # USABLE lines, not fetched lines: the old code fetched exactly 12 and then
 # threw out bots, empties and opt-outs, so in a channel the bot is actively
 # chatting in, the model often got half that or less. Walk a wider window and
-# stop at CONTEXT_MESSAGES survivors.
+# stop at the wanted number of survivors.
 #
-# Operator env knobs (Paul 10/13: "give the bot a bit more context"). The glance
-# was 12 x 200 chars from launch to 10/13 -- the number the server was told in
-# public -- and is now 24 x 320 by default. AI_CONTEXT_MESSAGES=0 turns the
-# glance OFF entirely, so "we can switch it off" stays an honest sentence.
-# Cost is the only reason this isn't bigger: at Sonnet prices a full 24-line
-# glance is ~1-2k input tokens = 2-4 energy on top of the answer itself.
-CONTEXT_MESSAGES = max(0, int(os.getenv("AI_CONTEXT_MESSAGES") or 24))
-CONTEXT_SCAN = max(60, CONTEXT_MESSAGES * 5)   # raw messages walked to find them
+# Two layers (Paul 10/13: "remove the entire context send ... give it the
+# ability to peruse the message log when needed ... just for enough context"):
+#   AI_CONTEXT_MESSAGES — the TAIL: a few lines that ride along with every
+#     ask so a follow-up to the bot's own last reply works without a second
+#     round trip. 12 x 200 from launch to 10/13, 24 x 320 for an afternoon,
+#     now 4 x 320. 0 = the model never sees the channel at all, PULL included,
+#     so "we can switch it off" stays an honest sentence.
+#   AI_CONTEXT_PULL — the on-demand PULL: when the question is about the
+#     conversation itself the model replies NEED_CONTEXT [n] (see
+#     CONTEXT_RULES_ONDEMAND) and the ask runs again with up to this many
+#     lines. The bot says so in the channel when it does (READING_STATUS).
+#     It reads Discord's channel history for the channel asked in — NEVER
+#     the archive (deleted messages, every channel, every server): the
+#     privacy page promises exactly this, and it is the "spying" worry.
+# Cost is why the tail is small: at Sonnet prices a 24-line glance was
+# ~1-2k input tokens = 2-4 energy on EVERY ask, context-free trivia included.
+CONTEXT_MESSAGES = max(0, int(os.getenv("AI_CONTEXT_MESSAGES") or 4))
+CONTEXT_PULL = max(0, int(os.getenv("AI_CONTEXT_PULL") or 60))
 CONTEXT_SNIPPET = max(40, int(os.getenv("AI_CONTEXT_SNIPPET") or 320))  # chars per line
+# Fixed wording, count only — the model's sentinel never carries free text
+# into the channel, so this cannot become an injection surface.
+READING_STATUS = "-# 📖 Reading the last {n} messages in this channel…"
+
+
+def context_scan(lines: int) -> int:
+    """Raw messages walked to find `lines` usable ones."""
+    return max(60, lines * 5)
 
 # Images a member attaches to their question ride along to the model (both
 # providers take a URL; nothing is downloaded or kept). Only the ASKER's own
@@ -304,8 +322,40 @@ ENERGY_RULES_ONDEMAND = (
     "/ai-usage."
 )
 
+# Same protocol for the channel: the tail rides along, the rest is pulled on
+# request. Deliberately lists what counts as "about the conversation" so a
+# self-contained question (trivia, an image, code) never pays for a pull.
+CONTEXT_RULES_ONDEMAND = (
+    "You see at most the last few messages of this channel. More of the "
+    "conversation can be loaded for you. If — and only if — the question is "
+    "about the conversation itself beyond what you can see (what someone "
+    "meant or said, who said something, summarize or catch me up on the "
+    "chat, a follow-up whose subject isn't shown, a short message like 'is "
+    "that right?' that points at something you can't see) — reply with "
+    "exactly NEED_CONTEXT followed by the number of recent messages you want, "
+    "up to {limit} (for example NEED_CONTEXT 40), and nothing else; they will "
+    "be attached and the question asked again. A question that stands on its "
+    "own is answered directly."
+)
+
+
+def date_rule() -> str:
+    """Today's date in the system prompt (Paul 10/13, the Silksong miss): a
+    model that knows how far past its training it is says "that may be after
+    what I know" instead of asserting a stale fact."""
+    return (
+        f"Today's date is {time.strftime('%A %Y-%m-%d', time.gmtime())} (UTC). "
+        "Your training ends at some point before that; for anything that may "
+        "have happened since — releases, news, prices, who holds a job — say "
+        "you may not have it rather than guessing, and never present a guess "
+        "as a date or a fact."
+    )
+
+
 # The whole reply, give or take whitespace/punctuation, is a sentinel.
-_NEED_INFO = re.compile(r"\W*(need_commands|need_energy)\W*", re.IGNORECASE)
+# NEED_CONTEXT may carry a count ("NEED_CONTEXT 40") — group 2.
+_NEED_INFO = re.compile(
+    r"\W*(need_commands|need_energy|need_context)(?:\W+(\d{1,3}))?\W*", re.IGNORECASE)
 
 # The honest degradation when docs/commands.json is missing: no list means the
 # model must refuse to name commands, not improvise them.
@@ -510,6 +560,31 @@ def retry_attachments(reply_text, attach_cmds, attach_energy, commands_available
             bool(attach_energy or sentinel == "need_energy"))
 
 
+def context_request(reply_text, shown: int) -> int:
+    """How many channel lines the SECOND call should carry because the first
+    reply asked for them; 0 = it didn't, or can't. No number = the full
+    allowance; clamped to CONTEXT_PULL; a request for no more than the tail
+    already showed is not a request (nothing new to say). Pure, same reason
+    as retry_attachments."""
+    m = _NEED_INFO.fullmatch(reply_text.strip()) if reply_text else None
+    if not m or m.group(1).lower() != "need_context":
+        return 0
+    if CONTEXT_PULL <= 0 or CONTEXT_MESSAGES <= 0:
+        return 0
+    n = min(int(m.group(2)) if m.group(2) else CONTEXT_PULL, CONTEXT_PULL)
+    return n if n > shown else 0
+
+
+def sentinel_fallback(text: str) -> str:
+    """A sentinel survived both passes — a member must never see it."""
+    m = _NEED_INFO.fullmatch(text.strip())
+    if m and m.group(1).lower() == "need_context":
+        return ("I'd need more of the conversation for that and couldn't pull "
+                "it up just now — ask again with a bit more detail.")
+    return ("Check `/help` for commands — and the footer under my answers "
+            "shows energy. I couldn't pull up the details just now.")
+
+
 def quote_question(display_name: str, question: str) -> str:
     """One-line blockquote echoing the /ask question (slash args are hidden
     from chat), newlines collapsed so the quote can't escape the > prefix."""
@@ -517,6 +592,37 @@ def quote_question(display_name: str, question: str) -> str:
     if len(q) > QUOTE_CAP:
         q = q[:QUOTE_CAP] + "…"
     return f"> **{display_name}:** {q}"
+
+
+class _SlashProgress:
+    """After defer(thinking=True) the FIRST followup replaces Discord's own
+    "is thinking…" placeholder. Once that placeholder has been edited into a
+    status line, a followup would be a new message and the status would stay
+    behind — so after a status edit the answer edits the placeholder too.
+    edit_original_response has no embed-suppress flag, so when the answer
+    carries a link the message is re-fetched and suppressed the plain way
+    (best effort: a failure here only means a link may unfurl)."""
+
+    def __init__(self, interaction):
+        self.interaction = interaction
+        self.edited = False
+
+    async def status(self, text):
+        await self.interaction.edit_original_response(content=text)
+        self.edited = True
+
+    async def first_send(self, content, **kw):
+        if not self.edited:
+            return await self.interaction.followup.send(content, **kw)
+        msg = await self.interaction.edit_original_response(
+            content=content, allowed_mentions=kw.get("allowed_mentions"))
+        if kw.get("suppress_embeds") and "http" in content.lower():
+            try:
+                full = await self.interaction.channel.fetch_message(msg.id)
+                await full.edit(suppress=True)
+            except (discord.HTTPException, AttributeError) as e:
+                log.warning("could not suppress embeds on edited /ask reply: %s", e)
+        return msg
 
 
 class AI(commands.Cog):
@@ -697,6 +803,7 @@ class AI(commands.Cog):
                 # kept for template compat; face value == price by design now
                 "credit_compute_usd": CREDIT_PACK_USD,
                 "context_messages": CONTEXT_MESSAGES,
+                "context_pull": CONTEXT_PULL,
                 "context_snippet": CONTEXT_SNIPPET,
                 "images_per_ask": IMAGES_PER_ASK,
                 "enabled_guilds": sorted(str(g) for g in self._enabled_guild_ids()),
@@ -765,7 +872,8 @@ class AI(commands.Cog):
     def _system_prompt(self, character: str, with_commands: bool = False,
                        with_energy: bool = False,
                        policy: GuildAiPolicy = None,
-                       with_images: bool = False) -> str:
+                       with_images: bool = False,
+                       context_pull: bool = False) -> str:
         """Persona + hard rules, plus the command index only when asked for.
 
         The index lives in docs/commands.json and is attached on demand —
@@ -774,7 +882,9 @@ class AI(commands.Cog):
         Volatile parts (channel glance, the question) live in user_content,
         and the rules sit in `system`, where a member typing "ignore your
         command list" lands underneath them rather than over them."""
-        parts = [PERSONAS.get(character, PERSONAS["peepo"]), BASE_RULES]
+        parts = [PERSONAS.get(character, PERSONAS["peepo"]), BASE_RULES, date_rule()]
+        if context_pull:
+            parts.append(CONTEXT_RULES_ONDEMAND.format(limit=CONTEXT_PULL))
         if not self._commands.available:
             parts.append(COMMAND_RULES_MISSING)
         elif with_commands:
@@ -899,9 +1009,12 @@ class AI(commands.Cog):
 
     # ── context ───────────────────────────────────────────────────────────────
 
-    async def _channel_context(self, channel, guild, skip_message_id=None) -> str:
+    async def _channel_context(self, channel, guild, skip_message_id=None,
+                               limit=None) -> str:
         """Recent messages from the channel the bot was pinged in — whatever
-        channel that is.
+        channel that is. `limit=None` is the always-on tail (CONTEXT_MESSAGES);
+        the on-demand pull passes the number the model asked for. Discord's
+        channel history, never the archive.
 
         There is deliberately no public/private test here (Paul, 8/24: "it
         should only get the context of the channel it's in. public or not.").
@@ -915,12 +1028,13 @@ class AI(commands.Cog):
         staff answer and goes no further. Opting out (/ai-privacy) still
         removes a member from every transcript.
         """
-        if CONTEXT_MESSAGES <= 0:
-            return ""   # AI_CONTEXT_MESSAGES=0: the glance is off
+        want = CONTEXT_MESSAGES if limit is None else min(limit, CONTEXT_PULL)
+        if CONTEXT_MESSAGES <= 0 or want <= 0:
+            return ""   # AI_CONTEXT_MESSAGES=0: the model never sees the channel
         try:
             me = guild.me
             lines = []
-            async for m in channel.history(limit=CONTEXT_SCAN):
+            async for m in channel.history(limit=context_scan(want)):
                 if m.id == skip_message_id:
                     continue
                 # Its OWN turns stay in — without them the bot cannot see what
@@ -936,7 +1050,7 @@ class AI(commands.Cog):
                     continue
                 lines.append(context_line(me is not None and m.author.id == me.id,
                                           m.author.display_name, content, n_img))
-                if len(lines) >= CONTEXT_MESSAGES:
+                if len(lines) >= want:
                     break
             lines.reverse()
             return "\n".join(lines)
@@ -989,11 +1103,13 @@ class AI(commands.Cog):
 
     async def _generate(self, guild, channel, user, question, tier, character,
                         bucks_charged, skip_message_id=None, replied_to=None,
-                        images=None):
+                        images=None, status=None):
         """Call the model, meter the cost. Returns (text, footer, None) on
         success, (None, None, error_message) on failure (bucks refunded).
         `images` = URLs of the asker's own pictures (image_urls()), already
-        capped; they go to the model as-is and are never stored."""
+        capped; they go to the model as-is and are never stored.
+        `status(text)` is awaited once, before the re-ask, when the model
+        pulled more of the channel — so the people in it can see it happen."""
         model = MODEL_QUICK if tier == "quick" else MODEL_SMART
         user_id = str(user.id)
         policy = self._policy(guild.id)
@@ -1014,7 +1130,8 @@ class AI(commands.Cog):
             "energy", "ai-usage", "ai usage", "cooldown", "bucks", "cost", "pay"))
         system = self._system_prompt(character, with_commands=attach_cmds,
                                      with_energy=attach_energy, policy=policy,
-                                     with_images=bool(images))
+                                     with_images=bool(images),
+                                     context_pull=CONTEXT_PULL > 0 and CONTEXT_MESSAGES > 0)
         if images:
             images = await fetch_images(images)
 
@@ -1037,7 +1154,19 @@ class AI(commands.Cog):
 
         new_cmds, new_energy = retry_attachments(
             result.text, attach_cmds, attach_energy, self._commands.available)
-        if (new_cmds, new_energy) != (attach_cmds, attach_energy):
+        pull = context_request(result.text, len(context.splitlines()) if context else 0)
+        if (new_cmds, new_energy) != (attach_cmds, attach_energy) or pull:
+            if pull:
+                if status is not None:
+                    try:
+                        await status(READING_STATUS.format(n=pull))
+                    except discord.HTTPException as e:
+                        log.warning("context status line failed: %s", e)
+                context = await self._channel_context(channel, guild, skip_message_id,
+                                                      limit=pull)
+                user_content = build_user_content(channel.name, context, replied_to,
+                                                  user.display_name, question)
+            # one re-ask only: the pull offer is withdrawn on the second pass
             system = self._system_prompt(character, with_commands=new_cmds,
                                          with_energy=new_energy, policy=policy,
                                          with_images=bool(images))
@@ -1064,8 +1193,7 @@ class AI(commands.Cog):
         if _NEED_INFO.fullmatch(text.strip()):
             # a sentinel survived both passes (or the reference vanished
             # mid-flight) — a member must never see it
-            text = ("Check `/help` for commands — and the footer under my "
-                    "answers shows energy. I couldn't pull up the details just now.")
+            text = sentinel_fallback(text)
 
         # Prompt rules are a request; this is the check. Every /command in the
         # answer is resolved against the real command set, so a hallucinated
@@ -1155,16 +1283,18 @@ class AI(commands.Cog):
             return
 
         await interaction.response.defer(thinking=True)
+        progress = _SlashProgress(interaction)
 
         text, footer, err = await self._generate(
             interaction.guild, interaction.channel, interaction.user,
-            question, tier, character, bucks_charged, images=images)
+            question, tier, character, bucks_charged, images=images,
+            status=progress.status)
         if err:
-            await interaction.followup.send(err)
+            await progress.first_send(err)
             return
 
         body = quote_question(interaction.user.display_name, question) + "\n" + text
-        await self._send_reply(interaction.followup.send, interaction.channel, body, footer)
+        await self._send_reply(progress.first_send, interaction.channel, body, footer)
 
     # ── ping-to-chat: @Torvex Forerunner <question> ──────────────────────────
 
@@ -1265,21 +1395,35 @@ class AI(commands.Cog):
         if replied is not None:  # feed the answer being replied to, sans footer/echo
             replied_text = own_words(replied.content) or None
 
+        placeholder = None   # the "reading the last N messages" reply, if any
+
+        async def status(text):
+            nonlocal placeholder
+            placeholder = await message.reply(text, mention_author=False,
+                                              allowed_mentions=none)
+
+        async def first_send(content, **kw):
+            if placeholder is not None:   # the answer replaces the status line
+                try:
+                    return await placeholder.edit(
+                        content=content, allowed_mentions=none,
+                        suppress=bool(kw.get("suppress_embeds")))
+                except discord.HTTPException:
+                    pass
+            try:
+                return await message.reply(content, mention_author=False, **kw)
+            except discord.HTTPException:  # trigger deleted mid-generation
+                return await message.channel.send(content, **kw)
+
         async with message.channel.typing():
             text, footer, err = await self._generate(
                 message.guild, message.channel, message.author,
                 question, "smart", "peepo", bucks_charged,
                 skip_message_id=message.id, replied_to=replied_text,
-                images=images)
+                images=images, status=status)
         if err:
-            await message.reply(err, mention_author=False, allowed_mentions=none)
+            await first_send(err, allowed_mentions=none)
             return
-
-        async def first_send(content, **kw):
-            try:
-                return await message.reply(content, mention_author=False, **kw)
-            except discord.HTTPException:  # trigger deleted mid-generation
-                return await message.channel.send(content, **kw)
 
         await self._send_reply(first_send, message.channel, text, footer)
 
