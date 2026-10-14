@@ -446,3 +446,87 @@ class TestContextRequest(unittest.TestCase):
         from cogs.ai import date_rule
         self.assertIn(time.strftime("%Y-%m-%d", time.gmtime()), date_rule())
         self.assertIn("may not have it", date_rule())
+
+
+class TestImageRequest(unittest.TestCase):
+    """NEED_IMAGES n[, m]: pictures from the transcript, on demand (10/13)."""
+
+    def test_sentinel_with_list(self):
+        from cogs.ai import _NEED_INFO, sentinel_numbers
+        m = _NEED_INFO.fullmatch("NEED_IMAGES 3, #4")
+        self.assertEqual(m.group(1), "NEED_IMAGES")
+        self.assertEqual(sentinel_numbers(m), [3, 4])
+        self.assertEqual(sentinel_numbers(_NEED_INFO.fullmatch("NEED_CONTEXT 40")), [40])
+        self.assertEqual(sentinel_numbers(_NEED_INFO.fullmatch("need_commands.")), [])
+        self.assertIsNone(_NEED_INFO.fullmatch("NEED_IMAGES 3 and 4"))
+
+    def test_request_filters_dedupes_caps(self):
+        from cogs.ai import image_request
+        self.assertEqual(image_request("NEED_IMAGES 3, 1, 3, 9", 4, 4), [3, 1])
+        self.assertEqual(image_request("NEED_IMAGES 1 2 3", 3, 2), [1, 2])
+        self.assertEqual(image_request("NEED_IMAGES 2", 0, 4), [])
+        self.assertEqual(image_request("NEED_IMAGES 2", 4, 0), [])
+        self.assertEqual(image_request("NEED_IMAGES", 4, 4), [])
+        self.assertEqual(image_request("NEED_CONTEXT 2", 4, 4), [])
+        self.assertEqual(image_request(None, 4, 4), [])
+
+    def test_fallback_and_status(self):
+        from cogs.ai import sentinel_fallback, LOOKING_STATUS
+        self.assertIn("picture", sentinel_fallback("NEED_IMAGES 2"))
+        self.assertNotIn("need_", sentinel_fallback("NEED_IMAGES 2").lower())
+        self.assertEqual(LOOKING_STATUS.format(n=1, s=""),
+                         "-# 🖼️ Looking at 1 picture from this channel…")
+
+    def test_context_line_numbered_markers(self):
+        from cogs.ai import context_line
+        self.assertEqual(context_line(False, "kai", "look", image_ids=[3]),
+                         "[member] kai: look (+image #3)")
+        self.assertEqual(context_line(False, "kai", "", image_ids=[3, 4]),
+                         "[member] kai: (+images #3, #4)")
+        self.assertEqual(context_line(True, "bot", "card", 1), "[you]: card (+1 image)")
+
+
+class TestChannelContextRefs(unittest.TestCase):
+    """_channel_context numbers members' pictures oldest-first and returns
+    the URL behind each marker; the bot's own pictures are counted only."""
+
+    def _run(self, msgs, optout=()):
+        import asyncio
+        from types import SimpleNamespace as NS
+        from cogs.ai import AI
+
+        class Chan:
+            async def history(self, limit):
+                for m in msgs:          # newest first, like Discord
+                    yield m
+        guild = NS(me=NS(id=1))
+        fake = NS(_optout=set(optout))
+        return asyncio.run(AI._channel_context(fake, Chan(), guild))
+
+    @staticmethod
+    def _msg(mid, uid, name, content, urls=(), bot=False):
+        from types import SimpleNamespace as NS
+        atts = [_Att(u) for u in urls]
+        return NS(id=mid, author=NS(bot=bot, id=uid, display_name=name),
+                  content=content, attachments=atts)
+
+    def test_numbering_and_refs(self):
+        text, refs = self._run([
+            self._msg(4, 2, "mo", "", urls=["u3"]),
+            self._msg(3, 1, "bot", "a card", urls=["bot.png"], bot=True),
+            self._msg(2, 3, "kai", "pics", urls=["u1", "u2"]),
+            self._msg(1, 3, "kai", "hello"),
+        ])
+        self.assertEqual(refs, ["u1", "u2", "u3"])
+        self.assertEqual(text.splitlines(), [
+            "[member] kai: hello",
+            "[member] kai: pics (+images #1, #2)",
+            "[you]: a card (+1 image)",
+            "[member] mo: (+image #3)",
+        ])
+
+    def test_optout_pictures_are_never_referable(self):
+        text, refs = self._run([self._msg(2, 9, "x", "", urls=["secret"]),
+                                self._msg(1, 3, "kai", "hi")], optout=["9"])
+        self.assertEqual(refs, [])
+        self.assertEqual(text, "[member] kai: hi")

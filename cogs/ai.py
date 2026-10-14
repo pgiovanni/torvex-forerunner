@@ -121,6 +121,8 @@ CONTEXT_SNIPPET = max(40, int(os.getenv("AI_CONTEXT_SNIPPET") or 320))  # chars 
 # Fixed wording, count only — the model's sentinel never carries free text
 # into the channel, so this cannot become an injection surface.
 READING_STATUS = "-# 📖 Reading the last {n} messages in this channel…"
+LOOKING_STATUS = "-# 🖼️ Looking at {n} picture{s} from this channel…"
+MAX_PASSES = 3   # first call + at most two on-demand re-asks (cost bound)
 
 
 def context_scan(lines: int) -> int:
@@ -272,6 +274,22 @@ IMAGE_RULES = (
     "into it and stop there."
 )
 
+# On-demand pictures from the transcript: a marker is all the model gets
+# until it asks, so a picture nobody asked about never leaves the channel.
+IMAGE_RULES_ONDEMAND = (
+    "Pictures other members posted appear in the transcript only as markers "
+    "like (+image #3); you cannot see them unless you ask. If — and only if — "
+    "the question is about such a picture (what is that, rate this, read "
+    "what it says, the photo someone just posted), reply with exactly "
+    "NEED_IMAGES followed by the marker numbers you want, up to {cap} (for "
+    "example NEED_IMAGES 3), and nothing else; they will be attached and the "
+    "question asked again. Otherwise answer without them."
+)
+CHANNEL_IMAGES_NOTE = (
+    "The last {n} attached image(s) are the transcript pictures {ids}, posted "
+    "by other members, not by the asker. The rules for images apply to them."
+)
+
 # Rules that travel WITH the command index. "Complete" is the load-bearing
 # word: a model shown a partial list treats it as a sample and fills the gaps,
 # which is exactly the invented-command failure this is meant to remove. Saying
@@ -353,9 +371,15 @@ def date_rule() -> str:
 
 
 # The whole reply, give or take whitespace/punctuation, is a sentinel.
-# NEED_CONTEXT may carry a count ("NEED_CONTEXT 40") — group 2.
+# NEED_CONTEXT may carry a count ("NEED_CONTEXT 40") and NEED_IMAGES a list
+# ("NEED_IMAGES 3, #4") — group 2, digits picked out by sentinel_numbers().
 _NEED_INFO = re.compile(
-    r"\W*(need_commands|need_energy|need_context)(?:\W+(\d{1,3}))?\W*", re.IGNORECASE)
+    r"\W*(need_commands|need_energy|need_context|need_images)"
+    r"(?:\W+([\d,\s#]{1,24}))?\W*", re.IGNORECASE)
+
+
+def sentinel_numbers(m) -> list:
+    return [int(x) for x in re.findall(r"\d+", m.group(2) or "")]
 
 # The honest degradation when docs/commands.json is missing: no list means the
 # model must refuse to name commands, not improvise them.
@@ -483,7 +507,8 @@ def strip_subtext(content: str) -> str:
                      if not l.startswith("-# ")).strip()
 
 
-def context_line(is_me: bool, display_name: str, content: str, image_count: int = 0) -> str:
+def context_line(is_me: bool, display_name: str, content: str, image_count: int = 0,
+                 image_ids=None) -> str:
     """One transcript line for the prompt. Provenance comes from the author
     id, never the name: the bot's own turns are `[you]:`, everyone else is
     `[member] <name>:` — so a member nicknamed "Torvex Forerunner" cannot
@@ -497,7 +522,10 @@ def context_line(is_me: bool, display_name: str, content: str, image_count: int 
     nothing else -- the marker is appended after the cap, so a body cannot
     fake one either."""
     body = " ".join((content or "").split())[:CONTEXT_SNIPPET]
-    if image_count:
+    if image_ids:   # referable: the model may ask for #n (NEED_IMAGES)
+        plural = "s" if len(image_ids) != 1 else ""
+        body = f"{body} (+image{plural} {', '.join(f'#{i}' for i in image_ids)})".strip()
+    elif image_count:
         plural = "s" if image_count != 1 else ""
         body = f"{body} (+{image_count} image{plural})".strip()
     if is_me:
@@ -571,8 +599,23 @@ def context_request(reply_text, shown: int) -> int:
         return 0
     if CONTEXT_PULL <= 0 or CONTEXT_MESSAGES <= 0:
         return 0
-    n = min(int(m.group(2)) if m.group(2) else CONTEXT_PULL, CONTEXT_PULL)
+    nums = sentinel_numbers(m)
+    n = min(nums[0] if nums else CONTEXT_PULL, CONTEXT_PULL)
     return n if n > shown else 0
+
+
+def image_request(reply_text, available: int, cap: int) -> list:
+    """Which transcript pictures (#1..#available) the next call should carry
+    because the reply asked for them, in order, deduplicated, at most `cap`.
+    [] = none asked / none available / no room left under IMAGES_PER_ASK."""
+    m = _NEED_INFO.fullmatch(reply_text.strip()) if reply_text else None
+    if not m or m.group(1).lower() != "need_images" or available <= 0 or cap <= 0:
+        return []
+    out = []
+    for n in sentinel_numbers(m):
+        if 1 <= n <= available and n not in out:
+            out.append(n)
+    return out[:cap]
 
 
 def sentinel_fallback(text: str) -> str:
@@ -581,6 +624,9 @@ def sentinel_fallback(text: str) -> str:
     if m and m.group(1).lower() == "need_context":
         return ("I'd need more of the conversation for that and couldn't pull "
                 "it up just now — ask again with a bit more detail.")
+    if m and m.group(1).lower() == "need_images":
+        return ("I'd need to see that picture and couldn't grab it just now — "
+                "attach it to your question or reply to it and ask again.")
     return ("Check `/help` for commands — and the footer under my answers "
             "shows energy. I couldn't pull up the details just now.")
 
@@ -873,7 +919,9 @@ class AI(commands.Cog):
                        with_energy: bool = False,
                        policy: GuildAiPolicy = None,
                        with_images: bool = False,
-                       context_pull: bool = False) -> str:
+                       context_pull: bool = False,
+                       image_pull: bool = False,
+                       channel_images: str = "") -> str:
         """Persona + hard rules, plus the command index only when asked for.
 
         The index lives in docs/commands.json and is attached on demand —
@@ -899,7 +947,22 @@ class AI(commands.Cog):
             parts.append(ENERGY_RULES_ONDEMAND)
         if with_images:
             parts.append(IMAGE_RULES)
+        if channel_images:
+            parts.append(channel_images)
+        if image_pull:
+            parts.append(IMAGE_RULES_ONDEMAND.format(cap=IMAGES_PER_ASK))
         return "\n\n".join(parts)
+
+    @staticmethod
+    async def _say(status, text):
+        """The in-channel progress line; never lets a Discord error break
+        the ask itself."""
+        if status is None:
+            return
+        try:
+            await status(text)
+        except discord.HTTPException as e:
+            log.warning("status line failed: %s", e)
 
     # ── accounting helpers ────────────────────────────────────────────────────
 
@@ -1010,11 +1073,15 @@ class AI(commands.Cog):
     # ── context ───────────────────────────────────────────────────────────────
 
     async def _channel_context(self, channel, guild, skip_message_id=None,
-                               limit=None) -> str:
+                               limit=None):
         """Recent messages from the channel the bot was pinged in — whatever
         channel that is. `limit=None` is the always-on tail (CONTEXT_MESSAGES);
         the on-demand pull passes the number the model asked for. Discord's
         channel history, never the archive.
+
+        Returns (transcript, refs): refs[i] is the URL behind marker #i+1 —
+        members' pictures, numbered oldest-first, so NEED_IMAGES can name
+        them. The bot's own pictures (cards, renders) get a plain count.
 
         There is deliberately no public/private test here (Paul, 8/24: "it
         should only get the context of the channel it's in. public or not.").
@@ -1030,10 +1097,10 @@ class AI(commands.Cog):
         """
         want = CONTEXT_MESSAGES if limit is None else min(limit, CONTEXT_PULL)
         if CONTEXT_MESSAGES <= 0 or want <= 0:
-            return ""   # AI_CONTEXT_MESSAGES=0: the model never sees the channel
+            return "", []   # AI_CONTEXT_MESSAGES=0: the model never sees the channel
         try:
             me = guild.me
-            lines = []
+            rows = []   # (is_me, name, content, urls) newest first
             async for m in channel.history(limit=context_scan(want)):
                 if m.id == skip_message_id:
                     continue
@@ -1045,17 +1112,25 @@ class AI(commands.Cog):
                 if str(m.author.id) in self._optout:
                     continue  # user opted out of ever appearing in AI context
                 content = strip_subtext(m.content)
-                n_img = len(image_urls(m.attachments, limit=9))
-                if not content and not n_img:
+                urls = image_urls(m.attachments, limit=9)
+                if not content and not urls:
                     continue
-                lines.append(context_line(me is not None and m.author.id == me.id,
-                                          m.author.display_name, content, n_img))
-                if len(lines) >= want:
+                rows.append((me is not None and m.author.id == me.id,
+                             m.author.display_name, content, urls))
+                if len(rows) >= want:
                     break
-            lines.reverse()
-            return "\n".join(lines)
+            rows.reverse()
+            lines, refs = [], []
+            for is_me, name, content, urls in rows:
+                if urls and not is_me:
+                    ids = list(range(len(refs) + 1, len(refs) + 1 + len(urls)))
+                    refs.extend(urls)
+                    lines.append(context_line(is_me, name, content, image_ids=ids))
+                else:
+                    lines.append(context_line(is_me, name, content, len(urls)))
+            return "\n".join(lines), refs
         except discord.HTTPException:
-            return ""
+            return "", []
 
     # ── shared request pipeline (used by /ask and ping-to-chat) ──────────────
 
@@ -1115,68 +1190,44 @@ class AI(commands.Cog):
         policy = self._policy(guild.id)
         provider = self._provider_for(guild.id)
 
-        context = await self._channel_context(channel, guild, skip_message_id)
+        context, image_refs = await self._channel_context(channel, guild, skip_message_id)
         user_content = build_user_content(channel.name, context, replied_to,
                                           user.display_name, question)
         # The command index and the energy reference are both on-demand
         # (Paul, 8/19): attached up front only when the question plainly
         # needs them; otherwise the model requests one by replying with a
-        # NEED_* sentinel and the call runs once more with that block.
+        # NEED_* sentinel and the call runs again with that block. The
+        # channel (NEED_CONTEXT) and pictures posted in it (NEED_IMAGES) work
+        # the same way (10/13, "let it be an agent") — up to MAX_PASSES calls
+        # in all, each offer withdrawn once it has been used.
         qlow = (question or "").lower()
         attach_cmds = bool(self._commands.available and (
             "command" in qlow or self._commands.mentioned_in(question)
             or any(w in qlow for w in _MODEL_WORDS)))
         attach_energy = any(w in qlow for w in (
             "energy", "ai-usage", "ai usage", "cooldown", "bucks", "cost", "pay"))
-        system = self._system_prompt(character, with_commands=attach_cmds,
-                                     with_energy=attach_energy, policy=policy,
-                                     with_images=bool(images),
-                                     context_pull=CONTEXT_PULL > 0 and CONTEXT_MESSAGES > 0)
-        if images:
-            images = await fetch_images(images)
-
-        try:
-            result = await provider.chat(
-                model=model, system=system,
-                user_content=user_content, max_tokens=MAX_OUT_TOKENS,
-                images=images)
-        except Exception as e:
-            log.error("AI call failed: %s", e)
-            if bucks_charged:
-                await self._refund_bucks(user, bucks_charged)
-            return None, None, (
-                "😵 The AI didn't answer — try again in a minute."
-                + (f" Your {bucks_charged} 💰 was refunded." if bucks_charged else ""))
-
-        micro = billed_micro(guild.id, cost_micro(model, result.tokens_in, result.tokens_out))
-        self._record(guild.id, user_id, model,
-                     result.tokens_in, result.tokens_out, micro, bucks_charged)
-
-        new_cmds, new_energy = retry_attachments(
-            result.text, attach_cmds, attach_energy, self._commands.available)
-        pull = context_request(result.text, len(context.splitlines()) if context else 0)
-        if (new_cmds, new_energy) != (attach_cmds, attach_energy) or pull:
-            if pull:
-                if status is not None:
-                    try:
-                        await status(READING_STATUS.format(n=pull))
-                    except discord.HTTPException as e:
-                        log.warning("context status line failed: %s", e)
-                context = await self._channel_context(channel, guild, skip_message_id,
-                                                      limit=pull)
-                user_content = build_user_content(channel.name, context, replied_to,
-                                                  user.display_name, question)
-            # one re-ask only: the pull offer is withdrawn on the second pass
-            system = self._system_prompt(character, with_commands=new_cmds,
-                                         with_energy=new_energy, policy=policy,
-                                         with_images=bool(images))
+        images = await fetch_images(images) if images else []
+        asker_images = len(images)
+        pull_allowed = CONTEXT_PULL > 0 and CONTEXT_MESSAGES > 0
+        ctx_loaded = False       # the on-demand pull happened
+        img_loaded = False       # channel pictures were attached
+        channel_note = ""
+        result = None
+        for pass_no in range(MAX_PASSES):
+            system = self._system_prompt(
+                character, with_commands=attach_cmds, with_energy=attach_energy,
+                policy=policy, with_images=bool(images),
+                context_pull=pull_allowed and not ctx_loaded,
+                image_pull=bool(image_refs) and not img_loaded
+                and asker_images < IMAGES_PER_ASK,
+                channel_images=channel_note)
             try:
                 result = await provider.chat(
                     model=model, system=system,
                     user_content=user_content, max_tokens=MAX_OUT_TOKENS,
-                    images=images)
+                    images=images or None)
             except Exception as e:
-                log.error("AI command-list retry failed: %s", e)
+                log.error("AI call failed (pass %d): %s", pass_no + 1, e)
                 if bucks_charged:
                     await self._refund_bucks(user, bucks_charged)
                 return None, None, (
@@ -1184,14 +1235,40 @@ class AI(commands.Cog):
                     + (f" Your {bucks_charged} 💰 was refunded." if bucks_charged else ""))
             micro = billed_micro(guild.id, cost_micro(model, result.tokens_in, result.tokens_out))
             self._record(guild.id, user_id, model,
-                         result.tokens_in, result.tokens_out, micro, 0)
+                         result.tokens_in, result.tokens_out, micro,
+                         bucks_charged if pass_no == 0 else 0)
+            if pass_no == MAX_PASSES - 1:
+                break
+            new_cmds, new_energy = retry_attachments(
+                result.text, attach_cmds, attach_energy, self._commands.available)
+            pull = (context_request(result.text, len(context.splitlines()) if context else 0)
+                    if pull_allowed and not ctx_loaded else 0)
+            wanted = (image_request(result.text, len(image_refs), IMAGES_PER_ASK - asker_images)
+                      if image_refs and not img_loaded else [])
+            if (new_cmds, new_energy) == (attach_cmds, attach_energy) and not pull and not wanted:
+                break
+            attach_cmds, attach_energy = new_cmds, new_energy
+            if pull:
+                await self._say(status, READING_STATUS.format(n=pull))
+                ctx_loaded = True
+                context, image_refs = await self._channel_context(
+                    channel, guild, skip_message_id, limit=pull)
+                user_content = build_user_content(channel.name, context, replied_to,
+                                                  user.display_name, question)
+            if wanted:
+                await self._say(status, LOOKING_STATUS.format(
+                    n=len(wanted), s="s" if len(wanted) != 1 else ""))
+                img_loaded = True
+                images = images + await fetch_images([image_refs[i - 1] for i in wanted])
+                channel_note = CHANNEL_IMAGES_NOTE.format(
+                    n=len(wanted), ids=", ".join(f"#{i}" for i in wanted))
 
         if result.refusal:
             return None, None, "🙅 That's not something I'll answer. Try something else."
 
         text = result.text or "…I've got nothing. Try rephrasing?"
         if _NEED_INFO.fullmatch(text.strip()):
-            # a sentinel survived both passes (or the reference vanished
+            # a sentinel survived every pass (or the reference vanished
             # mid-flight) — a member must never see it
             text = sentinel_fallback(text)
 
@@ -1399,6 +1476,9 @@ class AI(commands.Cog):
 
         async def status(text):
             nonlocal placeholder
+            if placeholder is not None:   # second step: edit, don't stack
+                await placeholder.edit(content=text, allowed_mentions=none)
+                return
             placeholder = await message.reply(text, mention_author=False,
                                               allowed_mentions=none)
 
