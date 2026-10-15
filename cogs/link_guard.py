@@ -92,9 +92,17 @@ _CDN_EXCLUDE = [ipaddress.ip_network(c) for c in (
     "173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
     "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
     "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
-    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",       # Cloudflare
-    "151.101.0.0/16",                                         # Fastly
+    "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",       # Cloudflare v4
+    "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+    "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",     # Cloudflare v6
+    "151.101.0.0/16", "2a04:4e40::/32", "2a04:4e42::/32",     # Fastly v4 + v6
 )]
+# `addr in net` is False across address families, so a v6 answer silently passed
+# a v4-only exclude list (10/14: a shared Cloudflare v6 front got learned and
+# deleted a go-live webhook). The v6 ranges above close that; on top, the learner
+# keeps IPv4 only — every dedicated grabber origin seen so far is v4, and a v6
+# answer from a shared proxy is the only thing v6 has ever contributed.
+_LEARN_IPV6 = False
 
 
 def _is_shared_cdn(ip):
@@ -107,6 +115,27 @@ def _is_shared_cdn(ip):
     if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_multicast:
         return True
     return any(addr in net for net in _CDN_EXCLUDE)
+
+
+def learn_tracker_ips(resolved_sets, consensus=_IP_CONSENSUS):
+    """The auto-learn rule as a pure function: given one resolved-IP set per
+    grabify-corpus domain, return the IPs shared by >= `consensus` domains that
+    are NOT shared CDN / private / (unless enabled) IPv6. Unit-testable without DNS."""
+    counts = {}
+    for ips in resolved_sets:
+        for ip in ips:
+            counts[ip] = counts.get(ip, 0) + 1
+    learned = set()
+    for ip, n in counts.items():
+        if n < consensus or _is_shared_cdn(ip):
+            continue
+        try:
+            if not _LEARN_IPV6 and ipaddress.ip_address(ip).version == 6:
+                continue
+        except ValueError:
+            continue
+        learned.add(ip)
+    return learned
 # hosts we never bother resolving — common infra that could never be a tracker IP.
 _SKIP_RESOLVE = {
     "discord.com", "discordapp.com", "cdn.discordapp.com", "media.discordapp.net",
@@ -456,6 +485,9 @@ def _init_tripdb():
                    hidden INTEGER, is_webhook INTEGER, enforce INTEGER, actions TEXT)"""
         )
         c.execute("CREATE INDEX IF NOT EXISTS idx_trips_user ON trips(guild_id, user_id, ts)")
+        cols = {r[1] for r in c.execute("PRAGMA table_info(trips)")}
+        if "resolved_ips" not in cols:   # {rule: matched tracker IP} for ip-vector findings
+            c.execute("ALTER TABLE trips ADD COLUMN resolved_ips TEXT")
         # invite capture — one row per invite code per message, own-guild included
         # (quiet rows are still the record "who shared what, when"). NB the column
         # is is_foreign because FOREIGN is an SQL keyword.
@@ -638,9 +670,9 @@ def _persist_trip(row):
         with _tripdb() as c:
             c.execute(
                 "INSERT INTO trips(ts,guild_id,user_id,username,channel_id,message_id,"
-                "rules,vectors,severity,hidden,is_webhook,enforce,actions) VALUES "
+                "rules,vectors,severity,hidden,is_webhook,enforce,actions,resolved_ips) VALUES "
                 "(:ts,:guild_id,:user_id,:username,:channel_id,:message_id,"
-                ":rules,:vectors,:severity,:hidden,:is_webhook,:enforce,:actions)", row)
+                ":rules,:vectors,:severity,:hidden,:is_webhook,:enforce,:actions,:resolved_ips)", row)
     except Exception:
         log.exception("link_guard: persist trip failed")
 
@@ -747,12 +779,7 @@ class LinkGuard(commands.Cog):
             resolved = await asyncio.gather(*(self._resolve(d, fresh=True) for d in grabify))
         except Exception:
             return
-        counts = {}
-        for ips in resolved:
-            for ip in ips:
-                counts[ip] = counts.get(ip, 0) + 1
-        learned = {ip for ip, n in counts.items()
-                   if n >= _IP_CONSENSUS and not _is_shared_cdn(ip)}
+        learned = learn_tracker_ips(resolved)
         self._tracker_ips = set(_SEED_TRACKER_IPS) | learned
         log.info("link_guard: tracker-IP set = %d (%d auto-learned from grabify, CDN-filtered)",
                  len(self._tracker_ips), len(learned))
@@ -997,7 +1024,9 @@ class LinkGuard(commands.Cog):
             "severity": severity,
             "hidden": 1 if any(f["hidden"] for f in findings.values()) else 0,
             "is_webhook": 1 if is_webhook else 0, "enforce": 1 if enforce else 0,
-            "actions": json.dumps(acts)})
+            "actions": json.dumps(acts),
+            "resolved_ips": json.dumps({r: f["resolved_ip"] for r, f in findings.items()
+                                        if f.get("resolved_ip")}) or None})
         if len(self._logged) > 4096:
             self._logged = {k: v for k, v in self._logged.items() if v[0] > now}
         self._logged[message_id] = (now + 900, offense)

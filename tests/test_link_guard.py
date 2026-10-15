@@ -182,6 +182,21 @@ check("host NOT on a tracker IP stays clean",
 check("cloudflare IP flagged as shared CDN", lg._is_shared_cdn("104.26.8.202") is True)
 check("dedicated azure origin NOT shared CDN", lg._is_shared_cdn("52.173.151.229") is False)
 check("private IP excluded from tracker set", lg._is_shared_cdn("10.0.0.5") is True)
+# 10/14 false positive: a shared Cloudflare IPv6 front slipped past the v4-only list and
+# deleted a go-live webhook (cdn.pingsync.app). v6 CDN ranges must be excluded too.
+CF6 = "2606:4700:130:436c:6f75:6466:6c61:7265"
+check("cloudflare IPv6 flagged as shared CDN", lg._is_shared_cdn(CF6) is True)
+check("fastly IPv6 flagged as shared CDN", lg._is_shared_cdn("2a04:4e42::645") is True)
+check("garbage IP string treated as shared (never learned)", lg._is_shared_cdn("not-an-ip") is True)
+AZ = "52.173.151.229"
+learned = lg.learn_tracker_ips([{AZ, CF6, "104.21.64.88"}, {AZ, CF6, "104.21.64.88"}, {"2.59.170.20"}])
+check("learner keeps the dedicated origin shared by 2 domains", AZ in learned)
+check("learner drops a shared Cloudflare v6 even when 2 domains share it", CF6 not in learned)
+check("learner drops a shared Cloudflare v4", "104.21.64.88" not in learned)
+check("learner needs consensus — a single-domain IP is not learned", "2.59.170.20" not in learned)
+check("learner never keeps IPv6 (no dedicated grabber origin is v6)",
+      "2001:db8::1" not in lg.learn_tracker_ips([{"2001:db8::1"}, {"2001:db8::1"}]))
+check("learner with no answers learns nothing", lg.learn_tracker_ips([set(), set()]) == set())
 
 print()
 if _fails:
