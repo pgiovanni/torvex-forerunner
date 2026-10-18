@@ -687,7 +687,7 @@
     },
     {
       "name": "snipe",
-      "description": "What was just deleted in this channel (author-deleted only, ephemeral)",
+      "description": "Browse the last 13 deletions in this channel, in public (author-deleted only)",
       "cog": "mentions",
       "required_permissions": []
     }

@@ -2421,16 +2421,8 @@
   },
   {
    "path": "snipe",
-   "description": "What was just deleted in this channel.",
+   "description": "Browse what was recently deleted in this channel.",
    "params": [
-    {
-     "name": "limit",
-     "type": "integer",
-     "required": false,
-     "description": "How many to show (default 5, max 10)",
-     "min": 1,
-     "max": 10
-    },
     {
      "name": "user",
      "type": "user",
@@ -2444,7 +2436,7 @@
      "description": "Include messages bots deleted (default no)"
     }
    ],
-   "signature": "/snipe [limit] [user] [bots]",
+   "signature": "/snipe [user] [bots]",
    "root": "snipe",
    "cog": "mentions",
    "permissions": [],

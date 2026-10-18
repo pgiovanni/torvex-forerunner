@@ -2244,17 +2244,16 @@ Your latest pings with jump links — including the ones that were deleted.
 
 #### `/snipe`
 
-What was just deleted in this channel.
+Browse what was recently deleted in this channel.
 
 ```
-/snipe [limit] [user] [bots]
+/snipe [user] [bots]
 ```
 
 **Access:** Everyone &nbsp;·&nbsp; Server only
 
 | Parameter | Type | Required | Description |
 |---|---|:--:|---|
-| `limit` | integer | No | How many to show (default 5, max 10) *(range 1–10)* |
 | `user` | user | No | Only this member's deleted messages |
 | `bots` | boolean | No | Include messages bots deleted (default no) |
 

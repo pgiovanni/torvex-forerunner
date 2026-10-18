@@ -22,11 +22,15 @@ the 24 h recent window everywhere else — so nothing is shown that the
 archive wouldn't keep anyway.
 
 /snipe (2026-10-18, Paul: "/mentions should also be a /snipe where it just
-shows deleted messages") — the same archive read the other way round: not
-"who pinged me" but "what just vanished from THIS channel". Same rules:
-ephemeral, only messages their author took back (a staff removal or a purge
-is never listed — that is the mod-log's business), bots out unless asked,
-same window. Text and attachment NAMES only; files stay in the media cache.
+shows deleted messages"; then: "it lets people peruse the last 13 messages.
+/snipe from phoenix bot does that. in public") — the same archive read the
+other way round: not "who pinged me" but "what just vanished from THIS
+channel". PUBLIC: the card posts in the channel, one deleted message per
+page, ◀ ▶ buttons anyone can press walk the last SNIPE_PAGES deletions,
+buttons go dead after SNIPE_TTL s. Only messages their author took back (a
+staff removal or a purge is never listed — that is the mod-log's business),
+bots out unless asked, same window. Text and attachment NAMES only; files
+stay in the media cache.
 """
 import asyncio
 import os
@@ -41,6 +45,8 @@ from utils import mentions as mention_index  # noqa: E402
 from utils.security_config import is_enabled  # noqa: E402
 
 COLOR = 0x5865F2
+SNIPE_PAGES = 13     # how far back /snipe lets a channel browse
+SNIPE_TTL = 180      # seconds the ◀ ▶ buttons stay live
 STATE_ICON = {"live": "🔗", "deleted": "🗑️", "removed": "🛡️", "edited_out": "✏️"}
 LOOKBACK_DAYS = mention_index.DEFAULT_LOOKBACK_DAYS
 
@@ -85,6 +91,58 @@ def render_snipe_line(item):
     elif tail:
         body += "\n> " + " · ".join(tail)
     return f"{head}\n> {body}"
+
+
+def snipe_page(items, idx, channel_name, window):
+    """Embed for page `idx` (0-based) of a /snipe browse."""
+    n = len(items)
+    e = discord.Embed(title=f"🎯 Deleted in #{channel_name} · {idx + 1}/{n}",
+                      description=render_snipe_line(items[idx])[:4000], color=COLOR)
+    foot = f"{window} · only messages their author deleted"
+    if n > 1:
+        foot += " · ◀ ▶ to browse"
+    e.set_footer(text=foot)
+    return e
+
+
+class SnipeView(discord.ui.View):
+    """◀ ▶ over the fetched deletions. Anyone in the channel may page — the
+    card is public and the whole point is perusing. Dies after SNIPE_TTL."""
+
+    def __init__(self, items, channel_name, window):
+        super().__init__(timeout=SNIPE_TTL)
+        self.items, self.channel_name, self.window = items, channel_name, window
+        self.idx = 0
+        self.message = None
+        self._sync()
+
+    def _sync(self):
+        self.prev.disabled = self.idx <= 0
+        self.next.disabled = self.idx >= len(self.items) - 1
+
+    async def _show(self, interaction):
+        self._sync()
+        await interaction.response.edit_message(
+            embed=snipe_page(self.items, self.idx, self.channel_name, self.window), view=self)
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def prev(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        self.idx = max(0, self.idx - 1)
+        await self._show(interaction)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        self.idx = min(len(self.items) - 1, self.idx + 1)
+        await self._show(interaction)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
 
 
 class Mentions(commands.Cog):
@@ -176,29 +234,30 @@ class Mentions(commands.Cog):
         return rows, days
 
     @app_commands.command(name="snipe",
-                          description="What was just deleted in this channel.")
+                          description="Browse what was recently deleted in this channel.")
     @app_commands.describe(
-        limit="How many to show (default 5, max 10)",
         user="Only this member's deleted messages",
         bots="Include messages bots deleted (default no)")
     @app_commands.guild_only()
     @app_commands.checks.cooldown(1, 10, key=lambda i: (i.guild_id, i.user.id))
     async def snipe(self, interaction: discord.Interaction,
-                    limit: app_commands.Range[int, 1, 10] = 5,
                     user: discord.Member | None = None, bots: bool = False):
-        await interaction.response.defer(ephemeral=True, thinking=True)
         guild, channel = interaction.guild, interaction.channel
+        # Refusals are ephemeral and go out BEFORE the public defer — a public
+        # "thinking…" that turns into a private answer leaves a stuck placeholder.
         if self._modlog() is None or not is_enabled(guild.id, "msglog"):
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 "This server doesn't keep a message log, so there's nothing to snipe. "
                 "A server manager can turn it on with `/msglog enable`.", ephemeral=True)
             return
         perms = channel.permissions_for(interaction.user)
         if not (perms.view_channel and perms.read_message_history):
-            await interaction.followup.send("You can't read this channel's history.", ephemeral=True)
+            await interaction.response.send_message(
+                "You can't read this channel's history.", ephemeral=True)
             return
+        await interaction.response.defer(thinking=True)  # public: the card posts in the channel
         items, days = await asyncio.to_thread(
-            self._query_deleted, guild, interaction.channel_id, limit,
+            self._query_deleted, guild, interaction.channel_id, SNIPE_PAGES,
             user.id if user else None, bots)
         window = f"last {days} days" if days > 1 else "last 24 hours"
         if not items:
@@ -206,19 +265,13 @@ class Mentions(commands.Cog):
             await interaction.followup.send(
                 f"Nothing deleted{who} in this channel in the {window}"
                 + (" (bot messages excluded)" if not bots else "") + ".",
-                ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+                allowed_mentions=discord.AllowedMentions.none())
             return
-        lines = [render_snipe_line(it) for it in items]
         name = getattr(channel, "name", None) or "this channel"
-        embed = discord.Embed(
-            title=f"🎯 Deleted in #{name} — {len(items)}",
-            description="\n".join(lines)[:4000], color=COLOR)
-        foot = f"{window} · only messages their author deleted"
-        if not bots:
-            foot += " · bots:True to include bots"
-        embed.set_footer(text=foot)
-        await interaction.followup.send(embed=embed, ephemeral=True,
-                                        allowed_mentions=discord.AllowedMentions.none())
+        view = SnipeView(items, name, window)
+        view.message = await interaction.followup.send(
+            embed=snipe_page(items, 0, name, window), view=view, wait=True,
+            allowed_mentions=discord.AllowedMentions.none())
 
     @mentions.error
     @snipe.error
