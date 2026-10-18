@@ -1,4 +1,5 @@
-"""utils/mentions.py — the /mentions index + read side. Pure sqlite, runs
+"""utils/mentions.py — the /mentions index + read side, and /snipe's
+fetch_deleted/extras. Pure sqlite, runs
 anywhere:  py tests/test_mentions.py   (exits non-zero on failure).
 
 Also covers cogs/mentions.py's render_line when discord.py is importable
@@ -127,6 +128,47 @@ check("snippet collapses whitespace", mi.snippet("a\n\n b   c"), "a b c")
 check("snippet empty", mi.snippet(""), "*no text*")
 check("snippet truncates", len(mi.snippet("x" * 300)), 120)
 
+# ── /snipe: fetch_deleted + extras ──────────────────────────────────────────
+d = fresh()
+CH, OTHER = "10", "11"
+# posted ts / deleted ts chosen so "newest deletion first" != "newest post first"
+msg(d, "s1", ALICE, "oops one", NOW - 500, deleted=NOW - 100, kind="self")
+msg(d, "s2", ALICE, "oops two", NOW - 400, deleted=NOW - 50, kind="self")
+msg(d, "s3", ME, "mine", NOW - 300, deleted=NOW - 10, kind=None)            # legacy, unattributed
+msg(d, "s4", ALICE, "slur", NOW - 200, deleted=NOW - 5, kind="mod")         # staff removal
+msg(d, "s5", ALICE, "spam", NOW - 190, deleted=NOW - 4, kind="bulk")        # purge
+msg(d, "s6", BOT, "lobby card", NOW - 180, deleted=NOW - 3, kind="self", bot=1)
+msg(d, "s7", ALICE, "elsewhere", NOW - 170, deleted=NOW - 2, kind="self", chan=OTHER)
+msg(d, "s8", ALICE, "still here", NOW - 160)                                 # live
+msg(d, "s9", ALICE, "ancient", NOW - 40 * 86400, deleted=NOW - 39 * 86400, kind="self")
+d.execute("UPDATE messages SET attachments=?, stickers=? WHERE message_id='s2'",
+          ('[{"filename":"cat.png","url":"x","size":1,"content_type":"image/png"}]',
+           '[{"name":"peepoWave","url":null}]'))
+
+got = [r["message_id"] for r in mi.fetch_deleted(d, G, CH, 0, 10)]
+check("snipe: self-deletes only, newest deletion first", got, ["s3", "s2", "s1", "s9"])
+check("snipe: window excludes old", [r["message_id"] for r in
+      mi.fetch_deleted(d, G, CH, NOW - 30 * 86400, 10)], ["s3", "s2", "s1"])
+check("snipe: limit", len(mi.fetch_deleted(d, G, CH, 0, 2)), 2)
+check("snipe: author filter", [r["message_id"] for r in
+      mi.fetch_deleted(d, G, CH, 0, 10, author_id=ME)], ["s3"])
+check("snipe: bots on request", "s6" in [r["message_id"] for r in
+      mi.fetch_deleted(d, G, CH, 0, 10, include_bots=True)], True)
+check("snipe: other channel isolated", [r["message_id"] for r in
+      mi.fetch_deleted(d, G, OTHER, 0, 10)], ["s7"])
+check("snipe: unknown guild", mi.fetch_deleted(d, "2", CH, 0, 10), [])
+check("snipe: mod/bulk never listed", any(r["message_id"] in ("s4", "s5")
+      for r in mi.fetch_deleted(d, G, CH, 0, 50, include_bots=True)), False)
+s2 = mi.fetch_deleted(d, G, CH, 0, 10)[1]
+check("extras: attachment + sticker names", mi.extras(s2), ["📎 cat.png", "🩵 sticker: peepoWave"])
+check("extras: none", mi.extras({"attachments": None, "stickers": None}), [])
+check("extras: bad json tolerated", mi.extras({"attachments": "{nope", "stickers": "[]"}), [])
+check("extras: poll + forward flags", mi.extras({"poll": "{}", "forward": "{}"}),
+      ["📊 poll", "↪️ forwarded message"])
+check("extras: >3 attachments capped", mi.extras({"attachments":
+      '[{"filename":"a"},{"filename":"b"},{"filename":"c"},{"filename":"d"},{"filename":"e"}]'}),
+      ["📎 a, b, c +2"])
+
 # ── render (VPS only) ───────────────────────────────────────────────────────
 try:
     from cogs.mentions import render_line
@@ -141,6 +183,14 @@ try:
     check("ghost shows text + when", ("boo" in ghost) and ("<t:1200:R>" in ghost), True)
     rep = render_line(dict(base, state="live", text="x", kind="reply"), G)
     check("reply labelled", "replied to you" in rep, True)
+    from cogs.mentions import render_snipe_line
+    sn = render_snipe_line({"author_id": ALICE, "content": "boo", "created_ts": 1000.0,
+                            "deleted_ts": 1200.0, "attachments": None, "stickers": None})
+    check("snipe line has text + when deleted", ("boo" in sn) and ("<t:1200:R>" in sn), True)
+    sn2 = render_snipe_line({"author_id": ALICE, "content": "", "created_ts": 1000.0,
+                             "deleted_ts": 1200.0,
+                             "attachments": '[{"filename":"cat.png"}]', "stickers": None})
+    check("snipe line: no text -> extras as body", "cat.png" in sn2 and "*no text*" not in sn2, True)
 except ImportError:
     pass
 

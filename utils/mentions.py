@@ -1,4 +1,6 @@
 """Mention index for `/mentions` — who was pinged by which archived message.
+Also the read side of `/snipe` (fetch_deleted, at the bottom): same archive,
+same privacy rules, same cog.
 
 Why a table instead of searching content: the archive holds ~1.3M rows for the
 home guild alone (2 GB). `content LIKE '%<@id>%'` over that took 24 s cold on
@@ -246,3 +248,62 @@ def snippet(text, n=120):
 
 def lookback_ts(days=DEFAULT_LOOKBACK_DAYS, now=None):
     return (now if now is not None else time.time()) - days * 86400
+
+
+# ── /snipe: what was just deleted in a channel ──────────────────────────────
+
+def fetch_deleted(conn, guild_id, channel_id, since_ts=0.0, limit=5,
+                  author_id=None, include_bots=False):
+    """Latest messages deleted in `channel_id`, newest deletion first.
+
+    Only messages their AUTHOR took back (delete_kind 'self', or a legacy row
+    with no attribution). A moderator's removal or a purge is never listed:
+    staff already decided that content shouldn't stand, and who they acted on
+    is the mod-log's business, not the channel's — same rule as classify()'s
+    'removed' state, applied one step earlier because here nobody was pinged.
+    Uses idx_msgs_deleted (guild, deleted_ts) — a range read, not a scan.
+    """
+    sql = ("SELECT message_id, channel_id, author_id, author_name, bot, webhook,"
+           " created_ts, content, attachments, stickers, poll, forward,"
+           " deleted_ts, delete_kind FROM messages"
+           " WHERE guild_id=? AND channel_id=? AND deleted_ts IS NOT NULL AND deleted_ts>=?"
+           " AND COALESCE(delete_kind,'self') NOT IN ('mod','bulk')")
+    params = [str(guild_id), str(channel_id), float(since_ts)]
+    if author_id:
+        sql += " AND author_id=?"
+        params.append(str(author_id))
+    if not include_bots:
+        sql += " AND COALESCE(bot,0)=0 AND COALESCE(webhook,0)=0"
+    sql += " ORDER BY deleted_ts DESC LIMIT ?"
+    params.append(max(int(limit), 1))
+    cur = conn.execute(sql, params)
+    cols = [c[0] for c in cur.description]
+    return [dict(zip(cols, tuple(r))) for r in cur.fetchall()]
+
+
+def extras(row):
+    """Short labels for what a row carried besides text: attachment names,
+    sticker names, poll, forward. Names only — never a file or a URL, the
+    media cache is the mod-log's."""
+    import json
+    out = []
+    try:
+        atts = json.loads(row.get("attachments") or "[]")
+    except (TypeError, ValueError):
+        atts = []
+    names = [a.get("filename") or "file" for a in atts if isinstance(a, dict)]
+    if names:
+        shown = ", ".join(names[:3]) + (f" +{len(names) - 3}" if len(names) > 3 else "")
+        out.append(f"📎 {shown}")
+    try:
+        sts = json.loads(row.get("stickers") or "[]")
+    except (TypeError, ValueError):
+        sts = []
+    snames = [s.get("name") if isinstance(s, dict) else str(s) for s in sts]
+    if snames:
+        out.append("🩵 sticker: " + ", ".join(n for n in snames if n))
+    if row.get("poll"):
+        out.append("📊 poll")
+    if row.get("forward"):
+        out.append("↪️ forwarded message")
+    return out

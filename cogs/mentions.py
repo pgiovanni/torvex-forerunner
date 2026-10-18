@@ -20,6 +20,13 @@ re-surfaced; own messages and bot chatter are excluded unless asked. The
 window is the guild's archive window — 30 days on the operator/Pro archive,
 the 24 h recent window everywhere else — so nothing is shown that the
 archive wouldn't keep anyway.
+
+/snipe (2026-10-18, Paul: "/mentions should also be a /snipe where it just
+shows deleted messages") — the same archive read the other way round: not
+"who pinged me" but "what just vanished from THIS channel". Same rules:
+ephemeral, only messages their author took back (a staff removal or a purge
+is never listed — that is the mod-log's business), bots out unless asked,
+same window. Text and attachment NAMES only; files stay in the media cache.
 """
 import asyncio
 import os
@@ -64,6 +71,20 @@ def render_line(item, guild_id):
     # edited_out
     head += f" · [jump]({jump_url(guild_id, item['channel_id'], item['message_id'])})"
     return f"{head}\n> {mention_index.snippet(item['text'])}\n> *ping edited out*"
+
+
+def render_snipe_line(item):
+    """One self-deleted archive row -> the embed line for /snipe."""
+    gone = f"<t:{int(item['deleted_ts'])}:R>" if item.get("deleted_ts") else ""
+    posted = f"<t:{int(item['created_ts'])}:R>" if item.get("created_ts") else ""
+    head = f"🗑️ {gone} · <@{item['author_id']}>" + (f" (posted {posted})" if posted else "")
+    body = mention_index.snippet(item.get("content"))
+    tail = mention_index.extras(item)
+    if body == "*no text*" and tail:
+        body = " · ".join(tail)
+    elif tail:
+        body += "\n> " + " · ".join(tail)
+    return f"{head}\n> {body}"
 
 
 class Mentions(commands.Cog):
@@ -140,7 +161,67 @@ class Mentions(commands.Cog):
         await interaction.followup.send(embed=embed, ephemeral=True,
                                         allowed_mentions=discord.AllowedMentions.none())
 
+    def _query_deleted(self, guild, channel_id, limit, author_id, include_bots):
+        """Blocking: flush, pick the window, read the channel's self-deletes."""
+        ml = self._modlog()
+        ml._flush()
+        from cogs.mod_log import retention_tier
+        tier = retention_tier(guild.id)
+        days = LOOKBACK_DAYS if tier != "recent" else 1
+        since = mention_index.lookback_ts(days)
+        with ml._conn() as c:
+            rows = mention_index.fetch_deleted(
+                c, guild.id, channel_id, since, limit,
+                author_id=author_id, include_bots=include_bots)
+        return rows, days
+
+    @app_commands.command(name="snipe",
+                          description="What was just deleted in this channel.")
+    @app_commands.describe(
+        limit="How many to show (default 5, max 10)",
+        user="Only this member's deleted messages",
+        bots="Include messages bots deleted (default no)")
+    @app_commands.guild_only()
+    @app_commands.checks.cooldown(1, 10, key=lambda i: (i.guild_id, i.user.id))
+    async def snipe(self, interaction: discord.Interaction,
+                    limit: app_commands.Range[int, 1, 10] = 5,
+                    user: discord.Member | None = None, bots: bool = False):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild, channel = interaction.guild, interaction.channel
+        if self._modlog() is None or not is_enabled(guild.id, "msglog"):
+            await interaction.followup.send(
+                "This server doesn't keep a message log, so there's nothing to snipe. "
+                "A server manager can turn it on with `/msglog enable`.", ephemeral=True)
+            return
+        perms = channel.permissions_for(interaction.user)
+        if not (perms.view_channel and perms.read_message_history):
+            await interaction.followup.send("You can't read this channel's history.", ephemeral=True)
+            return
+        items, days = await asyncio.to_thread(
+            self._query_deleted, guild, interaction.channel_id, limit,
+            user.id if user else None, bots)
+        window = f"last {days} days" if days > 1 else "last 24 hours"
+        if not items:
+            who = f" by {user.mention}" if user else ""
+            await interaction.followup.send(
+                f"Nothing deleted{who} in this channel in the {window}"
+                + (" (bot messages excluded)" if not bots else "") + ".",
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+            return
+        lines = [render_snipe_line(it) for it in items]
+        name = getattr(channel, "name", None) or "this channel"
+        embed = discord.Embed(
+            title=f"🎯 Deleted in #{name} — {len(items)}",
+            description="\n".join(lines)[:4000], color=COLOR)
+        foot = f"{window} · only messages their author deleted"
+        if not bots:
+            foot += " · bots:True to include bots"
+        embed.set_footer(text=foot)
+        await interaction.followup.send(embed=embed, ephemeral=True,
+                                        allowed_mentions=discord.AllowedMentions.none())
+
     @mentions.error
+    @snipe.error
     async def _err(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.CommandOnCooldown):
             try:

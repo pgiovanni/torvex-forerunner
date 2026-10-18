@@ -2420,6 +2420,38 @@
    "dm_allowed": false
   },
   {
+   "path": "snipe",
+   "description": "What was just deleted in this channel.",
+   "params": [
+    {
+     "name": "limit",
+     "type": "integer",
+     "required": false,
+     "description": "How many to show (default 5, max 10)",
+     "min": 1,
+     "max": 10
+    },
+    {
+     "name": "user",
+     "type": "user",
+     "required": false,
+     "description": "Only this member's deleted messages"
+    },
+    {
+     "name": "bots",
+     "type": "boolean",
+     "required": false,
+     "description": "Include messages bots deleted (default no)"
+    }
+   ],
+   "signature": "/snipe [limit] [user] [bots]",
+   "root": "snipe",
+   "cog": "mentions",
+   "permissions": [],
+   "cooldown_seconds": null,
+   "dm_allowed": false
+  },
+  {
    "path": "msglog audit",
    "description": "Server-change ledger: roles, channels, permissions, emoji, AutoMod rules, member roles.",
    "params": [
@@ -5769,6 +5801,12 @@
    "server_owner_only": false
   },
   "mentions": {
+   "cog": "mentions",
+   "visibility_permissions": [],
+   "runtime_permissions": [],
+   "server_owner_only": false
+  },
+  "snipe": {
    "cog": "mentions",
    "visibility_permissions": [],
    "runtime_permissions": [],

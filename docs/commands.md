@@ -2,7 +2,7 @@
 
 Every slash command **Torvex Forerunner** exposes. Generated from the *live registered command tree* — what Discord actually has synced — plus an AST pass over the cogs, so it cannot drift from the running bot.
 
-- **223 commands** (97 top-level, the rest subcommands) across 40 cogs
+- **224 commands** (98 top-level, the rest subcommands) across 40 cogs
 - Regenerate: `python3 tools/gen_command_docs.py`
 
 ## How to read this
@@ -29,7 +29,7 @@ Anything acting in bulk requires Administrator, enforced at runtime, because `de
 
 **Server setup** — `/give`, `/picount`, `/rolemenu`, `/server-info`, `/setup`, `/steal-emoji`, `/suggest`, `/welcome`
 
-**Members & invites** — `/activity`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/mentions`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/store`, `/tracked-invite`
+**Members & invites** — `/activity`, `/balance`, `/chat-levels`, `/check-perms`, `/invite-intel`, `/invite-lockdown`, `/invite-stats`, `/invite-unlock`, `/mentions`, `/notifications`, `/rank`, `/redeem`, `/rpg-leaderboard`, `/server-notifications`, `/snipe`, `/store`, `/tracked-invite`
 
 **Games & fun** — `/8ball`, `/challenge`, `/chess`, `/connect4_bot`, `/connect4`, `/gear`, `/gift`, `/lastrace`, `/link`, `/market`, `/peepo`, `/powerup`, `/race`, `/roast`, `/rpg`, `/tictactoe_bot`, `/tictactoe`, `/trade`, `/unlink`, `/vote`, `/wordle`
 
@@ -2241,6 +2241,22 @@ Your latest pings with jump links — including the ones that were deleted.
 | `replies` | boolean | No | Include replies to your messages (default yes) |
 | `roles` | boolean | No | Include pings of roles you hold (default no — busy servers ping roles a lot) |
 | `bots` | boolean | No | Include pings from bots (default no) |
+
+#### `/snipe`
+
+What was just deleted in this channel.
+
+```
+/snipe [limit] [user] [bots]
+```
+
+**Access:** Everyone &nbsp;·&nbsp; Server only
+
+| Parameter | Type | Required | Description |
+|---|---|:--:|---|
+| `limit` | integer | No | How many to show (default 5, max 10) *(range 1–10)* |
+| `user` | user | No | Only this member's deleted messages |
+| `bots` | boolean | No | Include messages bots deleted (default no) |
 
 ---
 
